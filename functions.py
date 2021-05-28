@@ -1,8 +1,29 @@
 from numpy.core.fromnumeric import var
 from numpy.lib.shape_base import column_stack
+from sklearn import preprocessing
 import pandas as pd
 import os
 import numpy as np
+
+def standardize_data(X_train, y_train):
+
+    scaler_x = preprocessing.StandardScaler()
+    scaler_y = preprocessing.StandardScaler()
+
+    scaler_x.fit(X_train)
+    scaler_y.fit(y_train)
+
+    X_train_scaled = scaler_x.transform(X_train)
+    y_train_scaled = scaler_y.transform(y_train)
+
+    return X_train_scaled, y_train_scaled, scaler_x, scaler_y
+
+def get_train_data(df_train):
+
+    X_train = df_train[['exx_t', 'eyy_t', 'exy_t', 'exx_t-dt','eyy_t-dt','exy_t-dt']]
+    y_train = df_train[['sxx_t','syy_t','sxy_t']]
+
+    return X_train, y_train
 
 def data_seletion(df_list, n_samples):
 
