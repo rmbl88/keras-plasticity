@@ -1,42 +1,128 @@
-from numpy.core.fromnumeric import var
-from numpy.lib.shape_base import column_stack
 from sklearn import preprocessing
 import pandas as pd
 import os
 import numpy as np
+import copy
+import random
+import matplotlib.pyplot as plt
 
-def standardize_data(X_train, y_train):
+def plot_history(history):
+  hist = pd.DataFrame(history.history)
+  hist['epoch'] = history.epoch
 
-    scaler_x = preprocessing.StandardScaler()
-    scaler_y = preprocessing.StandardScaler()
+  plt.figure()
+  plt.xlabel('Epoch')
+  plt.ylabel('Mean Abs Error [MPa]')
+  plt.plot(hist['epoch'], hist['mae'], label='Train Error', linewidth=1)
+  plt.plot(hist['epoch'], hist['val_mae'], label = 'Val Error', linewidth=1)
+  plt.legend()
 
-    scaler_x.fit(X_train)
-    scaler_y.fit(y_train)
+  plt.figure()
+  plt.xlabel('Epoch')
+  plt.ylabel('Mean Square Error [$MPa^2$]')
+  plt.plot(hist['epoch'], hist['mse'], label='Train Error', linewidth=1)
+  plt.plot(hist['epoch'], hist['val_mse'], label = 'Val Error', linewidth=1)
+  plt.legend()
+  plt.show()
 
-    X_train_scaled = scaler_x.transform(X_train)
-    y_train_scaled = scaler_y.transform(y_train)
+def standardize_data(X, y, scaler_x = None, scaler_y = None):
 
-    return X_train_scaled, y_train_scaled, scaler_x, scaler_y
+    if scaler_x == None and scaler_y == None:
+        scaler_x = preprocessing.MaxAbsScaler()
+        scaler_y = preprocessing.MaxAbsScaler()
+        #scaler_x = preprocessing.StandardScaler()
+        #scaler_y = preprocessing.StandardScaler()
 
-def get_train_data(df_train):
+        scaler_x.fit(X)
+        scaler_y.fit(y)
 
-    X_train = df_train[['exx_t', 'eyy_t', 'exy_t', 'exx_t-dt','eyy_t-dt','exy_t-dt']]
-    y_train = df_train[['sxx_t','syy_t','sxy_t']]
+    X = scaler_x.transform(X)
+    y = scaler_y.transform(y)
 
-    return X_train, y_train
+    return X, y, scaler_x, scaler_y
 
-def data_seletion(df_list, n_samples):
+def select_features(df):
 
-    sampled_dfs = []
+    X = df[['exx_t-dt','eyy_t-dt','exy_t-dt', 'exx_t', 'eyy_t', 'exy_t']]
+    y = df[['sxx_t','syy_t','sxy_t']]
+
+    return X, y
+
+def data_sampling(df_list, n_samples, rand_seed):
+
+    #sampled_dfs = []
     
-    for df in df_list:
-        idx = np.round(np.linspace(0, len(df.index) - 1, n_samples)).astype(int)
-        sampled_dfs.append(df.iloc[idx])
-     
-    # Merging datasets
-    df_train = pd.concat(sampled_dfs, axis=0, ignore_index=True)
+    df_merged = pd.concat(df_list, axis=0, ignore_index=True)
 
-    return df_train
+    random.seed(rand_seed)
+
+    idx = random.sample(range(0, len(df_merged.index.values)), n_samples)
+    idx.sort()
+    
+    data = df_merged.iloc[idx]
+
+    # for df in df_list:
+    #     #idx = random.sample(range(0, len(df.index.values)), n_samples)
+    #     #idx.sort()
+    #     idx = np.round(np.linspace(0, len(df.index.values) - 1, n_samples)).astype(int)
+    #     idx.sort()
+    #     sampled_dfs.append(df.iloc[idx])
+     
+    # # # Merging datasets
+    # data = pd.concat(sampled_dfs, axis=0, ignore_index=True)
+
+    return data
+
+def drop_features(df, drop_list):
+
+    new_df = df.drop(drop_list, axis=1)
+
+    return new_df
+
+def add_delta_t(df):
+
+    new_df = copy.deepcopy(df)
+
+    t_initial = df['t'].values[:-1]
+    t_final = df['t'].values[1:]
+
+    delta_t = np.append(t_final - t_initial, 0)
+
+    new_df.insert(loc=2, column='dt', value=delta_t)
+
+    return new_df
+
+def add_future_step(var_list, future_var_list, df):
+
+    new_df = copy.deepcopy(df)
+
+    for i, vars in enumerate(var_list):
+
+        t_future = df[vars].values[1:]
+        t_future = np.vstack([t_future, [0,0,0]])
+
+        t_future = pd.DataFrame(t_future, columns=future_var_list[i])
+
+        new_df = pd.concat([new_df, t_future], axis=1)
+
+        new_df.drop(new_df.tail(1).index, inplace = True)
+
+    return new_df
+
+def add_past_step(var_list, past_var_list, df):
+
+    new_df = copy.deepcopy(df)
+
+    for i, vars in enumerate(var_list):
+
+        t_past = df[vars].values[:-1]
+        t_past = np.vstack([[0,0,0], t_past])
+
+        t_past = pd.DataFrame(t_past, columns=past_var_list[i])
+
+        new_df = pd.concat([new_df, t_past], axis=1)
+
+    return new_df
 
 def pre_process(df_list):
 
@@ -44,45 +130,27 @@ def pre_process(df_list):
     future_var_list = [['sxx_t+dt','syy_t+dt','sxy_t+dt'],['exx_t+dt','eyy_t+dt','exy_t+dt']]
     past_var_list = [['sxx_t-dt','syy_t-dt','sxy_t-dt'],['exx_t-dt','eyy_t-dt','exy_t-dt']]
 
-    new_dfs_future = []
-    new_dfs_past = []
+    new_dfs = []
 
+    # Drop vars in z-direction and add delta_t
     for df in df_list:
         
-        df.drop(['szz_t', 'ezz_t'], axis=1, inplace=True)
+        new_df = drop_features(df, ['ezz_t', 'szz_t'])
+        new_dfs.append(add_delta_t(new_df))
 
-        ti = df['t'].values[:-1]
-        tf = df['t'].values[1:]
+    # Add future variables
+    for i, df in enumerate(new_dfs):
 
-        dt = np.append(tf-ti,0)
+        new_dfs[i] = add_future_step(var_list, future_var_list, df)
 
-        df.insert(loc=2, column='dt', value=dt)
+    # Add past variables
+    for i, df in enumerate(new_dfs):
 
-        for i, vars in enumerate(var_list):
+        new_dfs[i] = add_past_step(var_list, past_var_list, df)
 
-            tf = df[vars].values[1:]
-            tf = pd.DataFrame(np.vstack([tf,[0,0,0]]), columns=future_var_list[i])
+    return new_dfs
 
-            df = pd.concat([df,tf], axis=1)
-
-        df.drop(df.tail(1).index, inplace = True)
-
-        new_dfs_future.append(df)
-
-    for df in new_dfs_future:
-
-        for j, vars in enumerate(var_list):
-
-            ti = df[vars].values[:-1]
-            ti = pd.DataFrame(np.vstack([[0,0,0],ti]), columns=past_var_list[j])
-
-            df = pd.concat([df,ti], axis=1)
-        
-        new_dfs_past.append(df)
-
-    return new_dfs_past
-
-def load_data(directory):
+def load_dataframes(directory):
 
     file_list = []
 

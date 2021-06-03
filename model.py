@@ -1,69 +1,141 @@
-from functions import data_seletion, load_data, get_train_data, standardize_data
+# %%
+from sklearn.utils import shuffle
+from re import S
+from tensorflow.keras import callbacks, regularizers
+from tensorflow.python.keras import activations
+from tensorflow.python.keras.backend import bias_add
+from tensorflow.python.keras.constraints import MaxNorm
+from tensorflow.python.ops.gen_array_ops import batch_matrix_set_diag
+from functions import data_sampling, load_dataframes, select_features, standardize_data, plot_history
 from tensorflow import keras
-
+from sklearn.model_selection import train_test_split
+from sklearn.model_selection import learning_curve
+from keras.wrappers.scikit_learn import KerasRegressor
 import tensorflow as tf
 import kerastuner as kt
+import matplotlib.pyplot as plt
 
 def create_model(hp):
+    
+    # Initializing sequential model
     model = keras.Sequential()
 
-    # Tune the number of units in the first Dense layer
-    # Choose an optimal value between 32-512
-    hp_units = hp.Int('units', min_value=5, max_value=60, step=5)
+    # Defining input layer    
+    model.add(keras.layers.Input(shape=(6,)))
 
-    model.add(keras.layers.Dense(units=hp_units, input_dim=6, activation='relu'))
-    model.add(keras.layers.Dense(3))
+    # Tuning the number of hidden layers and hidden units
+    for i in range(hp.Int('num_layers', 1, 1)):
+
+        hp_units = hp.Int('units_' + str(i), min_value=5, max_value=50, step=5)
+        hp_activation = hp.Choice('activ_' + str(i), values=['relu','tanh','selu','elu'])
+        hp_weight_init = hp.Choice('init_' + str(i), values=['truncated_normal', 'variance_scaling', 'orthogonal'])
+        hp_l2 = hp.Choice('l2_reg_' + str(i),values=[1e-1, 1e-2, 1e-3, 1e-4])
+        
+        model.add(keras.layers.Dense(units=hp_units,
+                                    activation=hp_activation,
+                                    use_bias=True,
+                                    bias_initializer='ones',
+                                    kernel_initializer=hp_weight_init,
+                                    kernel_regularizer=keras.regularizers.L2(l2=hp_l2)
+                                    )
+        )
+    
+    # Defining the output layer
+    model.add(keras.layers.Dense(units=3))
 
     # Tune the learning rate for the optimizer
     # Choose an optimal value from 0.01, 0.001, or 0.0001
-    hp_learning_rate = hp.Choice('learning_rate', values=[1e-2, 1e-3, 1e-4])
+    hp_learning_rate = hp.Choice('learning_rate', values=[1e-2, 1e-3, 1e-4, 1e-5])
 
-    model.compile(optimizer=keras.optimizers.Adam(learning_rate=hp_learning_rate),
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate=0.1),
                   loss=keras.losses.MeanSquaredError(),
-                  metrics=['accuracy'])
+                  metrics=['mae', 'mse'])
 
     return model
 
+# Defining constants
+SEED = 444
+VAL_DIR = 'data/validation/'
 TRAIN_DIR = 'data/training/'
-TRAIN_SAMPLES = 500
+DATA_SAMPLES = 5000
+TEST_SIZE = 0.33
 
-df_list = load_data(TRAIN_DIR)
+# Loading data
+df_list = load_dataframes(TRAIN_DIR)
 
-df_train = data_seletion(df_list, TRAIN_SAMPLES)
+# Pre-processing data
+data = data_sampling(df_list, DATA_SAMPLES, SEED)
 
-X_train, y_train = get_train_data(df_train)
+# plt.plot(data['eyy_t+dt'], data['syy_t+dt'], 'go--', linewidth=0.15, markersize=1)
+# plt.show()
 
+X, y = select_features(data)
+
+# Shuffling dataset
+X_shuf, y_shuf = shuffle(X, y, random_state=SEED)
+
+# Splitting data into train and test datasets
+X_train, X_test, y_train, y_test = train_test_split(X_shuf, y_shuf, test_size=TEST_SIZE, random_state=SEED)
+
+# plt.plot(data['exx_t+dt'], data['sxx_t+dt'], 'go--', linewidth=0.15, markersize=1)
+# plt.show()
+# y_train['sxx_t+dt'] = y_train['sxx_t+dt'].where(y_train['sxx_t+dt']!=0, other=0)
+# y_test['sxx_t+dt'] = y_test['sxx_t+dt'].where(y_test['sxx_t+dt']!=0, other=0)
+
+# Normalizing/Standardizing training dataset
 X_train, y_train, x_scaler, y_scaler = standardize_data(X_train, y_train)
 
+# Apply previous scaling to test dataset
+X_test, y_test, _, _ = standardize_data(X_test, y_test, x_scaler, y_scaler)
+
+# Defining tuner
 tuner = kt.Hyperband(create_model,
-                     objective='val_accuracy',
-                     max_epochs=10,
+                     objective='mse',
+                     max_epochs=75,
                      factor=3,
-                     directory='my_dir',
-                     project_name='intro_to_kt')
+                     executions_per_trial=2,
+                     seed=SEED,
+                     directory='hyperband',
+                     project_name='hyperparameter_tuning')
 
-stop_early = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5)
+stop_early = tf.keras.callbacks.EarlyStopping(monitor='mse', patience=20)
 
-tuner.search(X_train, y_train, epochs=50, validation_split=0.2, callbacks=[stop_early])
+# Performing hyperparameter search
+tuner.search(X_train, y_train, epochs=100, validation_data=(X_test, y_test), shuffle=True)
 
 # Get the optimal hyperparameters
 best_hps=tuner.get_best_hyperparameters(num_trials=1)[0]
 
-print(f"""
-The hyperparameter search is complete. The optimal number of units in the first densely-connected
-layer is {best_hps.get('units')} and the optimal learning rate for the optimizer
-is {best_hps.get('learning_rate')}.
+print(f"""\nThe hyperparameter search is complete:\n
+- Optimal number of hidden layers: {best_hps.get('num_layers')}
 """)
 
-# Build the model with the optimal hyperparameters and train it on the data for 50 epochs
-model = tuner.hypermodel.build(best_hps)
-history = model.fit(X_train, y_train, epochs=50, validation_split=0.2)
+for i in range(best_hps.get('num_layers')):
+    print('\tNeurons in hidden layer ' + str(i+1) + ': ' + str(best_hps.get('units_' + str(i))))
+    print('\t\t- Activation: ' + str(best_hps.get('activ_' + str(i))))
+    print('\t\t- L2 regularization: ' + str(best_hps.get('l2_reg_' + str(i))))
 
-val_acc_per_epoch = history.history['val_accuracy']
+print(f"""
+- Optimal learning rate for the optimizer: {best_hps.get('learning_rate')}
+""")
+
+#Build the model with the optimal hyperparameters and train it on the data
+model = tuner.hypermodel.build(best_hps)
+print(model.summary())
+history = model.fit(X_train, y_train, epochs=200, validation_data=(X_test, y_test), shuffle=True)
+
+val_acc_per_epoch = history.history['val_mse']
 best_epoch = val_acc_per_epoch.index(max(val_acc_per_epoch)) + 1
-print('Best epoch: %d' % (best_epoch,))
+print('\nBest epoch: %d\n' % (best_epoch,))
+
+# %%
 
 hypermodel = tuner.hypermodel.build(best_hps)
 
 # Retrain the model
-hypermodel.fit(X_train, y_train, epochs=best_epoch, validation_split=0.2)
+history=hypermodel.fit(X_train, y_train, epochs=best_epoch, validation_data=(X_test, y_test), shuffle=True)
+
+plot_history(history)
+
+results = hypermodel.evaluate(X_test, y_test)
+print("test loss, test mae, test mse:", results)
