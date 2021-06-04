@@ -9,6 +9,7 @@ import kerastuner as kt
 import matplotlib.pyplot as plt
 import pandas as pd
 import constants
+import joblib 
 
 def create_model(hp):
     
@@ -30,8 +31,8 @@ def create_model(hp):
                                     activation=hp_activation,
                                     use_bias=True,
                                     bias_initializer='ones',
-                                    kernel_initializer=hp_weight_init,
-                                    kernel_regularizer=keras.regularizers.L2(l2=hp_l2)
+                                    kernel_initializer=hp_weight_init
+                                    #kernel_regularizer=keras.regularizers.L2(l2=hp_l2)
                                     )
         )
     
@@ -42,7 +43,7 @@ def create_model(hp):
     # Choose an optimal value from 0.01, 0.001, or 0.0001
     hp_learning_rate = hp.Choice('learning_rate', values=[1e-2, 1e-3, 1e-4, 1e-5])
 
-    model.compile(optimizer=keras.optimizers.Adam(learning_rate=hp_learning_rate),
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate=0.005),
                   loss=keras.losses.MeanSquaredError(),
                   metrics=['mae', 'mse'])
 
@@ -78,7 +79,7 @@ X_test, y_test, _, _ = standardize_data(X_test, y_test, x_scaler, y_scaler)
 
 # Defining tuner
 tuner = kt.Hyperband(create_model,
-                     objective='mse',
+                     objective='mae',
                      max_epochs=75,
                      factor=3,
                      executions_per_trial=2,
@@ -121,13 +122,16 @@ print(f"""
 model = tuner.hypermodel.build(best_hps)
 
 # Retrain the model
-history=model.fit(X_train, y_train, epochs=300, validation_data=(X_test, y_test), shuffle=True)
+history=model.fit(X_train, y_train, epochs=350, validation_data=(X_test, y_test), shuffle=True)
 
 plot_history(history)
 
-results = model.evaluate(X_test, y_test)
+# model.save('models/ann1')
+# joblib.dump([x_scaler, y_scaler], 'models/ann1/scalers.pkl')
 
-print("test loss, test mae, test mse:", results)
+#results = model.evaluate(X_test, y_test)
+
+#print("test loss, test mae, test mse:", results)
 
 # model = KerasRegressor(build_fn = lambda: create_model(best_hps))
 
