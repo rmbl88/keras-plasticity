@@ -1,19 +1,14 @@
 # %%
 from sklearn.utils import shuffle
 from re import S
-from tensorflow.keras import callbacks, regularizers
-from tensorflow.python.keras import activations
-from tensorflow.python.keras.backend import bias_add
-from tensorflow.python.keras.constraints import MaxNorm
-from tensorflow.python.ops.gen_array_ops import batch_matrix_set_diag
 from functions import data_sampling, load_dataframes, select_features, standardize_data, plot_history
 from tensorflow import keras
 from sklearn.model_selection import train_test_split
-from sklearn.model_selection import learning_curve
-from keras.wrappers.scikit_learn import KerasRegressor
 import tensorflow as tf
 import kerastuner as kt
 import matplotlib.pyplot as plt
+import pandas as pd
+import constants
 
 def create_model(hp):
     
@@ -47,40 +42,33 @@ def create_model(hp):
     # Choose an optimal value from 0.01, 0.001, or 0.0001
     hp_learning_rate = hp.Choice('learning_rate', values=[1e-2, 1e-3, 1e-4, 1e-5])
 
-    model.compile(optimizer=keras.optimizers.Adam(learning_rate=0.1),
+    model.compile(optimizer=keras.optimizers.Adam(learning_rate=hp_learning_rate),
                   loss=keras.losses.MeanSquaredError(),
                   metrics=['mae', 'mse'])
 
     return model
 
-# Defining constants
-SEED = 444
-VAL_DIR = 'data/validation/'
-TRAIN_DIR = 'data/training/'
-DATA_SAMPLES = 5000
-TEST_SIZE = 0.33
-
 # Loading data
-df_list = load_dataframes(TRAIN_DIR)
+df_list = load_dataframes(constants.TRAIN_DIR)
 
-# Pre-processing data
-data = data_sampling(df_list, DATA_SAMPLES, SEED)
+# Sampling data pass random seed for random sampling
+sampled_dfs = data_sampling(df_list, constants.DATA_SAMPLES)
 
-# plt.plot(data['eyy_t+dt'], data['syy_t+dt'], 'go--', linewidth=0.15, markersize=1)
+# for i, df in enumerate(sampled_dfs):
+#     plt.plot(df['eyy_t+dt'], df['syy_t+dt'], 'go--', linewidth=0.15, markersize=0.75)
+    
 # plt.show()
+
+# Merging training data
+data = pd.concat(sampled_dfs, axis=0, ignore_index=True)
 
 X, y = select_features(data)
 
 # Shuffling dataset
-X_shuf, y_shuf = shuffle(X, y, random_state=SEED)
+X_shuf, y_shuf = shuffle(X, y, random_state=constants.SEED)
 
 # Splitting data into train and test datasets
-X_train, X_test, y_train, y_test = train_test_split(X_shuf, y_shuf, test_size=TEST_SIZE, random_state=SEED)
-
-# plt.plot(data['exx_t+dt'], data['sxx_t+dt'], 'go--', linewidth=0.15, markersize=1)
-# plt.show()
-# y_train['sxx_t+dt'] = y_train['sxx_t+dt'].where(y_train['sxx_t+dt']!=0, other=0)
-# y_test['sxx_t+dt'] = y_test['sxx_t+dt'].where(y_test['sxx_t+dt']!=0, other=0)
+X_train, X_test, y_train, y_test = train_test_split(X_shuf, y_shuf, test_size=constants.TEST_SIZE, random_state=constants.SEED)
 
 # Normalizing/Standardizing training dataset
 X_train, y_train, x_scaler, y_scaler = standardize_data(X_train, y_train)
@@ -94,7 +82,7 @@ tuner = kt.Hyperband(create_model,
                      max_epochs=75,
                      factor=3,
                      executions_per_trial=2,
-                     seed=SEED,
+                     seed=constants.SEED,
                      directory='hyperband',
                      project_name='hyperparameter_tuning')
 
@@ -120,22 +108,31 @@ print(f"""
 """)
 
 #Build the model with the optimal hyperparameters and train it on the data
-model = tuner.hypermodel.build(best_hps)
-print(model.summary())
-history = model.fit(X_train, y_train, epochs=200, validation_data=(X_test, y_test), shuffle=True)
+# model = tuner.hypermodel.build(best_hps)
+# print(model.summary())
+# history = model.fit(X_train, y_train, epochs=200, validation_data=(X_test, y_test), shuffle=True)
 
-val_acc_per_epoch = history.history['val_mse']
-best_epoch = val_acc_per_epoch.index(max(val_acc_per_epoch)) + 1
-print('\nBest epoch: %d\n' % (best_epoch,))
+# val_acc_per_epoch = history.history['val_mse']
+# best_epoch = val_acc_per_epoch.index(max(val_acc_per_epoch)) + 1
+# print('\nBest epoch: %d\n' % (best_epoch,))
 
 # %%
 
-hypermodel = tuner.hypermodel.build(best_hps)
+model = tuner.hypermodel.build(best_hps)
 
 # Retrain the model
-history=hypermodel.fit(X_train, y_train, epochs=best_epoch, validation_data=(X_test, y_test), shuffle=True)
+history=model.fit(X_train, y_train, epochs=300, validation_data=(X_test, y_test), shuffle=True)
 
 plot_history(history)
 
-results = hypermodel.evaluate(X_test, y_test)
+results = model.evaluate(X_test, y_test)
+
 print("test loss, test mae, test mse:", results)
+
+# model = KerasRegressor(build_fn = lambda: create_model(best_hps))
+
+# # Apply previous scaling to test dataset
+# X_cv, y_cv, _, _ = standardize_data(X_shuf, y_shuf, x_scaler, y_scaler)
+
+# train_sizes, train_scores, test_scores = learning_curve(model, X_cv, y_cv, cv=5, n_jobs=-1, verbose=3, scoring='neg_mean_squared_error', shuffle=True, random_state=SEED)
+# plot_learning_curve(train_sizes, train_scores, test_scores)
