@@ -5,22 +5,34 @@ from tensorflow import keras
 from functions import load_dataframes, data_sampling, select_features, standardize_data
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
+import seaborn as sns
+from cycler import cycler
+from operator import itemgetter
 
 plt.rcParams.update(constants.PARAMS)
 
+default_cycler = (cycler(color=["#ef476f","#118ab2","#073b4c"]))
+
+plt.rc('axes', prop_cycle=default_cycler)
+
 # Loading data
-df_list = load_dataframes(constants.VAL_DIR)
+df_list, file_names = load_dataframes(constants.VAL_DIR)
 
 # Loading data scalers
-x_scaler, y_scaler = joblib.load('models/ann1/scalers.pkl')
+x_scaler, y_scaler = joblib.load('models/ann3/scalers.pkl')
 
 # Loading ANN model
-model = keras.models.load_model('models/ann1')
+model = keras.models.load_model('models/ann3')
+
+model.summary()
 
 # Sampling data pass random seed for random sampling
 sampled_dfs = data_sampling(df_list, constants.DATA_SAMPLES)
 
 for i, df in enumerate(sampled_dfs):
+
+    #noise = np.random.normal(0, 0.1, list(df.shape))
 
     X, y = select_features(df)
 
@@ -31,14 +43,33 @@ for i, df in enumerate(sampled_dfs):
 
     y_pred_inv = y_scaler.inverse_transform(y_pred)
 
-    plt.figure(i)
+    file_name = file_names[i].split('/')[-1]
+
+    if 'U1' in file_name:
+        x_var_abaqus = df['exx_t']
+        y_var_abaqus = df['sxx_t']
+        y_pred_var = y_pred_inv[:,0]
+        y_label = r'$\sigma_{xx}$ [MPa]'
+
+    elif 'U2' in file_name:
+        x_var_abaqus = df['eyy_t']
+        y_var_abaqus = df['syy_t']
+        y_pred_var = y_pred_inv[:,1]
+        y_label = r'$\sigma_{yy}$ [MPa]'
+    
+    elif 'shear' in file_name:
+        x_var_abaqus = df['exy_t']
+        y_var_abaqus = df['sxy_t']
+        y_pred_var = y_pred_inv[:,2]
+        y_label = r'$\tau_{xy}$ [MPa]'
+    
+    plt.figure(i,tight_layout='inches')
     plt.xlabel(r'$\varepsilon$')
-    plt.ylabel(r'$\sigma$ [MPa]')
-    plt.plot(df['eyy_t+dt'], df['syy_t+dt'], label='ABAQUS')
-    plt.plot(df['eyy_t+dt'], y_pred_inv[:,1], label='ANN')
+    plt.ylabel(y_label)
+    plt.plot(x_var_abaqus, y_var_abaqus, label='ABAQUS')
+    plt.plot(x_var_abaqus, y_pred_var, '--', label='ANN')
+    plt.legend(loc='lower center', bbox_to_anchor=(0.47,-0.25), ncol=2)
 
     results = model.evaluate(X_val,y_val)
     
 plt.show()
-
-print('hey')

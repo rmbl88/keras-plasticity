@@ -5,27 +5,45 @@ import numpy as np
 import copy
 import random
 import matplotlib.pyplot as plt
+from tensorflow.python.keras.backend import print_tensor
 import constants
+import keras.backend as kb
+import tensorflow as tf
+import keras
 
-def plot_history(history):
-    hist = pd.DataFrame(history.history)
-    hist['epoch'] = history.epoch
+def custom_loss(y_true, y_pred):
+    
+    elem_area = 1.0
+    global_f = y_true[0,3:]
+
+    #loss_1 = kb.mean(kb.square(kb.sum(y_pred) * elem_area - global_f)) 
+    loss_2 = keras.losses.MSE(y_true[:,:3], y_pred)
+
+    return loss_2
+
+def plot_history(history, is_custom=None):
+    
+    if is_custom == None:
+        hist = pd.DataFrame(history.history)
+        hist['epoch'] = history.epoch
+    else:
+        hist = history
 
     plt.rcParams.update(constants.PARAMS)
     
     plt.figure()
     plt.xlabel('Epoch')
     plt.ylabel('Mean Absolute Error [MPa]')
-    plt.plot(hist['epoch'], hist['mae'], label='Train Error', color='#4b7394')
-    plt.plot(hist['epoch'], hist['val_mae'], label = 'Test Error', color='#6db1e2')
+    plt.plot(hist['epoch'], hist['loss'], label='Train Error', color='#4b7394')
+    plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
     plt.legend()
     
-    plt.figure()
-    plt.xlabel('Epoch')
-    plt.ylabel(r'Mean Square Error [MPa\textsuperscript{2}]')
-    plt.plot(hist['epoch'], hist['mse'], label='Train Error', color='#4b7394')
-    plt.plot(hist['epoch'], hist['val_mse'], label = 'Test Error', color='#6db1e2')
-    plt.legend()
+    # plt.figure()
+    # plt.xlabel('Epoch')
+    # plt.ylabel(r'Mean Square Error [MPa\textsuperscript{2}]')
+    # plt.plot(hist['epoch'], hist['mse'], label='Train Error', color='#4b7394')
+    # plt.plot(hist['epoch'], hist['val_mse'], label = 'Test Error', color='#6db1e2')
+    # plt.legend()
 
     plt.show()
 
@@ -45,25 +63,33 @@ def standardize_data(X, y, scaler_x = None, scaler_y = None):
 
     return X, y, scaler_x, scaler_y
 
+def standardize_force(force, scaler = None):
+
+    if scaler == None:
+        scaler = preprocessing.MaxAbsScaler()
+        scaler.fit(force)
+
+    f = scaler.transform(force)
+
+    return f, scaler
+
 def select_features(df):
 
-    X = df[['exx_t-dt','eyy_t-dt','exy_t-dt', 'exx_t', 'eyy_t', 'exy_t']]
+    X = df[['fxx_t-dt','fyy_t-dt', 'fxy_t-dt', 'exx_t-dt','eyy_t-dt','exy_t-dt', 'exx_t', 'eyy_t', 'exy_t']]
     y = df[['sxx_t','syy_t','sxy_t']]
+
+    return X, y
+
+def select_features_multi(df):
+
+    X = df[['exx_t-dt','eyy_t-dt','exy_t-dt', 'exx_t', 'eyy_t', 'exy_t']]
+    y = df[['sxx_t','syy_t','sxy_t', 'fxx_t', 'fyy_t', 'fxy_t']]
 
     return X, y
 
 def data_sampling(df_list, n_samples, rand_seed=None):
 
     sampled_dfs = []
-    
-    # df_merged = pd.concat(df_list, axis=0, ignore_index=True)
-
-    # random.seed(rand_seed)
-
-    # idx = random.sample(range(0, len(df_merged.index.values)), n_samples)
-    # idx.sort()
-    
-    # data = df_merged.iloc[idx]
 
     for df in df_list:
         
@@ -77,6 +103,8 @@ def data_sampling(df_list, n_samples, rand_seed=None):
         
         idx.sort()
         sampled_dfs.append(df.iloc[idx])
+
+        sampled_dfs = [df.reset_index(drop=True) for df in sampled_dfs]
 
     return sampled_dfs
 
@@ -105,14 +133,17 @@ def add_future_step(var_list, future_var_list, df):
 
     for i, vars in enumerate(var_list):
 
-        t_future = df[vars].values[1:]
-        t_future = np.vstack([t_future, [0,0,0]])
+        if 'fxx' or 'fyy' or 'fxy' in vars:
+            continue
+        else:
+            t_future = df[vars].values[1:]
+            t_future = np.vstack([t_future, [0,0,0]])
 
-        t_future = pd.DataFrame(t_future, columns=future_var_list[i])
+            t_future = pd.DataFrame(t_future, columns=future_var_list[i])
 
-        new_df = pd.concat([new_df, t_future], axis=1)
+            new_df = pd.concat([new_df, t_future], axis=1)
 
-        new_df.drop(new_df.tail(1).index, inplace = True)
+            new_df.drop(new_df.tail(1).index, inplace = True)
 
     return new_df
 
@@ -133,47 +164,50 @@ def add_past_step(var_list, past_var_list, df):
 
 def pre_process(df_list):
 
-    var_list = [['sxx_t','syy_t','sxy_t'],['exx_t','eyy_t','exy_t']]
-    future_var_list = [['sxx_t+dt','syy_t+dt','sxy_t+dt'],['exx_t+dt','eyy_t+dt','exy_t+dt']]
-    past_var_list = [['sxx_t-dt','syy_t-dt','sxy_t-dt'],['exx_t-dt','eyy_t-dt','exy_t-dt']]
+    var_list = [['sxx_t','syy_t','sxy_t'],['exx_t','eyy_t','exy_t'],['fxx_t','fyy_t','fxy_t']]
+    #future_var_list = [['sxx_t+dt','syy_t+dt','sxy_t+dt'],['exx_t+dt','eyy_t+dt','exy_t+dt']]
+    past_var_list = [['sxx_t-dt','syy_t-dt','sxy_t-dt'],['exx_t-dt','eyy_t-dt','exy_t-dt'],['fxx_t-dt','fyy_t-dt','fxy_t-dt']]
 
     new_dfs = []
 
     # Drop vars in z-direction and add delta_t
     for df in df_list:
         
-        new_df = drop_features(df, ['ezz_t', 'szz_t'])
-        new_dfs.append(add_delta_t(new_df))
+        new_df = drop_features(df, ['ezz_t', 'szz_t', 'fzz_t'])
+        #new_dfs.append(add_delta_t(new_df))
+        new_dfs.append(new_df)
 
-    # Add future variables
-    for i, df in enumerate(new_dfs):
+    # # Add future variables
+    # for i, df in enumerate(new_dfs):
 
-        new_dfs[i] = add_future_step(var_list, future_var_list, df)
+    #     new_dfs[i] = add_future_step(var_list, future_var_list, df)
 
     # Add past variables
     for i, df in enumerate(new_dfs):
 
         new_dfs[i] = add_past_step(var_list, past_var_list, df)
+        print(str(i))
 
     return new_dfs
 
 def load_dataframes(directory):
 
     file_list = []
+    df_list = []
 
     for r, d, f in os.walk(directory):
         for file in f:
             if 'train' and '.csv' in file:
                 file_list.append(directory + file)
 
-    headers = ['id', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t']
+    headers = ['id', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
 
     # Loading training datasets
     df_list = [pd.read_csv(file, names=headers, sep=',') for file in file_list]
 
     df_list = pre_process(df_list)
 
-    return df_list
+    return df_list, file_list
 
 
 # def plot_learning_curve(train_sizes, train_scores, test_scores):
