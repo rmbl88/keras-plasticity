@@ -1,3 +1,5 @@
+from itertools import permutations, combinations
+from scipy.sparse import coo
 from sklearn import preprocessing
 import pandas as pd
 import os
@@ -5,21 +7,190 @@ import numpy as np
 import copy
 import random
 import matplotlib.pyplot as plt
-from tensorflow.python.keras.backend import print_tensor
+from tensorflow.python.keras.backend import dtype, global_learning_phase_is_set, print_tensor
+from tensorflow.python.ops.gen_batch_ops import batch
+from tensorflow.python.ops.variables import global_variables
+from tensorflow.python.types import internal
 import constants
 import keras.backend as kb
 import tensorflow as tf
 import keras
+import copy
+from tensorflow.python.ops import gen_array_ops
+from constants import ELEM_AREA, ELEM_THICK, LENGTH
+import math
+import torch
 
-def custom_loss(y_true, y_pred):
+def custom_loss(y_pred, y_true):
     
-    elem_area = 1.0
-    global_f = y_true[0,3:]
+    # # Getting batch size
+    # batch_size = y_true.shape[0]
 
-    #loss_1 = kb.mean(kb.square(kb.sum(y_pred) * elem_area - global_f)) 
-    loss_2 = keras.losses.MSE(y_true[:,:3], y_pred)
+    # # Extracting global force and centroid coordinates from dummy labels array
+    # f = torch.reshape(y_true[:,3:5][::9,:],[-1,1,2])
+    
+    # centroids = y_true[:,-2:]
+    
+    # cent_x = centroids[:,0]
+    
+    # cent_y = centroids[:,1]
 
-    return loss_2
+    # # Defining nodal coordinates
+    # coords = list(np.arange(0,LENGTH + 1,1))
+    # nodes =  torch.tensor(np.vstack(map(np.ravel, np.meshgrid(coords, coords))).T, requires_grad=True)
+    
+    # n_nodes = nodes.shape[0]
+    
+    # x = nodes[:,0]
+   
+    # y = nodes[:,1]
+
+ 
+    # # Defining the virtual displacement fields
+    # virtual_disp = {
+    #     1: torch.stack([x/LENGTH, torch.zeros(n_nodes)], axis=1),
+    #     2: torch.stack([torch.zeros(n_nodes), y * (torch.square(x) - x * LENGTH) / (LENGTH ** 3)], axis=1),
+    #     3: torch.stack([torch.zeros(n_nodes), torch.sin(y*math.pi/LENGTH) * torch.sin(x*math.pi/LENGTH)], axis=1),
+    #     4: torch.stack([torch.sin(y*math.pi/LENGTH) * torch.sin(x*math.pi/LENGTH),torch.zeros(n_nodes)], axis=1),
+    #     5: torch.stack([x * y * (x - LENGTH) / LENGTH ** 3,torch.zeros(n_nodes)], axis=1),
+    #     6: torch.stack([torch.sin(y * math.pi / LENGTH) * (2 * x * LENGTH - 3 * x ** 2) / LENGTH ** 3,torch.zeros(n_nodes)], axis=1)
+    # }
+
+    # # Defining virtual strain fields
+    # ones = torch.ones(size=(batch_size,), requires_grad=True)
+    # zeros = torch.zeros(size=(batch_size,), requires_grad=True)
+
+    # virtual_strain = {
+    #     1:torch.stack([ones/LENGTH, zeros, zeros], 1),
+    #     2:torch.stack([zeros, (torch.square(cent_x) - cent_x * LENGTH) / LENGTH ** 3, zeros], 1),
+    #     3:torch.stack([zeros, (-math.pi/LENGTH) * torch.cos(cent_y*math.pi/LENGTH) * torch.sin(cent_x*math.pi/LENGTH), zeros], axis=1),
+    #     4:torch.stack([zeros, (-math.pi/LENGTH) * torch.sin(cent_y*math.pi/LENGTH) * torch.cos(cent_x*math.pi/LENGTH), zeros], axis=1),
+    #     5:torch.stack([(2 * cent_x * cent_y - LENGTH) / LENGTH ** 3, zeros, zeros], 1),
+    #     6:torch.stack([torch.sin(cent_y * math.pi / LENGTH) * (2 * cent_x * LENGTH - 3 * cent_x ** 2) / LENGTH ** 3, zeros, zeros], 1)
+    # }
+   
+    # # Getting total number of virtual fields
+    # total_vfs = list(virtual_disp.keys())
+
+    # # Defining the internal virtual work
+    # int_work = dict.fromkeys(total_vfs)
+
+    # for vf, strain in virtual_strain.items():
+    #     int_work[vf] = torch.sum(torch.mul(y_pred, strain) * ELEM_AREA, 1, keepdims=True)
+    #     int_work[vf] = torch.reshape(torch.sum(torch.reshape(-ELEM_THICK * int_work[vf], [batch_size//9, 9, 1]), axis=1), [batch_size//9, 1])
+    
+    # # Defining the external virtual work
+    # ext_work = dict.fromkeys(total_vfs)
+
+    # for vf, disp in virtual_disp.items():
+
+    #     ext_work[vf] = f * disp[:]
+    #     ext_work[vf] = torch.sum(ext_work[vf], 1, keepdims=True)
+    #     ext_work[vf] = torch.sum(ext_work[vf], axis=-1)
+    
+    # loss = torch.mean(torch.tensor([torch.mean(torch.square(torch.sum(int_work[vf] + ext_work[vf], axis=1))) for vf in total_vfs],  requires_grad=True))
+    
+    return torch.mean(torch.mean(torch.square(y_pred+y_true),1))
+
+
+
+# @tf.function
+# def custom_loss(y_true, y_pred):
+    
+#     Getting batch size
+#     batch_size = y_true.shape[0]
+
+#     Extracting global force and centroid coordinates from dummy labels array
+#     f = tf.reshape(y_true[:,3:5][::9,:],[-1,1,2])
+#     centroids = y_true[:,-2:]
+#     cent_x = centroids[:,0]
+#     cent_y = centroids[:,1]
+    
+#     Defining nodal coordinates
+#     coords = list(np.arange(0,LENGTH + 1,1))
+#     nodes =  tf.convert_to_tensor(np.vstack(map(np.ravel, np.meshgrid(coords, coords))).T, dtype='float32')
+#     n_nodes = nodes.shape[0]
+#     x = nodes[:,0]
+#     y = nodes[:,1]
+    
+#     Defining the virtual displacement fields
+#     virtual_disp = {
+#         1: tf.stack([x/LENGTH, tf.zeros(n_nodes)], axis=1),
+#         2: tf.stack([tf.zeros(n_nodes), y * (tf.square(x) - x * LENGTH) / (LENGTH ** 3)], axis=1),
+#         3: tf.stack([tf.zeros(n_nodes), tf.sin(y*math.pi/LENGTH) * tf.sin(x*math.pi/LENGTH)], axis=1),
+#         4: tf.stack([tf.sin(y*math.pi/LENGTH) * tf.sin(x*math.pi/LENGTH),tf.zeros(n_nodes)], axis=1),
+#         5: tf.stack([x * y * (x - LENGTH) / LENGTH ** 3,tf.zeros(n_nodes)], axis=1),
+#         6: tf.stack([tf.sin(y * math.pi / LENGTH) * (2 * x * LENGTH - 3 * x ** 2) / LENGTH ** 3,tf.zeros(n_nodes)], axis=1)
+#     }
+    
+#     Defining virtual strain fields
+#     ones = tf.ones(shape=(batch_size,))
+#     zeros = tf.zeros(shape=(batch_size,))
+
+#     virtual_strain = {
+#         1:tf.stack([ones/LENGTH, zeros, zeros], 1),
+#         2:tf.stack([zeros, (tf.square(cent_x) - cent_x * LENGTH) / LENGTH ** 3, zeros], 1),
+#         3:tf.stack([zeros, (-math.pi/LENGTH) * tf.cos(cent_y*math.pi/LENGTH) * tf.sin(cent_x*math.pi/LENGTH), zeros], axis=1),
+#         4:tf.stack([zeros, (-math.pi/LENGTH) * tf.sin(cent_y*math.pi/LENGTH) * tf.cos(cent_x*math.pi/LENGTH), zeros], axis=1),
+#         5:tf.stack([(2 * cent_x * cent_y - LENGTH) / LENGTH ** 3, zeros, zeros], 1),
+#         6:tf.stack([tf.sin(cent_y * math.pi / LENGTH) * (2 * cent_x * LENGTH - 3 * cent_x ** 2) / LENGTH ** 3, zeros, zeros], 1)
+#     }
+    
+#     Getting total number of virtual fields
+#     total_vfs = list(virtual_disp.keys())
+
+#     Defining the internal virtual work
+#     int_work = dict.fromkeys(total_vfs)
+
+#     for vf, strain in virtual_strain.items():
+#         int_work[vf] = tf.reduce_sum(tf.multiply(y_pred, strain) * ELEM_AREA, 1, keepdims=True)
+#         int_work[vf] = tf.reshape(tf.reduce_sum(tf.reshape(-ELEM_THICK * int_work[vf], [batch_size//9, 9, 1]), axis=1), [batch_size//9, 1])
+    
+#     Defining the external virtual work
+#     ext_work = dict.fromkeys(total_vfs)
+
+#     for vf, disp in virtual_disp.items():
+
+#         ext_work[vf] = f * disp[:]
+#         ext_work[vf] = tf.reduce_sum(ext_work[vf], 1, keepdims=True)
+#         ext_work[vf] = tf.reduce_sum(ext_work[vf], axis=1)
+    
+#     loss = tf.reduce_mean([tf.reduce_mean(tf.square(tf.reduce_sum(int_work[vf] + ext_work[vf], axis=1))) for vf in total_vfs])
+    
+    
+#     tf.reduce_sum( tf.multiply( a, b ), 1, keep_dims=True )
+#     A = tf.reshape(A, [81//9, 9, 2])
+#     A = tf.reduce_sum(A, axis=1)
+#     A = tf.reshape(A, [81//9, 2])
+
+#     f = y_true[:,3:5]
+#     coord_vector = y_true[:,-2:]
+
+#     x = coord_vector[:,0]
+#     y = coord_vector[:,1]
+#     zeros = tf.zeros(shape=(x.shape[0],))
+#     ones = tf.ones(shape=(x.shape[0],))
+
+#     coords = list(np.arange(0,LENGTH,1))
+
+#     nodes_x = [tf.ones(shape=x.shape[0],) * coord for coord in list(np.arange(0,LENGTH + 1,1))]
+#     nodes_y = [tf.ones(shape=x.shape[0],) * coord for coord in list(np.arange(0,LENGTH + 1,1))]
+
+#     nodes = list(zip(nodes_x,nodes_y))
+
+#     u = [[tf.stack([node_x,zeros],1), tf.stack([zeros,node_y],1)] for node_x, node_y in nodes]
+#     e = [tf.stack([ones, zeros,zeros], 1), tf.stack([zeros, ones, zeros], 1)]
+
+#     internal_work = [-ELEM_THICK * tf.multiply(y_pred, e_star) * ELEM_AREA for e_star in e]
+#     internal_work = [tf.reshape(tf.reduce_sum(tf.reshape(work, [x.shape[0]//9, 9, 3]), axis=1), [x.shape[0]//9, 3]) for work in internal_work]
+#     external_work = [[tf.multiply(f, vf) for vf in u_star] for u_star in u]
+#     external_work = [tf.reduce_sum([work[i] for work in external_work], axis=0) for i in range(f.shape[1])]
+#     external_work = [tf.reshape(tf.reduce_sum(tf.reshape(work, [x.shape[0]//9, 9, 2]), axis=1), [x.shape[0]//9, 2]) for work in external_work]
+
+
+#     loss = tf.reduce_mean([tf.reduce_mean(tf.square(internal_work[i][:,:-1] + external_work[i])) for i in range(len(internal_work))])
+ 
+#    return loss
 
 def plot_history(history, is_custom=None):
     
@@ -35,7 +206,7 @@ def plot_history(history, is_custom=None):
     plt.xlabel('Epoch')
     plt.ylabel('Mean Absolute Error [MPa]')
     plt.plot(hist['epoch'], hist['loss'], label='Train Error', color='#4b7394')
-    plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
+    #plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
     plt.legend()
     
     # plt.figure()
@@ -63,19 +234,22 @@ def standardize_data(X, y, scaler_x = None, scaler_y = None):
 
     return X, y, scaler_x, scaler_y
 
-def standardize_force(force, scaler = None):
+def standardize_(var, scaler = None):
+
+    # # Adding dummy column to force dataframe (not needed if there was force along zz)
+    # force.insert(2, 'dummy_col', 0.0)
 
     if scaler == None:
         scaler = preprocessing.MaxAbsScaler()
-        scaler.fit(force)
+        scaler.fit(var)
 
-    f = scaler.transform(force)
+    v = scaler.transform(var)
 
-    return f, scaler
+    return v, scaler
 
 def select_features(df):
 
-    X = df[['fxx_t-dt','fyy_t-dt', 'fxy_t-dt', 'exx_t-dt','eyy_t-dt','exy_t-dt', 'exx_t', 'eyy_t', 'exy_t']]
+    X = df[['fxx_t-dt','fyy_t-dt', 'exx_t-dt','eyy_t-dt','exy_t-dt', 'exx_t', 'eyy_t', 'exy_t']]
     y = df[['sxx_t','syy_t','sxy_t']]
 
     return X, y
@@ -83,9 +257,11 @@ def select_features(df):
 def select_features_multi(df):
 
     X = df[['exx_t-dt','eyy_t-dt','exy_t-dt', 'exx_t', 'eyy_t', 'exy_t']]
-    y = df[['sxx_t','syy_t','sxy_t', 'fxx_t', 'fyy_t', 'fxy_t']]
+    y = df[['sxx_t','syy_t','sxy_t']]
+    f = df[['fxx_t', 'fyy_t', 'fxy_t']]
+    coord = df[['id', 'x', 'y']]
 
-    return X, y
+    return X, y, f, coord
 
 def data_sampling(df_list, n_samples, rand_seed=None):
 
@@ -137,7 +313,7 @@ def add_future_step(var_list, future_var_list, df):
             continue
         else:
             t_future = df[vars].values[1:]
-            t_future = np.vstack([t_future, [0,0,0]])
+            t_future = np.vstack([t_future, [0] * len(vars)])
 
             t_future = pd.DataFrame(t_future, columns=future_var_list[i])
 
@@ -154,7 +330,7 @@ def add_past_step(var_list, past_var_list, df):
     for i, vars in enumerate(var_list):
 
         t_past = df[vars].values[:-1]
-        t_past = np.vstack([[0,0,0], t_past])
+        t_past = np.vstack([[0] * len(vars), t_past])
 
         t_past = pd.DataFrame(t_past, columns=past_var_list[i])
 
@@ -197,10 +373,12 @@ def load_dataframes(directory):
 
     for r, d, f in os.walk(directory):
         for file in f:
-            if 'train' and '.csv' in file:
+            if '.csv' in file:
                 file_list.append(directory + file)
 
-    headers = ['id', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
+    headers = ['tag','id', 'x', 'y', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
+
+    #headers =  ['id', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
 
     # Loading training datasets
     df_list = [pd.read_csv(file, names=headers, sep=',') for file in file_list]

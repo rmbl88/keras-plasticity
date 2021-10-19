@@ -9,8 +9,18 @@ import numpy as np
 import seaborn as sns
 from cycler import cycler
 from operator import itemgetter
+import matplotlib.animation as animation
+
+def update(num, x_1, y_1, x_2, y_2, line_1, line_2):
+    line_1.set_data(x_1[:num], y_1[:num])
+    line_2.set_data(x_2[:num], y_2[:num])
+    #line.axes.axis([0, 10, 0, 1])
+    return line_1, line_2
 
 plt.rcParams.update(constants.PARAMS)
+
+my_writer=animation.PillowWriter(fps=30, codec='libx264', bitrate=2)
+#my_writer = animation.FFMpegWriter(fps=30)
 
 default_cycler = (cycler(color=["#ef476f","#118ab2","#073b4c"]))
 
@@ -20,10 +30,10 @@ plt.rc('axes', prop_cycle=default_cycler)
 df_list, file_names = load_dataframes(constants.VAL_DIR)
 
 # Loading data scalers
-x_scaler, y_scaler = joblib.load('models/ann3/scalers.pkl')
+x_scaler, y_scaler = joblib.load('models/ann1/scalers.pkl')
 
 # Loading ANN model
-model = keras.models.load_model('models/ann3')
+model = keras.models.load_model('models/ann1')
 
 model.summary()
 
@@ -63,13 +73,26 @@ for i, df in enumerate(sampled_dfs):
         y_pred_var = y_pred_inv[:,2]
         y_label = r'$\tau_{xy}$ [MPa]'
     
-    plt.figure(i,tight_layout='inches')
-    plt.xlabel(r'$\varepsilon$')
-    plt.ylabel(y_label)
-    plt.plot(x_var_abaqus, y_var_abaqus, label='ABAQUS')
-    plt.plot(x_var_abaqus, y_pred_var, '--', label='ANN')
+    # plt.figure(i,tight_layout='inches')
+    # plt.xlabel(r'$\varepsilon$')
+    # plt.ylabel(y_label)
+    # plt.plot(x_var_abaqus, y_var_abaqus, label='ABAQUS')
+    # plt.plot(x_var_abaqus, y_pred_var, '--', label='ANN')
+    # plt.legend(loc='lower center', bbox_to_anchor=(0.47,-0.25), ncol=2)
+
+    fig = plt.figure(i,tight_layout='inches',figsize=(7,6)) 
+    ax = fig.add_subplot(111)
+    
+    line_1, = ax.plot(x_var_abaqus, y_var_abaqus, label='ABAQUS')
+    line_2, = ax.plot(x_var_abaqus, y_pred_var, '--', label='ANN')
+    ax.set_xlabel(r'$\varepsilon$')
+    ax.set_ylabel(y_label)
     plt.legend(loc='lower center', bbox_to_anchor=(0.47,-0.25), ncol=2)
 
-    results = model.evaluate(X_val,y_val)
+    #results = model.evaluate(X_val,y_val)
+
+    ani = animation.FuncAnimation(fig, update, len(x_var_abaqus), fargs=[x_var_abaqus, y_var_abaqus, x_var_abaqus, y_pred_var, line_1, line_2], interval=30, blit=False)
+    ani.save('prints/'+str(i)+'.gif', writer=my_writer, dpi=300)
+    #plt.show()
     
-plt.show()
+#plt.show()

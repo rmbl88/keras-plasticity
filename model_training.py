@@ -23,7 +23,7 @@ def create_model(hp):
     model = keras.Sequential()
 
     # Defining input layer    
-    model.add(keras.layers.Input(shape=(9,)))
+    model.add(keras.layers.Input(shape=(8,)))
 
     # Tuning the number of hidden layers and hidden units
     for i in range(hp.Int('num_layers', 1, 5)):
@@ -52,6 +52,7 @@ def create_model(hp):
     model.compile(optimizer=keras.optimizers.Adam(learning_rate=0.005),
                   loss=keras.losses.MeanSquaredError(),
                   metrics=['mae', 'mse'])
+                  #run_eagerly=True)
 
     return model
 
@@ -72,9 +73,7 @@ sampled_dfs = data_sampling(df_list, constants.DATA_SAMPLES)
 # Merging training data
 data = pd.concat(sampled_dfs, axis=0, ignore_index=True)
 
-noise = np.random.normal(0, 0.1, list(data.shape))
-
-X, y = select_features(data + noise)
+X, y = select_features(data)
 
 # Shuffling dataset
 X_shuf, y_shuf = shuffle(X, y, random_state=constants.SEED)
@@ -136,7 +135,7 @@ model = tuner.hypermodel.build(best_hps)
 model.summary()
 
 # Retrain the model
-history=model.fit(X_train, y_train, epochs=10, validation_data=(X_test, y_test), shuffle=True)
+history=model.fit(X_train, y_train, epochs=100, validation_data=(X_test, y_test), shuffle=True)
 
 plot_history(history)
 
