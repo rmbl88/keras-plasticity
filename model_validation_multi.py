@@ -10,28 +10,43 @@ import numpy as np
 import seaborn as sns
 from cycler import cycler
 from operator import itemgetter
+import torch.nn.functional as F
 
 import torch
 from torch import nn
 
 class NeuralNetwork(nn.Module):
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
         super(NeuralNetwork, self).__init__()
         self.input_size = input_size
         self.hidden_size  = hidden_size
-        self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
-        self.relu1 = torch.nn.RReLU()
-        self.fc2 = torch.nn.Linear(self.hidden_size,self.hidden_size)
-        self.relu2 = torch.nn.RReLU()
-        self.fc3 = torch.nn.Linear(self.hidden_size, 3)
+        self.n_hidden_layers = n_hidden_layers
+        self.output_size = output_size
+
+        self.layers = nn.ModuleList()
+        self.layers.append(torch.nn.Linear(self.input_size, self.hidden_size))
+
+        for i in range(self.n_hidden_layers):
+            self.layers.append(nn.Linear(self.hidden_size, self.hidden_size))
+
+        self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size))
+
+        # self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
+        # self.relu1 = torch.nn.RReLU()
+        # self.fc2 = torch.nn.Linear(self.hidden_size,self.hidden_size)
+        # self.relu2 = torch.nn.RReLU()
+        # self.fc3 = torch.nn.Linear(self.hidden_size, 3)
 
     def forward(self, x):
-        hidden1 = self.fc1(x)
-        relu1 = self.relu1(hidden1)
-        hidden2 = self.fc2(relu1)
-        relu2 = self.relu2(hidden2)
+
+        for layer in self.layers[:-1]:
+            x = F.rrelu(layer(x))
+        # hidden1 = self.fc1(x)
+        # relu1 = self.relu1(hidden1)
+        # hidden2 = self.fc2(relu1)
+        # relu2 = self.relu2(hidden2)
         
-        return self.fc3(relu2)
+        return self.layers[-1](x)
 
 plt.rcParams.update(constants.PARAMS)
 
@@ -47,7 +62,7 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #x_scaler, y_scaler = joblib.load('models/ann3/scalers.pkl')
 
 # Loading ANN model
-model = NeuralNetwork(6,10)
+model = NeuralNetwork(6, 3, 10)
 model.load_state_dict(torch.load('models/ann_torch/model_1'))
 model.eval()
 #model = keras.models.load_model('models/ann3', compile=False)
