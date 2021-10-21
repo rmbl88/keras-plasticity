@@ -35,6 +35,7 @@ virtual_disp = {
             7: [np.square(x)*(LENGTH-x)*np.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_],
             8: [zeros_, (LENGTH**3-x**3)*np.sin(math.pi*y/LENGTH)/LENGTH**3],
             9: [(x*LENGTH**2-x**3)*np.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_],
+            10: [(x*y/LENGTH**2), zeros_]
             # 9: [zeros_, (LENGTH ** 3 - x ** 3) * np.sin(y * math.pi / LENGTH) / (LENGTH ** 3)],
             # 10: [(x * LENGTH **2 - x ** 3) * np.sin(math.pi * y / LENGTH) / (LENGTH ** 3), zeros_]
             #11: [zeros_, x * y * (y - LENGTH) / LENGTH ** 3]

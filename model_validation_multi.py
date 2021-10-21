@@ -31,6 +31,8 @@ class NeuralNetwork(nn.Module):
 
         self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size))
 
+        self.activation = torch.nn.PReLU(self.hidden_size)
+        
         # self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
         # self.relu1 = torch.nn.RReLU()
         # self.fc2 = torch.nn.Linear(self.hidden_size,self.hidden_size)
@@ -39,13 +41,13 @@ class NeuralNetwork(nn.Module):
 
     def forward(self, x):
 
-        for layer in self.layers[:-1]:
-            x = F.rrelu(layer(x))
+        x = self.layers[0](x)
+        for layer in self.layers[1:-1]:
+            x =self.activation(layer(x))
         # hidden1 = self.fc1(x)
         # relu1 = self.relu1(hidden1)
         # hidden2 = self.fc2(relu1)
         # relu2 = self.relu2(hidden2)
-        
         return self.layers[-1](x)
 
 plt.rcParams.update(constants.PARAMS)
@@ -62,7 +64,7 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #x_scaler, y_scaler = joblib.load('models/ann3/scalers.pkl')
 
 # Loading ANN model
-model = NeuralNetwork(6, 3, 10)
+model = NeuralNetwork(6, 3, 32, 1)
 model.load_state_dict(torch.load('models/ann_torch/model_1'))
 model.eval()
 #model = keras.models.load_model('models/ann3', compile=False)
@@ -104,6 +106,7 @@ with torch.no_grad():
         
         fig , (ax1, ax2, ax3) = plt.subplots(1,3)
         fig.suptitle(r''+ df['tag'][0].replace('_','\_') + ': element \#' + str(df['id'][0]),fontsize=14)
+    
         ax1.plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS')
         ax1.plot(ex_var_abaqus, sx_pred_var, label='ANN')
         ax1.set(xlabel=r'$\varepsilon$', ylabel=r'$\sigma_{xx}$ [MPa]')
