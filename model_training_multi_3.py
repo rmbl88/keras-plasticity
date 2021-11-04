@@ -418,8 +418,3 @@ history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), 
 plot_history(history, True)
 
 torch.save(model.state_dict(), 'models/ann_torch/model_1')
-
-
-# for p in model.parameters():
-#     if p.grad is not None:
-#         print(p.grad.data)
