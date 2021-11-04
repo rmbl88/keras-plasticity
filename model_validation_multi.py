@@ -73,7 +73,8 @@ model.eval()
 sampled_dfs = data_sampling(df_list, constants.DATA_SAMPLES)
 
 mean_squared_error = MeanSquaredError()
-print("----------------------\nMSE\n----------------------\nSxx\tSyy\tSxy\n")
+
+print("----------------------\nMSE\n----------------------\n\tSxx\tSyy\tSxy\n")
 with torch.no_grad():
     for i, df in enumerate(sampled_dfs):
 
