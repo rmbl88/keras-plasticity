@@ -1,6 +1,7 @@
 # ---------------------------------
 #    Library and function imports
 # ---------------------------------
+import re
 from constants import *
 from functions import custom_loss, data_sampling, load_dataframes, select_features_multi, standardize_data, plot_history, standardize_
 
@@ -48,7 +49,7 @@ class DataGenerator(tf.keras.utils.Sequence):
     def on_epoch_end(self):
         'Updates indexes after each epoch'
         self.indexes = np.arange(0, len(self.list_IDs), self.batch_size)
-        if self.shuffle == True and batch_size == 9:
+        if self.shuffle == True:
             np.random.shuffle(self.indexes)
 
     def standardize(self):
@@ -79,30 +80,24 @@ class NeuralNetwork(nn.Module):
         self.output_size = output_size
 
         self.layers = nn.ModuleList()
-        self.layers.append(torch.nn.Linear(self.input_size, self.hidden_size))
 
         for i in range(self.n_hidden_layers):
-            self.layers.append(nn.Linear(self.hidden_size, self.hidden_size))
+            if i == 0:
+                in_ = self.input_size
+            else:
+                in_ = self.hidden_size
 
-        self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size))
+            self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
+
+        self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
 
         self.activation = torch.nn.PReLU(self.hidden_size)
-        
-        # self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
-        # self.relu1 = torch.nn.RReLU()
-        # self.fc2 = torch.nn.Linear(self.hidden_size,self.hidden_size)
-        # self.relu2 = torch.nn.RReLU()
-        # self.fc3 = torch.nn.Linear(self.hidden_size, 3)
 
     def forward(self, x):
 
-        x = self.layers[0](x)
-        for layer in self.layers[1:-1]:
-            x =self.activation(layer(x))
-        # hidden1 = self.fc1(x)
-        # relu1 = self.relu1(hidden1)
-        # hidden2 = self.fc2(relu1)
-        # relu2 = self.relu2(hidden2)
+        for layer in self.layers[:-1]:
+            x = self.activation(layer(x))
+            
         return self.layers[-1](x)
 
 # -------------------------------
@@ -118,9 +113,10 @@ def init_weights(m):
     m : NeuralNetwork object
         Neural network model, instance of NeuralNework class
     '''
-    if isinstance(m, nn.Linear):
+    if isinstance(m, nn.Linear) and (m.bias != None):
         torch.nn.init.kaiming_uniform_(m.weight)
-        m.bias.data.fill_(0.01)
+        #m.bias.data.fill_(0.001)
+        torch.nn.init.ones_(m.bias)
 
 def train_loop(dataloader, model, loss_fn, optimizer, epoch):
     '''
@@ -137,7 +133,7 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch):
         # Converting to pytorch tensors
         X_train = torch.tensor(X_train, dtype=torch.float32)
         y_train = torch.tensor(y_train, dtype=torch.float32)
-        f_train = torch.tensor(f_train, dtype=torch.float32)
+        f_train = torch.tensor(f_train, dtype=torch.float32) + 0.0
         coord = torch.tensor(coord, dtype=torch.float32)
          
         # Extracting centroid coordinates
@@ -145,76 +141,86 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch):
         cent_y = coord[:,1]
 
         # Defining surface coordinates where load is applied
-        x = 3 * torch.ones(4, dtype=torch.float32)
-        y = torch.tensor((np.arange(0, LENGTH + 1, 1)), dtype=torch.float32)
+        n_surf_nodes = int((batch_size**0.5) + 1)
+        x = LENGTH * torch.ones(n_surf_nodes, dtype=torch.float32)
+        y = torch.tensor(np.linspace(0, LENGTH, n_surf_nodes), dtype=torch.float32)
 
         # Auxialiary vectors
-        zeros_ = torch.zeros(4, dtype=torch.float32)
+        zeros_ = torch.zeros(n_surf_nodes, dtype=torch.float32)
 
         ones = torch.ones(size=(batch_size,), dtype=torch.float32)
         zeros = torch.zeros(size=(batch_size,), dtype=torch.float32)
 
         # Virtual displacement fields
         virtual_disp = {
-            1: torch.stack([x/LENGTH, zeros_], axis=1),
-            2: torch.stack([zeros_, y/LENGTH], axis=1),
-            3: torch.stack([(x*y/LENGTH**2), zeros_], axis=1),
-            4: torch.stack([zeros_, y*(torch.square(x)-x*LENGTH)/LENGTH**3], axis=1),
-            5: torch.stack([zeros_, torch.sin(x*math.pi/LENGTH)*torch.sin(y*math.pi/LENGTH)], axis=1),
-            6: torch.stack([torch.sin(y*math.pi/LENGTH) * torch.sin(x*math.pi/LENGTH), zeros_], axis=1),
-            7: torch.stack([x*y*(x-LENGTH)/LENGTH**3,zeros_], axis=1),
-            8: torch.stack([torch.square(x)*(LENGTH-x)*torch.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_], axis=1),
-            9: torch.stack([zeros_, (LENGTH**3-x**3)*torch.sin(math.pi*y/LENGTH)/LENGTH**3], axis=1),
-            10: torch.stack([(x*LENGTH**2-x**3)*torch.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_], axis=1),
+            1: torch.stack([x/LENGTH, zeros_], 1),
+            2: torch.stack([zeros_, y/LENGTH], 1),
+            3: torch.stack([(x*y/LENGTH**3), (x*y/LENGTH**3)], 1),
+            4: torch.stack([zeros_, y*(torch.square(x)-x*LENGTH)/LENGTH**3], 1),
+            5: torch.stack([zeros_, torch.sin(x*math.pi/LENGTH)*torch.sin(y*math.pi/LENGTH)], 1),
+            6: torch.stack([torch.sin(y*math.pi/LENGTH) * torch.sin(x*math.pi/LENGTH), zeros_], 1),
+            7: torch.stack([x*y*(x-LENGTH)/LENGTH**3,zeros_], 1),
+            8: torch.stack([torch.square(x)*(LENGTH-x)*torch.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_], 1),
+            9: torch.stack([zeros_, (LENGTH**3-x**3)*torch.sin(math.pi*y/LENGTH)/LENGTH**3], 1),
+            10: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*torch.sin(y*math.pi/LENGTH), zeros_], 1),
+            11: torch.stack([zeros_, (x*y*(y-LENGTH)/LENGTH**2)*torch.sin(x*math.pi/LENGTH)], 1),
+            12: torch.stack([zeros_, x*y*(y-LENGTH)/LENGTH**3], 1),
+            13: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*torch.sin(y*math.pi/LENGTH), (x*y*(y-LENGTH)/LENGTH**2)*torch.sin(x*math.pi/LENGTH)],1),
+            14: torch.stack([y**2*torch.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_], 1),
+            15: torch.stack([y**2*torch.sin(x*math.pi/LENGTH)/LENGTH**2, x**2*torch.sin(y*math.pi/LENGTH)/LENGTH**2], 1),
+            16: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**3), zeros_], 1)
         }    
 
         # Defining virtual strain fields
         virtual_strain = {
             1:torch.stack([ones/LENGTH, zeros, zeros], 1),
             2:torch.stack([zeros, ones/LENGTH, zeros], 1),
-            3:torch.stack([cent_y/LENGTH**2, zeros, cent_x/LENGTH**2], 1),
+            3:torch.stack([cent_y/LENGTH**3, cent_x/LENGTH**3, (cent_x+cent_y)/LENGTH**3], 1),
             4:torch.stack([zeros, (torch.square(cent_x)-cent_x*LENGTH)/LENGTH**3, cent_y*(2*cent_x-LENGTH)/LENGTH**3], 1),
             5:torch.stack([zeros, (math.pi/LENGTH)*torch.sin(cent_x*math.pi/LENGTH)*torch.cos(cent_y*math.pi/LENGTH), (math.pi/LENGTH)*torch.cos(cent_x*math.pi/LENGTH)*torch.sin(cent_y*math.pi/LENGTH)],1),
             6:torch.stack([(math.pi/LENGTH)*torch.cos(cent_x*math.pi/LENGTH)*torch.sin(cent_y*math.pi/LENGTH), zeros, (math.pi/LENGTH)*torch.sin(cent_x*math.pi/LENGTH)*torch.cos(cent_y*math.pi/LENGTH)],1),
             7:torch.stack([(2*cent_x*cent_y-cent_y*LENGTH)/LENGTH**3, zeros, (torch.square(cent_x)-cent_x*LENGTH)/LENGTH**3], 1),
             8:torch.stack([(2*cent_x*LENGTH-3*torch.square(cent_x))*torch.sin(math.pi*cent_y/LENGTH)/LENGTH**3, zeros, (torch.square(cent_x)*LENGTH-cent_x**3)*torch.sin(math.pi*cent_y/LENGTH)/LENGTH**4], axis=1),
             9:torch.stack([zeros, (LENGTH**3-cent_x**3)*math.pi*torch.cos(math.pi*cent_y/LENGTH)/LENGTH**4, (-3*torch.square(cent_x)/LENGTH**3)*torch.sin(math.pi*cent_y/LENGTH)], axis=1),
-            10:torch.stack([(LENGTH**2-3*torch.square(cent_x))*torch.sin(math.pi*cent_y/LENGTH)/LENGTH**3, zeros, (cent_x*LENGTH**2-cent_x**3)*torch.cos(math.pi*cent_y/LENGTH)*math.pi/LENGTH**4], 1),
+            10:torch.stack([(2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2, zeros, (torch.square(cent_x)-cent_x*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_x-LENGTH))*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3], 1),
+            11:torch.stack([zeros, (2*cent_x*cent_y-cent_x*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2, (torch.square(cent_y)-cent_y*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_y-LENGTH))*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3], 1),
+            12:torch.stack([zeros, cent_x*(2*cent_y-LENGTH)/LENGTH**3, cent_y*(cent_y-LENGTH)/LENGTH**3], 1),
+            13:torch.stack([(2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2, (2*cent_x*cent_y-cent_x*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2, ((torch.square(cent_x)-cent_x*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_x-LENGTH))*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3) + ((torch.square(cent_y)-cent_y*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_y-LENGTH))*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3)], 1),
+            14: torch.stack([cent_y**2*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3, zeros, 2*cent_y*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2], 1),
+            15: torch.stack([cent_y**2*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3, cent_x**2*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3, (2*cent_y*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2) + (2*cent_x*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2)], 1),
+            16: torch.stack([((2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**3)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**3)*2*cent_x*cent_y**2/LENGTH**5), zeros, ((cent_x**2-cent_x*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**3)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**3)*2*cent_x**2*cent_y/LENGTH**5)],1)
+            
         }
         
         # Total number of virtual fields
         total_vfs = len(virtual_disp.keys())
 
-        # Converting virtual strain fields dictionary into a tensor for vector operations
+        # Converting virtual displacement/strain fields dictionaries into a tensors
+        v_disp = torch.stack(list(virtual_disp.values()))
         v_strain = torch.stack(list(virtual_strain.values()))
 
         # Computing prediction
         pred = model(X_train)
 
         # Computing the internal virtual works
-        int_work = ELEM_THICK * torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//9,9,1]),2)
+        int_work = ELEM_THICK * torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
         int_work = torch.reshape(int_work,[-1,1])
 
         # Computing the internal virtual work coming from stress labels (results checking only)
-        int_work_real = -ELEM_THICK * torch.sum(torch.reshape(torch.sum(y_train * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//9,9,1]),2)        
+        int_work_real = ELEM_THICK * torch.sum(torch.reshape(torch.sum(y_train * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)        
         int_work_real = torch.reshape(int_work_real,[-1,1])
 
         # Defining the external virtual work dictionary
         ext_work = dict.fromkeys(list(virtual_disp.keys()))
 
         # Extracting global force components and filtering duplicate values
-        f = f_train[:,:2][::9,:]
+        f = f_train[:,:2][::batch_size,:]
         
-        # Computing external virtual work
-        for vf, disp in virtual_disp.items():
-
-            ext_work[vf] = torch.mean(torch.sum(f * disp, 1, keepdims=True))
-
-        ext_work = torch.reshape(torch.stack(list(ext_work.values()),0),[-1,1])
+        ext_work = torch.mean(torch.sum(f*v_disp[:],-1,keepdims=True),1) 
 
         # Computing losses
         
-        loss = loss_fn(int_work, ext_work)        
+        loss = loss_fn(int_work, ext_work)
         cost = loss_fn(int_work_real, ext_work)
 
         # Backpropagation
@@ -223,8 +229,6 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch):
         optimizer.step()
         
         # Saving loss values
-        #l.append(loss)
-        #cost_real.append(cost)
         l[batch] = loss
         cost_real[batch] = cost
 
@@ -239,12 +243,6 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch):
 #     with torch.no_grad():
 #         for X, y in dataloader:
 #             pred = model(X)
-
-
-
-
-
-
 #             test_loss += loss_fn(pred, y).item()
 #             correct += (pred.argmax(1) == y).type(torch.float).sum().item()
 
@@ -283,9 +281,9 @@ X, y, f, coord = select_features_multi(data)
 N_INPUTS = X.shape[1]
 N_OUTPUTS = y.shape[1]
 
-N_UNITS = 32
+N_UNITS = 8
 
-model = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, 1)
+model = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, 2)
 model.apply(init_weights)
 
 # Sending model for training on device
@@ -295,15 +293,18 @@ model.apply(init_weights)
 learning_rate = 0.1
 
 #batch_size = len(data_groups[0])
-batch_size = 9
+batch_size = 36
 
-epochs = 185
+epochs = 100
 
 loss_fn = torch.nn.MSELoss(reduction='mean')
+#loss_fn = torch.nn.HuberLoss(reduction='mean')
 
-optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate, amsgrad=True)
-#scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.2, threshold=1e-3)
-scheduler =  torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=3, T_mult=2, eta_min=0.001, last_epoch=-1)
+#optimizer = torch.optim.AdamW(params=model.parameters(), lr=learning_rate)
+#optimizer = torch.optim.Adagrad(params=model.parameters(), lr=learning_rate)
+optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.2, threshold=1e-3)
+#scheduler =  torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=0.0001, last_epoch=-1)
 
 # Preparing training generator for mini-batch training
 train_generator = DataGenerator(X, y, f, coord, X.index.tolist(), batch_size, True)

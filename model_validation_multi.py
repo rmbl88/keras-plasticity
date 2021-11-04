@@ -13,7 +13,9 @@ from operator import itemgetter
 import torch.nn.functional as F
 
 import torch
+
 from torch import nn
+from torchmetrics import MeanSquaredError
 
 class NeuralNetwork(nn.Module):
     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
@@ -24,30 +26,26 @@ class NeuralNetwork(nn.Module):
         self.output_size = output_size
 
         self.layers = nn.ModuleList()
-        self.layers.append(torch.nn.Linear(self.input_size, self.hidden_size))
+        #self.layers.append(torch.nn.Linear(self.input_size, self.hidden_size, bias=True))
 
         for i in range(self.n_hidden_layers):
-            self.layers.append(nn.Linear(self.hidden_size, self.hidden_size))
+            if i == 0:
+                in_ = self.input_size
+            else:
+                in_ = self.hidden_size
 
-        self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size))
+            self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
+
+        self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
 
         self.activation = torch.nn.PReLU(self.hidden_size)
-        
-        # self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
-        # self.relu1 = torch.nn.RReLU()
-        # self.fc2 = torch.nn.Linear(self.hidden_size,self.hidden_size)
-        # self.relu2 = torch.nn.RReLU()
-        # self.fc3 = torch.nn.Linear(self.hidden_size, 3)
 
     def forward(self, x):
 
-        x = self.layers[0](x)
-        for layer in self.layers[1:-1]:
-            x =self.activation(layer(x))
-        # hidden1 = self.fc1(x)
-        # relu1 = self.relu1(hidden1)
-        # hidden2 = self.fc2(relu1)
-        # relu2 = self.relu2(hidden2)
+        #x = self.layers[0](x)
+        for layer in self.layers[:-1]:
+            x = self.activation(layer(x))
+            
         return self.layers[-1](x)
 
 plt.rcParams.update(constants.PARAMS)
@@ -64,7 +62,7 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #x_scaler, y_scaler = joblib.load('models/ann3/scalers.pkl')
 
 # Loading ANN model
-model = NeuralNetwork(6, 3, 32, 1)
+model = NeuralNetwork(6, 3, 8, 2)
 model.load_state_dict(torch.load('models/ann_torch/model_1'))
 model.eval()
 #model = keras.models.load_model('models/ann3', compile=False)
@@ -74,6 +72,8 @@ model.eval()
 # Sampling data pass random seed for random sampling
 sampled_dfs = data_sampling(df_list, constants.DATA_SAMPLES)
 
+mean_squared_error = MeanSquaredError()
+print("----------------------\nMSE\n----------------------\nSxx\tSyy\tSxy\n")
 with torch.no_grad():
     for i, df in enumerate(sampled_dfs):
 
@@ -100,6 +100,12 @@ with torch.no_grad():
         sy_pred_var = y_pred_inv[:,1]
         sxy_pred_var = y_pred_inv[:,2]
 
+        mse_x = np.sqrt(mean_squared_error(torch.tensor(sx_pred_var), torch.tensor(sx_var_abaqus)))
+        mse_y = np.sqrt(mean_squared_error(torch.tensor(sy_pred_var), torch.tensor(sy_var_abaqus)))
+        mse_xy = np.sqrt(mean_squared_error(torch.tensor(sxy_pred_var), torch.tensor(sxy_var_abaqus)))
+
+        print("%i\t%0.3f\t%0.3f\t%0.3f" % (i, mse_x, mse_y, mse_xy))
+
         # sx_pred_var = y_pred[:,0]
         # sy_pred_var = y_pred[:,1]
         # sxy_pred_var = y_pred[:,2]
@@ -110,15 +116,18 @@ with torch.no_grad():
         ax1.plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS')
         ax1.plot(ex_var_abaqus, sx_pred_var, label='ANN')
         ax1.set(xlabel=r'$\varepsilon$', ylabel=r'$\sigma_{xx}$ [MPa]')
+        #ax1.set_title(r'$\text{MSE}=%0.3f$' % (mse_x), fontsize=11)
         ax2.plot(ey_var_abaqus, sy_var_abaqus, label='ABAQUS')
         ax2.plot(ey_var_abaqus, sy_pred_var, label='ANN')
         ax2.set(xlabel=r'$\varepsilon$', ylabel=r'$\sigma_{yy}$ [MPa]')
+        #ax2.set_title(r'$\text{MSE}=%0.3f$' % (mse_y), fontsize=11)
         ax3.plot(exy_var_abaqus, sxy_var_abaqus, label='ABAQUS')
         ax3.plot(exy_var_abaqus, sxy_pred_var, label='ANN')
         ax3.set(xlabel=r'$\varepsilon$', ylabel=r'$\tau_{xy}$ [MPa]')
+        #ax3.set_title(r'$\text{MSE}=%0.3f$' % (mse_xy), fontsize=11)
         handles, labels = ax3.get_legend_handles_labels()
         fig.legend(handles, labels, loc='lower center')
 
         #results = model.evaluate(X_val,y_val[:,:3])
         
-    plt.show()
+        plt.show()

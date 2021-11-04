@@ -5,10 +5,10 @@ VAL_DIR = 'data/validation/'
 VAL_DIR_MULTI = 'data/validation_multi/'
 TRAIN_DIR = 'data/training/'
 TRAIN_MULTI_DIR = 'data/training_multi/'
-DATA_SAMPLES = 1001
+DATA_SAMPLES = 500
 TEST_SIZE = 0.33
 
-ELEM_AREA = 1.0
+ELEM_AREA = 0.25
 ELEM_THICK = 0.5
 LENGTH = 3.0
 
@@ -28,4 +28,5 @@ PARAMS = {'text.usetex' : True,
           'legend.loc' : 'best',
           'legend.frameon' : False,
           'patch.force_edgecolor' : True,
+          'figure.max_open_warning': 0,
 }
