@@ -4,6 +4,7 @@
 import re
 from constants import *
 from functions import custom_loss, data_sampling, load_dataframes, select_features_multi, standardize_data, plot_history, standardize_
+from sklearn.model_selection import GroupShuffleSplit
 
 from re import S
 from torch import nn
@@ -182,15 +183,16 @@ def init_weights(m):
         #m.bias.data.fill_(0.001)
         torch.nn.init.ones_(m.bias)
 
-def train_loop(dataloader, model, loss_fn, optimizer, epoch):
+def train_loop(dataloader, model, loss_fn, optimizer):
     '''
     Custom loop for neural network training, using mini-batches
 
     '''
-    size = len(dataloader)
-    l = torch.zeros(size)
-    cost_real = torch.zeros(size)
-    for batch in range(size):
+    num_batches = len(dataloader)
+    losses = torch.zeros(num_batches)
+    v_work_real = torch.zeros(num_batches)
+
+    for batch in range(num_batches):
         # Extracting variables for training
         X_train, y_train, f_train, coord = dataloader[batch]
         
@@ -232,32 +234,75 @@ def train_loop(dataloader, model, loss_fn, optimizer, epoch):
         loss = loss_fn(int_work, ext_work)
         cost = loss_fn(int_work_real, ext_work)
 
-        # Backpropagation and parameters update
+        # Backpropagation and parametersgit st update
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         
         # Saving loss values
-        l[batch] = loss
-        cost_real[batch] = cost
+        losses[batch] = loss
+        v_work_real[batch] = cost
 
-        print('\rEpoch [%d/%d] Batch: %d/%d' % (epoch + 1, epochs, batch+1,size), end='')
+        # print('\rEpoch [%d/%d] Batch: %d/%d' % (epoch + 1, epochs, batch+1,size), end='')
+
+        print('\r>Train: %d/%d' % (batch + 1, num_batches), end='')
+
+    return losses, v_work_real
+
+def test_loop(dataloader, model, loss_fn):
     
-    return l, cost_real
+    num_batches = len(dataloader)
+    test_losses = torch.zeros(num_batches)
 
-# def test_loop(dataloader, model, loss_fn):
-#     num_batches = len(dataloader)
-#     test_loss, correct = 0, 0
+    model.eval()
+    with torch.no_grad():
 
-#     with torch.no_grad():
-#         for X, y in dataloader:
-#             pred = model(X)
-#             test_loss += loss_fn(pred, y).item()
-#             correct += (pred.argmax(1) == y).type(torch.float).sum().item()
+        for batch in range(num_batches):
 
-#     test_loss /= num_batches
-#     correct /= size
-#     print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
+            # Extracting variables for testing
+            X_test, y_test, f_test, coord = dataloader[batch]
+            
+            # Converting to pytorch tensors
+            X_test = torch.tensor(X_test, dtype=torch.float32)
+            y_test = torch.tensor(y_test, dtype=torch.float32)
+            f_test = torch.tensor(f_test, dtype=torch.float32) + 0.0
+            coord = torch.tensor(coord, dtype=torch.float32)
+            
+            # Extracting centroid coordinates
+            cent_x = coord[:,0]
+            cent_y = coord[:,1]
+
+            # Defining surface coordinates where load is applied
+            n_surf_nodes = int((batch_size**0.5) + 1)
+            x = LENGTH * torch.ones(n_surf_nodes, dtype=torch.float32)
+            y = torch.tensor(np.linspace(0, LENGTH, n_surf_nodes), dtype=torch.float32)
+
+            total_vfs, v_disp, v_strain = get_v_fields(cent_x, cent_y, x, y)
+
+            pred = model(X_test)
+
+            # Computing the internal virtual works
+            int_work = ELEM_THICK * torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
+            int_work = torch.reshape(int_work,[-1,1])
+
+            # Computing the internal virtual work coming from stress labels (results checking only)
+            int_work_real = ELEM_THICK * torch.sum(torch.reshape(torch.sum(y_test * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)        
+            int_work_real = torch.reshape(int_work_real,[-1,1])
+
+            # Extracting global force components and filtering duplicate values
+            f = f_test[:,:2][::batch_size,:]
+            
+            # Computing external virtual work
+            ext_work = torch.mean(torch.sum(f*v_disp[:],-1,keepdims=True),1) 
+
+            # Computing losses        
+            test_loss = loss_fn(int_work, ext_work)
+
+            test_losses[batch] = test_loss
+
+            print('\r>Test: %d/%d' % (batch + 1, num_batches), end='')
+
+    return test_losses
 
 # -------------------------------
 #           Main script
@@ -287,16 +332,19 @@ data = pd.concat(data_groups).reset_index(drop=True)
 
 X, y, f, coord = select_features_multi(data)
 
+partition = {"train": None, "test": None}
+
+partition['train'], partition['test'] = next(GroupShuffleSplit(test_size=TEST_SIZE, n_splits=2, random_state = SEED).split(data, groups=data['t']))
+
+
+
 N_INPUTS = X.shape[1]
 N_OUTPUTS = y.shape[1]
 
-N_UNITS = 8
+N_UNITS = 16
 
 model = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, 2)
 model.apply(init_weights)
-
-# Sending model for training on device
-#model.to(device)
 
 # Model variables
 learning_rate = 0.1
@@ -316,24 +364,53 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patienc
 #scheduler =  torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=0.0001, last_epoch=-1)
 
 # Preparing training generator for mini-batch training
-train_generator = DataGenerator(X, y, f, coord, X.index.tolist(), batch_size, True)
-n_batches_train = len(train_generator)
+#train_generator = DataGenerator(X, y, f, coord, X.index.tolist(), batch_size, True)
+train_generator = DataGenerator(X, y, f, coord, partition["train"], batch_size, True)
+test_generator = DataGenerator(X, y, f, coord, partition['test'], batch_size, False)
 
 train_loss = np.zeros(shape=(epochs,1), dtype=np.float32)
+v_work = np.zeros(shape=(epochs,1), dtype=np.float32)
 val_loss = np.zeros(shape=(epochs,1), dtype=np.float32)
+
 epochs_ = np.arange(0,epochs).reshape(epochs,1)
 
 for t in range(epochs):
-    start_time = time.time()
+
+    print('\r--------------------\nEpoch [%d/%d]' % (t + 1, epochs))
+    
+    start_epoch = time.time()
+
+    #Shuffling batches
     train_generator.on_epoch_end()
-    l, cost = train_loop(train_generator, model, loss_fn, optimizer,t)
-    #test_loop(train_generator, model, loss_fn)
-    train_loss[t]=torch.mean(l).detach().numpy()
-    cost = torch.mean(cost).detach().numpy()
+    
+    # Train loop
+    start_train = time.time()
+    batch_losses, batch_v_work = train_loop(train_generator, model, loss_fn, optimizer)
+    
+    train_loss[t]=torch.mean(batch_losses).detach().numpy()
+    v_work = torch.mean(batch_v_work).detach().numpy()
+    
+    #Apply learning rate scheduling
     scheduler.step(train_loss[t])
     #scheduler.step()
-    print('. loss: %.3f -> lr: %.3e // [cost] -> %.3e -- %.3f s' % (train_loss[t][0], scheduler._last_lr[0], cost, time.time()-start_time))
+
+    end_train = time.time()
+        
+    print('.t_loss: %.3f -> lr: %.3e // [v_work] -> %.3e -- %.3f s' % (train_loss[t][0], scheduler._last_lr[0], v_work, end_train - start_train))
     #print('. loss: %.3f // [cost] -> %.3e -- %.3f s' % (train_loss[t][0], cost, time.time()-start_time))
+
+    # Test loop
+    start_test = time.time()
+    batch_val_losses = test_loop(test_generator, model, loss_fn)
+
+    val_loss[t]=torch.mean(batch_val_losses).detach().numpy()
+
+    end_test = time.time()
+
+    print('.v_loss: %.3f -- %.3f s' % (val_loss[t][0], end_test - start_test))
+
+    end_epoch = time.time()
+
 print("Done!")
 
 history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])

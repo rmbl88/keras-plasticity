@@ -204,9 +204,9 @@ def plot_history(history, is_custom=None):
     
     plt.figure()
     plt.xlabel('Epoch')
-    plt.ylabel('Mean Absolute Error [MPa]')
+    plt.ylabel(r'Mean Square Error [MPa\textsuperscript{2}]')
     plt.plot(hist['epoch'], hist['loss'], label='Train Error', color='#4b7394')
-    #plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
+    plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
     plt.legend()
     
     # plt.figure()
