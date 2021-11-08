@@ -62,7 +62,7 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #x_scaler, y_scaler = joblib.load('models/ann3/scalers.pkl')
 
 # Loading ANN model
-model = NeuralNetwork(6, 3, 16, 2)
+model = NeuralNetwork(6, 3, 8, 2)
 model.load_state_dict(torch.load('models/ann_torch/model_1'))
 model.eval()
 #model = keras.models.load_model('models/ann3', compile=False)

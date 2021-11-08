@@ -4,6 +4,7 @@
 import re
 from constants import *
 from functions import custom_loss, data_sampling, load_dataframes, select_features_multi, standardize_data, plot_history, standardize_
+from functions import EarlyStopping
 from sklearn.model_selection import GroupShuffleSplit
 
 from re import S
@@ -123,40 +124,42 @@ def get_v_fields(cent_x, cent_y, x, y):
     virtual_disp = {
         1: torch.stack([x/LENGTH, zeros_], 1),
         2: torch.stack([zeros_, y/LENGTH], 1),
-        3: torch.stack([(x*y/LENGTH**3), (x*y/LENGTH**3)], 1),
-        4: torch.stack([zeros_, y*(torch.square(x)-x*LENGTH)/LENGTH**3], 1),
-        5: torch.stack([zeros_, torch.sin(x*math.pi/LENGTH)*torch.sin(y*math.pi/LENGTH)], 1),
-        6: torch.stack([torch.sin(y*math.pi/LENGTH) * torch.sin(x*math.pi/LENGTH), zeros_], 1),
-        7: torch.stack([x*y*(x-LENGTH)/LENGTH**3,zeros_], 1),
-        8: torch.stack([torch.square(x)*(LENGTH-x)*torch.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_], 1),
-        9: torch.stack([zeros_, (LENGTH**3-x**3)*torch.sin(math.pi*y/LENGTH)/LENGTH**3], 1),
-        10: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*torch.sin(y*math.pi/LENGTH), zeros_], 1),
-        11: torch.stack([zeros_, (x*y*(y-LENGTH)/LENGTH**2)*torch.sin(x*math.pi/LENGTH)], 1),
-        12: torch.stack([zeros_, x*y*(y-LENGTH)/LENGTH**3], 1),
-        13: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*torch.sin(y*math.pi/LENGTH), (x*y*(y-LENGTH)/LENGTH**2)*torch.sin(x*math.pi/LENGTH)],1),
-        14: torch.stack([y**2*torch.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_], 1),
-        15: torch.stack([y**2*torch.sin(x*math.pi/LENGTH)/LENGTH**2, x**2*torch.sin(y*math.pi/LENGTH)/LENGTH**2], 1),
-        16: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**3), zeros_], 1)
+        ##3: torch.stack([(x*y/LENGTH**3), (x*y/LENGTH**3)], 1),
+        # 3: torch.stack([zeros_, y*(torch.square(x)-x*LENGTH)/LENGTH**3], 1),
+        # 4: torch.stack([zeros_, torch.sin(x*math.pi/LENGTH)*torch.sin(y*math.pi/LENGTH)], 1),
+        # 5: torch.stack([torch.sin(y*math.pi/LENGTH) * torch.sin(x*math.pi/LENGTH), zeros_], 1),
+        # 6: torch.stack([x*y*(x-LENGTH)/LENGTH**3,zeros_], 1),
+        # 7: torch.stack([torch.square(x)*(LENGTH-x)*torch.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_], 1),
+        # 8: torch.stack([zeros_, (LENGTH**3-x**3)*torch.sin(math.pi*y/LENGTH)/LENGTH**3], 1),
+        # 9: torch.stack([(x*LENGTH**2-x**3)*torch.sin(y*math.pi/LENGTH)/LENGTH**3, zeros_], 1),
+        # 10: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*torch.sin(y*math.pi/LENGTH), zeros_], 1),
+        # 11: torch.stack([zeros_, (x*y*(y-LENGTH)/LENGTH**2)*torch.sin(x*math.pi/LENGTH)], 1),
+        # 12: torch.stack([zeros_, x*y*(y-LENGTH)/LENGTH**3], 1),
+        ##13: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*torch.sin(y*math.pi/LENGTH), (x*y*(y-LENGTH)/LENGTH**2)*torch.sin(x*math.pi/LENGTH)],1),
+        # 14: torch.stack([y**2*torch.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_], 1),
+        ##15: torch.stack([y**2*torch.sin(x*math.pi/LENGTH)/LENGTH**2, x**2*torch.sin(y*math.pi/LENGTH)/LENGTH**2], 1),
+        # 16: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**4), zeros_], 1)
     }    
 
     # Defining virtual strain fields
     virtual_strain = {
         1:torch.stack([ones/LENGTH, zeros, zeros], 1),
         2:torch.stack([zeros, ones/LENGTH, zeros], 1),
-        3:torch.stack([cent_y/LENGTH**3, cent_x/LENGTH**3, (cent_x+cent_y)/LENGTH**3], 1),
-        4:torch.stack([zeros, (torch.square(cent_x)-cent_x*LENGTH)/LENGTH**3, cent_y*(2*cent_x-LENGTH)/LENGTH**3], 1),
-        5:torch.stack([zeros, (math.pi/LENGTH)*torch.sin(cent_x*math.pi/LENGTH)*torch.cos(cent_y*math.pi/LENGTH), (math.pi/LENGTH)*torch.cos(cent_x*math.pi/LENGTH)*torch.sin(cent_y*math.pi/LENGTH)],1),
-        6:torch.stack([(math.pi/LENGTH)*torch.cos(cent_x*math.pi/LENGTH)*torch.sin(cent_y*math.pi/LENGTH), zeros, (math.pi/LENGTH)*torch.sin(cent_x*math.pi/LENGTH)*torch.cos(cent_y*math.pi/LENGTH)],1),
-        7:torch.stack([(2*cent_x*cent_y-cent_y*LENGTH)/LENGTH**3, zeros, (torch.square(cent_x)-cent_x*LENGTH)/LENGTH**3], 1),
-        8:torch.stack([(2*cent_x*LENGTH-3*torch.square(cent_x))*torch.sin(math.pi*cent_y/LENGTH)/LENGTH**3, zeros, (torch.square(cent_x)*LENGTH-cent_x**3)*torch.sin(math.pi*cent_y/LENGTH)/LENGTH**4], axis=1),
-        9:torch.stack([zeros, (LENGTH**3-cent_x**3)*math.pi*torch.cos(math.pi*cent_y/LENGTH)/LENGTH**4, (-3*torch.square(cent_x)/LENGTH**3)*torch.sin(math.pi*cent_y/LENGTH)], axis=1),
-        10:torch.stack([(2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2, zeros, (torch.square(cent_x)-cent_x*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_x-LENGTH))*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3], 1),
-        11:torch.stack([zeros, (2*cent_x*cent_y-cent_x*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2, (torch.square(cent_y)-cent_y*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_y-LENGTH))*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3], 1),
-        12:torch.stack([zeros, cent_x*(2*cent_y-LENGTH)/LENGTH**3, cent_y*(cent_y-LENGTH)/LENGTH**3], 1),
-        13:torch.stack([(2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2, (2*cent_x*cent_y-cent_x*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2, ((torch.square(cent_x)-cent_x*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_x-LENGTH))*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3) + ((torch.square(cent_y)-cent_y*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_y-LENGTH))*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3)], 1),
-        14: torch.stack([cent_y**2*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3, zeros, 2*cent_y*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2], 1),
-        15: torch.stack([cent_y**2*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3, cent_x**2*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3, (2*cent_y*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2) + (2*cent_x*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2)], 1),
-        16: torch.stack([((2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**3)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**3)*2*cent_x*cent_y**2/LENGTH**5), zeros, ((cent_x**2-cent_x*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**3)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**3)*2*cent_x**2*cent_y/LENGTH**5)],1)
+        ##3:torch.stack([cent_y/LENGTH**3, cent_x/LENGTH**3, (cent_x+cent_y)/LENGTH**3], 1),
+        # 3:torch.stack([zeros, (torch.square(cent_x)-cent_x*LENGTH)/LENGTH**3, cent_y*(2*cent_x-LENGTH)/LENGTH**3], 1),
+        # 4:torch.stack([zeros, (math.pi/LENGTH)*torch.sin(cent_x*math.pi/LENGTH)*torch.cos(cent_y*math.pi/LENGTH), (math.pi/LENGTH)*torch.cos(cent_x*math.pi/LENGTH)*torch.sin(cent_y*math.pi/LENGTH)],1),
+        # 5:torch.stack([(math.pi/LENGTH)*torch.cos(cent_x*math.pi/LENGTH)*torch.sin(cent_y*math.pi/LENGTH), zeros, (math.pi/LENGTH)*torch.sin(cent_x*math.pi/LENGTH)*torch.cos(cent_y*math.pi/LENGTH)],1),
+        # 6:torch.stack([(2*cent_x*cent_y-cent_y*LENGTH)/LENGTH**3, zeros, (torch.square(cent_x)-cent_x*LENGTH)/LENGTH**3], 1),
+        # 7:torch.stack([(2*cent_x*LENGTH-3*torch.square(cent_x))*torch.sin(math.pi*cent_y/LENGTH)/LENGTH**3, zeros, (torch.square(cent_x)*LENGTH-cent_x**3)*torch.cos(math.pi*cent_y/LENGTH)*math.pi/LENGTH**4], axis=1),
+        # 8:torch.stack([zeros, (LENGTH**3-cent_x**3)*math.pi*torch.cos(math.pi*cent_y/LENGTH)/LENGTH**4, (-3*torch.square(cent_x)/LENGTH**3)*torch.sin(math.pi*cent_y/LENGTH)], axis=1),
+        # 9:torch.stack([(LENGTH**2-3*torch.square(cent_x))*torch.sin(math.pi*cent_y/LENGTH)/LENGTH**3, zeros, (cent_x*LENGTH**2-cent_x**3)*torch.cos(math.pi*cent_y/LENGTH)*math.pi/LENGTH**4],1),
+        # 10:torch.stack([(2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2, zeros, (torch.square(cent_x)-cent_x*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_x-LENGTH))*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3], 1),
+        # 11:torch.stack([zeros, (2*cent_x*cent_y-cent_x*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2, (torch.square(cent_y)-cent_y*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_y-LENGTH))*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3], 1),
+        # 12:torch.stack([zeros, cent_x*(2*cent_y-LENGTH)/LENGTH**3, cent_y*(cent_y-LENGTH)/LENGTH**3], 1),
+        ##13:torch.stack([(2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2, (2*cent_x*cent_y-cent_x*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2, ((torch.square(cent_x)-cent_x*LENGTH)*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_x-LENGTH))*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3) + ((torch.square(cent_y)-cent_y*LENGTH)*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2+(cent_x*cent_y*(cent_y-LENGTH))*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3)], 1),
+        # 14: torch.stack([cent_y**2*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3, zeros, 2*cent_y*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2], 1),
+        ##15: torch.stack([cent_y**2*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3, cent_x**2*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3, (2*cent_y*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2) + (2*cent_x*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2)], 1),
+        # 16: torch.stack([((2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**4)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**4)*2*cent_x*cent_y**2/LENGTH**6), zeros, ((cent_x**2-cent_x*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**4)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**4)*2*cent_x**2*cent_y/LENGTH**6)],1)
         
     }
 
@@ -217,11 +220,11 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         pred = model(X_train)
 
         # Computing the internal virtual works
-        int_work = ELEM_THICK * torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
+        int_work = -ELEM_THICK * torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
         int_work = torch.reshape(int_work,[-1,1])
 
         # Computing the internal virtual work coming from stress labels (results checking only)
-        int_work_real = ELEM_THICK * torch.sum(torch.reshape(torch.sum(y_train * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)        
+        int_work_real = -ELEM_THICK * torch.sum(torch.reshape(torch.sum(y_train * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)        
         int_work_real = torch.reshape(int_work_real,[-1,1])
 
         # Extracting global force components and filtering duplicate values
@@ -282,11 +285,11 @@ def test_loop(dataloader, model, loss_fn):
             pred = model(X_test)
 
             # Computing the internal virtual works
-            int_work = ELEM_THICK * torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
+            int_work = -ELEM_THICK * torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
             int_work = torch.reshape(int_work,[-1,1])
 
             # Computing the internal virtual work coming from stress labels (results checking only)
-            int_work_real = ELEM_THICK * torch.sum(torch.reshape(torch.sum(y_test * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)        
+            int_work_real = -ELEM_THICK * torch.sum(torch.reshape(torch.sum(y_test * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)        
             int_work_real = torch.reshape(int_work_real,[-1,1])
 
             # Extracting global force components and filtering duplicate values
@@ -311,10 +314,6 @@ def test_loop(dataloader, model, loss_fn):
 # Specifying random seed
 random.seed(SEED)
 
-# Specifying device for training
-#device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-#device = 'cpu'
-
 # Loading data
 df_list, _ = load_dataframes(TRAIN_MULTI_DIR)
 
@@ -328,55 +327,67 @@ data = pd.concat(sampled_dfs, axis=0, ignore_index=True)
 data_groups = [df for _, df in data.groupby(['t'])]
 random.shuffle(data_groups)
 
+# Concatenating data groups
 data = pd.concat(data_groups).reset_index(drop=True)
 
+# Selecting model features
 X, y, f, coord = select_features_multi(data)
 
+# Performing test/train split
 partition = {"train": None, "test": None}
 
 partition['train'], partition['test'] = next(GroupShuffleSplit(test_size=TEST_SIZE, n_splits=2, random_state = SEED).split(data, groups=data['t']))
 
-
-
+# Model variables
 N_INPUTS = X.shape[1]
 N_OUTPUTS = y.shape[1]
 
-N_UNITS = 16
+N_UNITS = 8
 
 model = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, 2)
 model.apply(init_weights)
 
 # Model variables
-learning_rate = 0.1
+learning_rate = 0.075
 
 #batch_size = len(data_groups[0])
 batch_size = 36
 
-epochs = 100
+epochs = 50
 
-loss_fn = torch.nn.MSELoss(reduction='mean')
-#loss_fn = torch.nn.HuberLoss(reduction='mean')
+#loss_fn = torch.nn.MSELoss(reduction='mean')
+loss_fn = custom_loss
 
-#optimizer = torch.optim.AdamW(params=model.parameters(), lr=learning_rate)
-#optimizer = torch.optim.Adagrad(params=model.parameters(), lr=learning_rate)
+#optimizer = torch.optim.AdamW(params=model.parameters(), lr=5e-2)
+#optimizer = torch.optim.Adadelta(params=model.parameters(), weight_decay=0.01)
 optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
+#scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=0.001, max_lr=learning_rate, mode='triangular2', cycle_momentum=False)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.2, threshold=1e-3)
 #scheduler =  torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=0.0001, last_epoch=-1)
 
 # Preparing training generator for mini-batch training
 #train_generator = DataGenerator(X, y, f, coord, X.index.tolist(), batch_size, True)
 train_generator = DataGenerator(X, y, f, coord, partition["train"], batch_size, True)
-test_generator = DataGenerator(X, y, f, coord, partition['test'], batch_size, False)
+test_generator = DataGenerator(X, y, f, coord, partition['test'], batch_size, True)
 
-train_loss = np.zeros(shape=(epochs,1), dtype=np.float32)
-v_work = np.zeros(shape=(epochs,1), dtype=np.float32)
-val_loss = np.zeros(shape=(epochs,1), dtype=np.float32)
+# train_loss = np.zeros(shape=(epochs,1), dtype=np.float32)
+# v_work = np.zeros(shape=(epochs,1), dtype=np.float32)
+# val_loss = np.zeros(shape=(epochs,1), dtype=np.float32)
 
-epochs_ = np.arange(0,epochs).reshape(epochs,1)
+train_loss = []
+v_work = []
+val_loss = []
+
+epochs_ = []
+
+# Initializing the early_stopping object
+#early_stopping = EarlyStopping(patience=6, verbose=True)
 
 for t in range(epochs):
 
     print('\r--------------------\nEpoch [%d/%d]' % (t + 1, epochs))
+
+    epochs_.append(t+1)
     
     start_epoch = time.time()
 
@@ -387,8 +398,8 @@ for t in range(epochs):
     start_train = time.time()
     batch_losses, batch_v_work = train_loop(train_generator, model, loss_fn, optimizer)
     
-    train_loss[t]=torch.mean(batch_losses).detach().numpy()
-    v_work = torch.mean(batch_v_work).detach().numpy()
+    train_loss.append(torch.mean(batch_losses).item())
+    v_work.append(torch.mean(batch_v_work).item())
     
     #Apply learning rate scheduling
     scheduler.step(train_loss[t])
@@ -396,22 +407,37 @@ for t in range(epochs):
 
     end_train = time.time()
         
-    print('.t_loss: %.3f -> lr: %.3e // [v_work] -> %.3e -- %.3f s' % (train_loss[t][0], scheduler._last_lr[0], v_work, end_train - start_train))
-    #print('. loss: %.3f // [cost] -> %.3e -- %.3f s' % (train_loss[t][0], cost, time.time()-start_time))
+    print('. t_loss: %.3f -> lr: %.3e // [v_work] -> %.3e -- %.3f s' % (train_loss[t], scheduler._last_lr[0], v_work[t], end_train - start_train))
+    #print('. loss: %.3f // [cost] -> %.3e -- %.3f s' % (train_loss[t], v_work[t], end_train - start_train))
 
     # Test loop
     start_test = time.time()
+
     batch_val_losses = test_loop(test_generator, model, loss_fn)
 
-    val_loss[t]=torch.mean(batch_val_losses).detach().numpy()
+    val_loss.append(torch.mean(batch_val_losses).item())
 
     end_test = time.time()
 
-    print('.v_loss: %.3f -- %.3f s' % (val_loss[t][0], end_test - start_test))
+    print('. v_loss: %.3f -- %.3f s' % (val_loss[t], end_test - start_test))
 
     end_epoch = time.time()
 
+    # Check validation loss for early stopping
+    # early_stopping(val_loss[t], model)
+
+    # if early_stopping.early_stop:
+    #     print("Early stopping")
+    #     break
+
 print("Done!")
+
+# load the last checkpoint with the best model
+# model.load_state_dict(torch.load('checkpoint.pt'))
+
+epochs_ = np.reshape(np.array(epochs_), (len(epochs_),1))
+train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
+val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
 
 history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
 

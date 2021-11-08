@@ -1,7 +1,5 @@
 import numpy as np
 from numpy.core.numeric import empty_like, zeros_like
-from tensorflow.python.keras.backend import zeros
-from torch.functional import meshgrid
 from constants import *
 import matplotlib.pyplot as plt
 import math
@@ -9,11 +7,6 @@ import matplotlib.gridspec as gridspec
 from matplotlib.colors import TwoSlopeNorm, ListedColormap
 
 import sys
-from PyQt5.QtWidgets import QApplication
-app = QApplication(sys.argv)
-screen = app.screens()[0]
-dpi = screen.physicalDotsPerInch()
-app.quit()
 
 plt.rcParams.update(PARAMS)
 
@@ -43,42 +36,42 @@ x, y = np.meshgrid(coords, coords)
 zeros_ = np.zeros_like(x)
 
 virtual_disp = {
-            0: [x/LENGTH, zeros_],
-            1: [zeros_, y/LENGTH],
-            2: [zeros_, y*(np.square(x)-x*LENGTH)/LENGTH**3],
-            3: [zeros_, np.sin(x*math.pi/LENGTH)*np.sin(y*math.pi/LENGTH)],
-            4: [np.sin(y*math.pi/LENGTH) * np.sin(x*math.pi/LENGTH), zeros_],
-            5: [x*y*(x-LENGTH)/LENGTH**3,zeros_],
-            6: [np.square(x)*(LENGTH-x)*np.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_],
-            7: [zeros_, (LENGTH**3-x**3)*np.sin(math.pi*y/LENGTH)/LENGTH**3],
-            8: [(x*LENGTH**2-x**3)*np.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_],
-            9: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(y*math.pi/LENGTH), zeros_],
-            10: [zeros_, (x*y*(y-LENGTH)/LENGTH**2)*np.sin(x*math.pi/LENGTH)],
-            11: [zeros_,x*y*(y-LENGTH)/LENGTH**3],
-            12: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(y*math.pi/LENGTH), (x*y*(y-LENGTH)/LENGTH**2)*np.sin(x*math.pi/LENGTH)],
-            13: [y**2*np.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_],
-            14: [y**2*np.sin(x*math.pi/LENGTH)/LENGTH**2, x**2*np.sin(y*math.pi/LENGTH)/LENGTH**2],
-            15: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**3), zeros_]
+            1: [x/LENGTH, zeros_],
+            2: [zeros_, y/LENGTH],
+            3: [zeros_, y*(np.square(x)-x*LENGTH)/LENGTH**3],
+            4: [zeros_, np.sin(x*math.pi/LENGTH)*np.sin(y*math.pi/LENGTH)],
+            5: [np.sin(y*math.pi/LENGTH) * np.sin(x*math.pi/LENGTH), zeros_],
+            6: [x*y*(x-LENGTH)/LENGTH**3,zeros_],
+            7: [np.square(x)*(LENGTH-x)*np.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_],
+            8: [zeros_, (LENGTH**3-x**3)*np.sin(math.pi*y/LENGTH)/LENGTH**3],
+            9: [(x*LENGTH**2-x**3)*np.sin(math.pi*y/LENGTH)/LENGTH**3,zeros_],
+            10: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(y*math.pi/LENGTH), zeros_],
+            11: [zeros_, (x*y*(y-LENGTH)/LENGTH**2)*np.sin(x*math.pi/LENGTH)],
+            12: [zeros_,x*y*(y-LENGTH)/LENGTH**3],
+            13: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(y*math.pi/LENGTH), (x*y*(y-LENGTH)/LENGTH**2)*np.sin(x*math.pi/LENGTH)],
+            14: [y**2*np.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_],
+            15: [y**2*np.sin(x*math.pi/LENGTH)/LENGTH**2, x**2*np.sin(y*math.pi/LENGTH)/LENGTH**2],
+            16: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**4), zeros_]
                    
         }
 
 formulas = {
-            0: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{x}{L} & 0\end{Bmatrix}$",
-            1: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{y}{L}\end{Bmatrix}$",
-            2: r"$u^{*~(%i)}=\begin{Bmatrix}0 & y\cfrac{x^2-xL}{L^3}\end{Bmatrix}$",
-            3: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \sin\left(\cfrac{x\pi}{L}\right)\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
-            4: r"$u^{*~(%i)}=\begin{Bmatrix}\sin\left(\cfrac{x\pi}{L}\right)\sin\left(\cfrac{y\pi}{L}\right) & 0\end{Bmatrix}$",
-            5: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^3} & 0\end{Bmatrix}$",
-            6: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{x^2(L-x)}{L^3}\sin\left(\cfrac{y\pi}{L}\right) & 0\end{Bmatrix}$",
-            7: r"$u^{*~(%i)}=\begin{Bmatrix} 0 & \cfrac{L^3-x^3}{L^3}\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
-            8: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xL^2-x^3}{L^3}\sin\left(\cfrac{y\pi}{L}\right) & 0\end{Bmatrix}$",
-            9: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{y\pi}{L}\right) & 0\end{Bmatrix}$",
-            10: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{xy(y-L)}{L^2}\sin\left(\cfrac{x\pi}{L}\right)\end{Bmatrix}$",
-            11: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{xy(y-L)}{L^3}\end{Bmatrix}$",
-            12: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{y\pi}{L}\right) & \cfrac{xy(y-L)}{L^2}\sin\left(\cfrac{x\pi}{L}\right)\end{Bmatrix}$",
-            13: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^2}{L^2}\sin\left(\cfrac{x\pi}{L}\right) & 0\end{Bmatrix}$",
-            14: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^2}{L^2}\sin\left(\cfrac{x\pi}{L}\right) & \cfrac{x^2}{L^2}\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
-            15: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{x^2y^2}{L^3}\right) & 0\end{Bmatrix}$"
+            1: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{x}{L} & 0\end{Bmatrix}$",
+            2: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{y}{L}\end{Bmatrix}$",
+            3: r"$u^{*~(%i)}=\begin{Bmatrix}0 & y\cfrac{x^2-xL}{L^3}\end{Bmatrix}$",
+            4: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \sin\left(\cfrac{x\pi}{L}\right)\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
+            5: r"$u^{*~(%i)}=\begin{Bmatrix}\sin\left(\cfrac{x\pi}{L}\right)\sin\left(\cfrac{y\pi}{L}\right) & 0\end{Bmatrix}$",
+            6: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^3} & 0\end{Bmatrix}$",
+            7: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{x^2(L-x)}{L^3}\sin\left(\cfrac{y\pi}{L}\right) & 0\end{Bmatrix}$",
+            8: r"$u^{*~(%i)}=\begin{Bmatrix} 0 & \cfrac{L^3-x^3}{L^3}\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
+            9: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xL^2-x^3}{L^3}\sin\left(\cfrac{y\pi}{L}\right) & 0\end{Bmatrix}$",
+            10: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{y\pi}{L}\right) & 0\end{Bmatrix}$",
+            11: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{xy(y-L)}{L^2}\sin\left(\cfrac{x\pi}{L}\right)\end{Bmatrix}$",
+            12: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{xy(y-L)}{L^3}\end{Bmatrix}$",
+            13: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{y\pi}{L}\right) & \cfrac{xy(y-L)}{L^2}\sin\left(\cfrac{x\pi}{L}\right)\end{Bmatrix}$",
+            14: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^2}{L^2}\sin\left(\cfrac{x\pi}{L}\right) & 0\end{Bmatrix}$",
+            15: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^2}{L^2}\sin\left(\cfrac{x\pi}{L}\right) & \cfrac{x^2}{L^2}\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
+            16: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{x^2y^2}{L^4}\right) & 0\end{Bmatrix}$"
       
 }
 
@@ -127,7 +120,7 @@ for i, (key, disp) in enumerate(virtual_disp.items()):
     z = np.ones((x.shape[0]-1,x.shape[1]-1))
     z[:] = np.nan
 
-    figs[j].axes[k].set_title(formulas[key] % (key+1), pad=20, fontsize=11)
+    figs[j].axes[k].set_title(formulas[key] % (key), pad=20, fontsize=11)
     figs[j].axes[k].set_box_aspect(1)
     
     # Draw displaced nodes and mesh
