@@ -50,7 +50,7 @@ virtual_disp = {
             12: [zeros_,x*y*(y-LENGTH)/LENGTH**3],
             13: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(y*math.pi/LENGTH), (x*y*(y-LENGTH)/LENGTH**2)*np.sin(x*math.pi/LENGTH)],
             14: [y**2*np.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_],
-            15: [y**2*np.sin(x*math.pi/LENGTH)/LENGTH**2, x**2*np.sin(y*math.pi/LENGTH)/LENGTH**2],
+            15: [zeros_, x**2*np.sin(y*math.pi/LENGTH)/LENGTH**2],
             16: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**4), zeros_]
                    
         }
@@ -70,7 +70,7 @@ formulas = {
             12: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{xy(y-L)}{L^3}\end{Bmatrix}$",
             13: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{y\pi}{L}\right) & \cfrac{xy(y-L)}{L^2}\sin\left(\cfrac{x\pi}{L}\right)\end{Bmatrix}$",
             14: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^2}{L^2}\sin\left(\cfrac{x\pi}{L}\right) & 0\end{Bmatrix}$",
-            15: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^2}{L^2}\sin\left(\cfrac{x\pi}{L}\right) & \cfrac{x^2}{L^2}\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
+            15: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{x^2}{L^2}\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
             16: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{x^2y^2}{L^4}\right) & 0\end{Bmatrix}$"
       
 }

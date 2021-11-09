@@ -242,7 +242,7 @@ def custom_loss(y_pred, y_true):
  
 #    return loss
 
-def plot_history(history, is_custom=None):
+def plot_history(history, output, is_custom=None, task=None):
     
     if is_custom == None:
         hist = pd.DataFrame(history.history)
@@ -255,12 +255,13 @@ def plot_history(history, is_custom=None):
     # find position of lowest validation loss
     minposs = hist['val_loss'].idxmin() + 1
     
-    plt.figure()
+    plt.figure(figsize=(8,6), constrained_layout = True)
+    plt.title(task)
     plt.xlabel('Epoch')
-    plt.ylabel(r'Mean Square Error [MPa\textsuperscript{2}]')
+    plt.ylabel(r'Mean Square Error [J\textsuperscript{2}]')
     plt.plot(hist['epoch'], hist['loss'], label='Train Error', color='#4b7394')
     plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
-    plt.axvline(minposs, linestyle='--', color='r',label='Early Stopping Checkpoint')
+    #plt.axvline(minposs, linestyle='--', color='r',label='Early Stopping Checkpoint')
 
     plt.legend()
 
@@ -272,8 +273,7 @@ def plot_history(history, is_custom=None):
     # plt.plot(hist['epoch'], hist['mse'], label='Train Error', color='#4b7394')
     # plt.plot(hist['epoch'], hist['val_mse'], label = 'Test Error', color='#6db1e2')
     # plt.legend()
-
-    plt.show()
+    plt.savefig(output + task + '.png', format="png", dpi=600, bbox_inches='tight')
 
 def standardize_data(X, y, scaler_x = None, scaler_y = None):
 
