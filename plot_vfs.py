@@ -48,10 +48,9 @@ virtual_disp = {
             10: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(y*math.pi/LENGTH), zeros_],
             11: [zeros_, (x*y*(y-LENGTH)/LENGTH**2)*np.sin(x*math.pi/LENGTH)],
             12: [zeros_,x*y*(y-LENGTH)/LENGTH**3],
-            13: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(y*math.pi/LENGTH), (x*y*(y-LENGTH)/LENGTH**2)*np.sin(x*math.pi/LENGTH)],
-            14: [y**2*np.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_],
-            15: [zeros_, x**2*np.sin(y*math.pi/LENGTH)/LENGTH**2],
-            16: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**4), zeros_]
+            13: [y**2*np.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_],
+            14: [zeros_, x**2*np.sin(y*math.pi/LENGTH)/LENGTH**2],
+            15: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**4), zeros_]
                    
         }
 
@@ -68,22 +67,21 @@ formulas = {
             10: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{y\pi}{L}\right) & 0\end{Bmatrix}$",
             11: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{xy(y-L)}{L^2}\sin\left(\cfrac{x\pi}{L}\right)\end{Bmatrix}$",
             12: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{xy(y-L)}{L^3}\end{Bmatrix}$",
-            13: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{y\pi}{L}\right) & \cfrac{xy(y-L)}{L^2}\sin\left(\cfrac{x\pi}{L}\right)\end{Bmatrix}$",
-            14: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^2}{L^2}\sin\left(\cfrac{x\pi}{L}\right) & 0\end{Bmatrix}$",
-            15: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{x^2}{L^2}\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
-            16: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{x^2y^2}{L^4}\right) & 0\end{Bmatrix}$"
+            13: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^2}{L^2}\sin\left(\cfrac{x\pi}{L}\right) & 0\end{Bmatrix}$",
+            14: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{x^2}{L^2}\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
+            15: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{x^2y^2}{L^4}\right) & 0\end{Bmatrix}$"
       
 }
 
 n_vfs = len(virtual_disp.keys())
 
 cols = 4
-rows = 3
+rows = 2
 
 n_figs = math.ceil(n_vfs / (cols*rows))
 
 figs = [plt.figure(num=i, figsize=(19.20,10.8)) for i in range(n_figs)]
-[fig.subplots_adjust(wspace=0.35, hspace=0.35) for fig in figs]
+[fig.subplots_adjust(wspace=0.35, hspace=0.25) for fig in figs]
 
 specs = [gridspec.GridSpec(ncols=cols, nrows=rows, figure=fig) for fig in figs]
 
@@ -112,15 +110,15 @@ j = 0
 #norm = TwoSlopeNorm(vmin=-0.1, vcenter=0, vmax=0.1)
 for i, (key, disp) in enumerate(virtual_disp.items()):
     
-    k = i % 12
+    k = i % 8
 
-    if i >= 12 and i % 12 == 0:
+    if i >= 8 and i % 8 == 0:
         j += 1
 
     z = np.ones((x.shape[0]-1,x.shape[1]-1))
     z[:] = np.nan
 
-    figs[j].axes[k].set_title(formulas[key] % (key), pad=20, fontsize=11)
+    figs[j].axes[k].set_title(formulas[key] % (key), pad=30, fontsize=14)
     figs[j].axes[k].set_box_aspect(1)
     
     # Draw displaced nodes and mesh
@@ -131,12 +129,14 @@ for i, (key, disp) in enumerate(virtual_disp.items()):
     
     k += 1
 
-#plt.savefig("virtual_fields.pdf", format="pdf")
+for i, fig in enumerate(figs):
+    plt.savefig("virtual_fields_%i.png" % (i), format="png", dpi=300)
+    plt.close()
 #plt.show()
 
-from matplotlib.backends.backend_pdf import PdfPages
+# from matplotlib.backends.backend_pdf import PdfPages
 
-pp = PdfPages('virtual_fields.pdf')
-for fig in figs:
-    pp.savefig(fig)
-pp.close()
+# pp = PdfPages('virtual_fields.pdf')
+# for fig in figs:
+#     pp.savefig(fig)
+# pp.close()

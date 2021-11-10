@@ -11,6 +11,7 @@ import seaborn as sns
 from cycler import cycler
 from operator import itemgetter
 import torch.nn.functional as F
+import torchmetrics
 
 import torch
 
@@ -72,7 +73,7 @@ model.eval()
 # Sampling data pass random seed for random sampling
 sampled_dfs = data_sampling(df_list, constants.DATA_SAMPLES)
 
-mean_squared_error = MeanSquaredError()
+mean_squared_error = torchmetrics.R2Score()
 
 print("----------------------\nMSE\n----------------------\n\tSxx\tSyy\tSxy\n")
 with torch.no_grad():
@@ -101,11 +102,11 @@ with torch.no_grad():
         sy_pred_var = y_pred_inv[:,1]
         sxy_pred_var = y_pred_inv[:,2]
 
-        mse_x = np.sqrt(mean_squared_error(torch.tensor(sx_pred_var), torch.tensor(sx_var_abaqus)))
-        mse_y = np.sqrt(mean_squared_error(torch.tensor(sy_pred_var), torch.tensor(sy_var_abaqus)))
-        mse_xy = np.sqrt(mean_squared_error(torch.tensor(sxy_pred_var), torch.tensor(sxy_var_abaqus)))
+        mse_x = mean_squared_error(torch.tensor(sx_pred_var), torch.tensor(sx_var_abaqus))
+        mse_y = mean_squared_error(torch.tensor(sy_pred_var), torch.tensor(sy_var_abaqus))
+        mse_xy = mean_squared_error(torch.tensor(sxy_pred_var), torch.tensor(sxy_var_abaqus))
 
-        print("%i\t%0.3f\t%0.3f\t%0.3f" % (i, mse_x, mse_y, mse_xy))
+        print("%i\t%0.5f\t%0.5f\t%0.5f" % (i, mse_x, mse_y, mse_xy))
 
         # sx_pred_var = y_pred[:,0]
         # sy_pred_var = y_pred[:,1]

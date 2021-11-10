@@ -422,7 +422,7 @@ val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
 
 history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
 
-task = r'[%i - %ix%i - %i] - %s - %i-VFs' % (N_INPUTS, N_UNITS, H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], n_vfs)
+task = r'[%i-%ix%i-%i]-%s-%i-VFs' % (N_INPUTS, N_UNITS, H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], n_vfs)
 
 import os
 output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2]
