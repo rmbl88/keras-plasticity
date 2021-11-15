@@ -1,18 +1,22 @@
-import torch
+import numpy as np
 import matplotlib.pyplot as plt
+from constants import *
+from mpl_toolkits import mplot3d
+import math
 
-model = torch.nn.Linear(2, 1)
-optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
-lr_sched = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=2, eta_min=0.001, last_epoch=-1)
+ # Defining nodal coordinates
+coords = np.linspace(0, int(LENGTH), 20)
+
+x, y = np.meshgrid(coords, coords)
+
+Z = np.sin(x**2*math.pi/LENGTH)/LENGTH**2
 
 
-lrs = []
+fig = plt.figure()
+ax = plt.axes(projection='3d')
+ax.plot_surface(x, y, Z, rstride=1, cstride=1,cmap='viridis',edgecolor='black')
+ax.set_xlabel('x')
+ax.set_ylabel('y')
+ax.set_zlabel('z')
 
-for i in range(150):
-    lr_sched.step()
-    lrs.append(
-        optimizer.param_groups[0]["lr"]
-    )
-
-plt.plot(lrs)
 plt.show()

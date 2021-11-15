@@ -264,7 +264,7 @@ def plot_history(history, output, is_custom=None, task=None):
     #plt.axvline(minposs, linestyle='--', color='r',label='Early Stopping Checkpoint')
 
     plt.legend()
-
+    #plt.show()
 
     
     # plt.figure()

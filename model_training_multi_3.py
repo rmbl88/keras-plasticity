@@ -20,6 +20,7 @@ import math
 import torch
 import time
 import itertools
+from scipy.optimize import fsolve
 
 # -------------------------------
 #        Class definitions
@@ -105,7 +106,39 @@ class NeuralNetwork(nn.Module):
 
 # -------------------------------
 #       Method definitions
-# ------------------------------- 
+# -------------------------------
+
+def func(x, H):
+
+    A = [x[0]**2 - H[0]]
+    A.append(x[0] * x[1] - H[1])
+    A.append(x[0] * x[3] - H[2])
+    A.append(x[1]**2 + x[2]**2 - H[3])
+    A.append(x[1] * x[3] + x[2] * x[4] - H[4])
+    A.append(x[5]**2 - H[5])
+    
+    return A
+    
+# As in: https://gist.github.com/MasanoriYamada/d1d8ca884d200e73cca66a4387c7470a
+def get_batch_jacobian(net, x, to):
+    # noutputs: total output dim (e.g. net(x).shape(b,1,4,4) noutputs=1*4*4
+    # b: batch
+    # i: in_dim
+    # o: out_dim
+    # ti: total input dim
+    # to: total output dim
+    x_batch = x.shape[0]
+    x_shape = x.shape[1:]
+    x = x.unsqueeze(1)  # b, 1 ,i
+    x = x.repeat(1, to, *(1,)*len(x.shape[2:]))  # b * to,i  copy to o dim
+    x.requires_grad_(True)
+    tmp_shape = x.shape
+    y = net(x.reshape(-1, *tmp_shape[2:]))  # x.shape = b*to,i y.shape = b*to,to
+    y_shape = y.shape[1:]  # y.shape = b*to,to
+    y = y.reshape(x_batch, to, to)  # y.shape = b,to,to
+    input_val = torch.eye(to).reshape(1, to, to).repeat(x_batch, 1, 1)  # input_val.shape = b,to,to  value is (eye)
+    y.backward(input_val)  # y.shape = b,to,to
+    return x.grad.reshape(x_batch, *y_shape, *x_shape).data  # x.shape = b,o,i
 
 def get_v_fields(cent_x, cent_y, x, y):
 
@@ -131,7 +164,11 @@ def get_v_fields(cent_x, cent_y, x, y):
         12: torch.stack([zeros_, x*y*(y-LENGTH)/LENGTH**3], 1),
         13: torch.stack([y**2*torch.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_], 1),
         14: torch.stack([zeros_, x**2*torch.sin(y*math.pi/LENGTH)/LENGTH**2], 1),
-        15: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**4), zeros_], 1)
+        15: torch.stack([(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**4), zeros_], 1),
+        16: torch.stack([torch.sin(x*math.pi/LENGTH)/LENGTH, zeros_], 1),
+        17: torch.stack([zeros_, torch.sin(y*math.pi/LENGTH)/LENGTH], 1),
+        18: torch.stack([torch.sin(x**3*math.pi/LENGTH**3)/LENGTH**3, zeros_], 1),
+        19: torch.stack([zeros_, torch.sin(y**3*math.pi/LENGTH**3)/LENGTH**3], 1)
     }    
 
     # Defining virtual strain fields
@@ -150,7 +187,11 @@ def get_v_fields(cent_x, cent_y, x, y):
         12:torch.stack([zeros, cent_x*(2*cent_y-LENGTH)/LENGTH**3, cent_y*(cent_y-LENGTH)/LENGTH**3], 1),
         13: torch.stack([cent_y**2*torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**3, zeros, 2*cent_y*torch.sin(cent_x*math.pi/LENGTH)/LENGTH**2], 1),
         14: torch.stack([zeros, cent_x**2*torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**3, 2*cent_x*torch.sin(cent_y*math.pi/LENGTH)/LENGTH**2], 1),
-        15: torch.stack([((2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**4)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**4)*2*cent_x*cent_y**2/LENGTH**6), zeros, ((cent_x**2-cent_x*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**4)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**4)*2*cent_x**2*cent_y/LENGTH**6)],1)  
+        15: torch.stack([((2*cent_x*cent_y-cent_y*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**4)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**4)*2*cent_x*cent_y**2/LENGTH**6), zeros, ((cent_x**2-cent_x*LENGTH)*torch.sin(cent_x**2*cent_y**2/LENGTH**4)/LENGTH**2) + (cent_x*cent_y*(cent_x-LENGTH)*torch.cos(cent_x**2*cent_y**2/LENGTH**4)*2*cent_x**2*cent_y/LENGTH**6)],1),
+        16: torch.stack([torch.cos(cent_x*math.pi/LENGTH)*math.pi/LENGTH**2, zeros, zeros],1),
+        17: torch.stack([zeros, torch.cos(cent_y*math.pi/LENGTH)*math.pi/LENGTH**2, zeros],1),
+        18: torch.stack([torch.cos(cent_x**3*math.pi/LENGTH**3)*3*cent_x**2*math.pi/LENGTH**6, zeros, zeros], 1),
+        19: torch.stack([zeros, torch.cos(cent_y**3*math.pi/LENGTH**3)*3*cent_y**2*math.pi/LENGTH**6, zeros], 1)
     }
 
     # Total number of virtual fields
@@ -208,6 +249,28 @@ def train_loop(dataloader, model, loss_fn, optimizer):
 
         # Computing prediction
         pred = model(X_train)
+
+        # Calculating global force from stress predictions
+        #global_f_pred = torch.sum(pred * ELEM_AREA * ELEM_THICK / LENGTH, 0)[:-1]
+
+        # dsde = get_batch_jacobian(model, X_train, N_OUTPUTS)[:,:,-3:]
+        # ltri = torch.stack([torch.tril(dsde[i]).flatten() for i in range(batch_size)])
+        # ltri = torch.stack([ltri[i][ltri[i].nonzero()] for i in range(batch_size)]).detach().numpy()
+        
+        # #Ensure H
+        # sols = []
+        # for i in range(batch_size):
+        #     l = fsolve(func, [1.0,0.0,1.0,0.0,0.0,1.0], args=ltri[i].reshape(-1), xtol=1e-3)
+        #     h = np.zeros((3, 3))
+        #     inds = np.triu_indices(len(h))
+        #     h[inds] = l
+        #     h = torch.tensor(h + h.T - np.diag(np.diag(h)), dtype=torch.float32)
+        #     sols.append(h)
+
+        # H = torch.stack(sols)
+        # e = X_train[:,-3:].reshape([batch_size, 3, 1])
+        # s = (H @ e).reshape([batch_size,3])
+        
 
         # Computing the internal virtual works
         int_work = -ELEM_THICK * torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
@@ -339,7 +402,7 @@ test_generator = DataGenerator(X, y, f, coord, partition['test'], batch_size, Tr
 N_INPUTS = X.shape[1]
 N_OUTPUTS = y.shape[1]
 
-N_UNITS = 32
+N_UNITS = 8
 H_LAYERS = 1
 
 model = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
@@ -351,6 +414,7 @@ epochs = 75
 # Optimization variables
 learning_rate = 0.1
 loss_fn = custom_loss
+f_loss = torch.nn.MSELoss()
 
 optimizer = torch.optim.Adam(params=model.parameters(), lr=learning_rate)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=3, factor=0.2, threshold=1e-3)
@@ -429,8 +493,9 @@ output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2]
 output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '/loss/'
 output_prints = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '/prints/'
 output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '/models/'
+output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '/val/'
 
-directories = [output_task, output_loss, output_prints, output_models]
+directories = [output_task, output_loss, output_prints, output_models, output_val]
 
 for dir in directories:
     try:

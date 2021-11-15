@@ -26,7 +26,7 @@ plt.rcParams.update(constants.PARAMS)
 anim_writer=animation.PillowWriter(fps=12, codec='libx264', bitrate=2)
 
 DIR = 'outputs/9-elem/loss/'
-ARCH = '[6-8x2-3]'
+ARCH = '[6-8x1-3]'
 
 file_list = []
 df_list = []
@@ -58,6 +58,13 @@ for i, df in enumerate(df_list):
         epochs = df['epoch']
 
 ax.axvline(0, ls='-', color='lightgray', lw=0.75, zorder=10)
+
+handles, labels = ax.get_legend_handles_labels()
+# sort both labels and handles by labels
+labels, handles = zip(*sorted(zip(labels,handles), key=lambda x: int(x[0].split('-')[-2])))
+
+ax.legend(handles, labels)
+
 import matplotlib.ticker as ticker
 #ax.xaxis.set_major_locator(ticker.MultipleLocator(5))      
 plt.legend(loc='upper right', prop={'size': 16})      

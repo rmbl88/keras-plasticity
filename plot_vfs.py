@@ -50,7 +50,11 @@ virtual_disp = {
             12: [zeros_,x*y*(y-LENGTH)/LENGTH**3],
             13: [y**2*np.sin(x*math.pi/LENGTH)/LENGTH**2, zeros_],
             14: [zeros_, x**2*np.sin(y*math.pi/LENGTH)/LENGTH**2],
-            15: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**4), zeros_]
+            15: [(x*y*(x-LENGTH)/LENGTH**2)*np.sin(x**2*y**2/LENGTH**4), zeros_],
+            16: [np.sin(x*math.pi/LENGTH)/LENGTH, zeros_],
+            17: [zeros_, np.sin(y*math.pi/LENGTH)/LENGTH],
+            18: [np.sin(x**3*math.pi/LENGTH**3)/LENGTH**3, zeros_],
+            19: [zeros_, np.sin(y**3*math.pi/LENGTH**3)/LENGTH**3],
                    
         }
 
@@ -69,13 +73,17 @@ formulas = {
             12: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{xy(y-L)}{L^3}\end{Bmatrix}$",
             13: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^2}{L^2}\sin\left(\cfrac{x\pi}{L}\right) & 0\end{Bmatrix}$",
             14: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{x^2}{L^2}\sin\left(\cfrac{y\pi}{L}\right)\end{Bmatrix}$",
-            15: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{x^2y^2}{L^4}\right) & 0\end{Bmatrix}$"
+            15: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{xy(x-L)}{L^2}\sin\left(\cfrac{x^2y^2}{L^4}\right) & 0\end{Bmatrix}$",
+            16: r"$u^{*~(%i)}=\begin{Bmatrix}\sin\left(\cfrac{x\pi}{L}\right)\cfrac{1}{L} & 0\end{Bmatrix}$",
+            17: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \sin\left(\cfrac{y\pi}{L}\right)\cfrac{1}{L}\end{Bmatrix}$",
+            18: r"$u^{*~(%i)}=\begin{Bmatrix}\sin\left(\cfrac{x^3\pi}{L^3}\right)\cfrac{1}{L^3} & 0\end{Bmatrix}$",
+            19: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \sin\left(\cfrac{y^3\pi}{L^3}\right)\cfrac{1}{L^3}\end{Bmatrix}$",
       
 }
 
 n_vfs = len(virtual_disp.keys())
 
-cols = 4
+cols = 5
 rows = 2
 
 n_figs = math.ceil(n_vfs / (cols*rows))
@@ -110,15 +118,15 @@ j = 0
 #norm = TwoSlopeNorm(vmin=-0.1, vcenter=0, vmax=0.1)
 for i, (key, disp) in enumerate(virtual_disp.items()):
     
-    k = i % 8
+    k = i % (cols*rows)
 
-    if i >= 8 and i % 8 == 0:
+    if i >= (cols*rows) and i % (cols*rows) == 0:
         j += 1
 
     z = np.ones((x.shape[0]-1,x.shape[1]-1))
     z[:] = np.nan
 
-    figs[j].axes[k].set_title(formulas[key] % (key), pad=30, fontsize=14)
+    figs[j].axes[k].set_title(formulas[key] % (key), pad=30, fontsize=10)
     figs[j].axes[k].set_box_aspect(1)
     
     # Draw displaced nodes and mesh
@@ -129,14 +137,14 @@ for i, (key, disp) in enumerate(virtual_disp.items()):
     
     k += 1
 
-for i, fig in enumerate(figs):
-    plt.savefig("virtual_fields_%i.png" % (i), format="png", dpi=300)
-    plt.close()
-#plt.show()
+# for i, fig in enumerate(figs):
+#     plt.savefig("virtual_fields_%i.png" % (i), format="png", dpi=300)
+#     plt.close()
+# #plt.show()
 
-# from matplotlib.backends.backend_pdf import PdfPages
+from matplotlib.backends.backend_pdf import PdfPages
 
-# pp = PdfPages('virtual_fields.pdf')
-# for fig in figs:
-#     pp.savefig(fig)
-# pp.close()
+pp = PdfPages('virtual_fields.pdf')
+for fig in figs:
+    pp.savefig(fig)
+pp.close()
