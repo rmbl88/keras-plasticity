@@ -96,7 +96,7 @@ for i, model in enumerate(model_list):
 # Model metrics
    
 
-elem_ids = [9, 7, 5]
+elem_ids = [1, 3, 5, 7, 9]
 
 FRAMES = 20
 

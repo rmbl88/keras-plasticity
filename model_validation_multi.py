@@ -64,7 +64,7 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 
 # Loading ANN model
 model = NeuralNetwork(6, 3, 8, 1)
-model.load_state_dict(torch.load('models/ann_torch/model_1.pt'))
+model.load_state_dict(torch.load('outputs\9-elem\models\[6-8x1-3]-9-elem-19-VFs.pt'))
 model.eval()
 #model = keras.models.load_model('models/ann3', compile=False)
 
@@ -114,6 +114,8 @@ with torch.no_grad():
         
         fig , (ax1, ax2, ax3) = plt.subplots(1,3)
         fig.suptitle(r''+ df['tag'][0].replace('_','\_') + ': element \#' + str(df['id'][0]),fontsize=14)
+        fig.set_size_inches(10, 6)
+        fig.subplots_adjust(bottom=0.2, top=0.8)
     
         ax1.plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS')
         ax1.plot(ex_var_abaqus, sx_pred_var, label='ANN')

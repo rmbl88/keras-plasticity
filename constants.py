@@ -4,8 +4,8 @@ SEED = 444
 VAL_DIR = 'data/validation/'
 VAL_DIR_MULTI = 'data/validation_multi/9-elem-linear-elastic/'
 TRAIN_DIR = 'data/training/'
-TRAIN_MULTI_DIR = 'data/training_multi/9-elem-linear-elastic/'
-DATA_SAMPLES = 500
+TRAIN_MULTI_DIR = 'data/training_multi/9-elem/'
+DATA_SAMPLES = 1000
 TEST_SIZE = 0.33
 
 ELEM_AREA = 1
