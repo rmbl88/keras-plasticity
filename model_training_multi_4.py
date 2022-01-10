@@ -4,6 +4,8 @@
 import re
 
 import joblib
+from numpy.lib.function_base import bartlett
+from torch._C import StreamObjType
 from constants import *
 from functions import custom_loss, data_sampling, load_dataframes, select_features_multi, standardize_data, plot_history
 from functions import EarlyStopping
@@ -24,12 +26,13 @@ import time
 import itertools
 from scipy.optimize import fsolve
 import wandb
+from sklearn import preprocessing
 
 # -------------------------------
 #        Class definitions
 # -------------------------------
 class DataGenerator(tf.keras.utils.Sequence):
-    def __init__(self, deformation, stress, force, coord, list_IDs, batch_size, shuffle, std=True):
+    def __init__(self, deformation, stress, force, coord, list_IDs, batch_size, shuffle=False, std=True):
         super().__init__()
         self.X = deformation.iloc[list_IDs]
         self.y = stress.iloc[list_IDs]
@@ -51,8 +54,10 @@ class DataGenerator(tf.keras.utils.Sequence):
         indexes = np.array([self.indexes[index]+i for i in range(self.batch_size)])
 
         # Generate data
-        X, y, f, coord = self.__data_generation(np.random.permutation(indexes))
-        
+        if self.shuffle == True:
+            X, y, f, coord = self.__data_generation(np.random.permutation(indexes))
+        else:
+            X, y, f, coord = self.__data_generation(indexes)
         return X, y, f, coord
 
     def on_epoch_end(self):
@@ -271,8 +276,13 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         # Extracting variables for training
         X_train, y_train, f_train, coord = dataloader[batch]
         
+        if batch == 0:
+            s_past = stress_hist_0[0]
+        else:
+            s_past = stress_hist_0[batch-1]
+        
         # Converting to pytorch tensors
-        X_train = torch.tensor(X_train, dtype=torch.float64)
+        X_train = torch.cat([torch.tensor(s_past, dtype=torch.float64),torch.tensor(X_train, dtype=torch.float64)],1)
         X_train.requires_grad = True
         y_train = torch.tensor(y_train, dtype=torch.float64)
         f_train = torch.tensor(f_train, dtype=torch.float64) + 0.0
@@ -297,6 +307,8 @@ def train_loop(dataloader, model, loss_fn, optimizer):
 
         #pred = torch.cat([pred_1,pred_2,pred_3],1)
         pred=model(X_train)
+        if batch != 0:
+            stress_hist_1[batch] = pred.detach().numpy()
 
         # Calculating global force from stress predictions
         # global_f_pred = torch.sum(pred * ELEM_AREA * ELEM_THICK / LENGTH, 0)[:-1]
@@ -435,11 +447,11 @@ data = pd.concat(sampled_dfs, axis=0, ignore_index=True)
 
 # Reorganizing dataset by time increment, subsequent grouping by tag and final shuffling
 data_by_t = [df for _, df in data.groupby(['t'])]
-random.shuffle(data_by_t)
+#random.shuffle(data_by_t)
 data_by_tag = [[df for _, df in group.groupby(['tag'])] for group in data_by_t]
-random.shuffle(data_by_tag)
+#random.shuffle(data_by_tag)
 data_by_batches = list(itertools.chain(*data_by_tag))
-random.shuffle(data_by_batches)
+#random.shuffle(data_by_batches)
 
 batch_size = len(data_by_batches[0])
 
@@ -451,14 +463,16 @@ X, y, f, coord = select_features_multi(data)
 
 # Performing test/train split
 partition = {"train": None, "test": None}
-partition['train'], partition['test'] = next(GroupShuffleSplit(test_size=TEST_SIZE, n_splits=2, random_state = SEED).split(data, groups=data['t']))
+#partition['train'], partition['test'] = next(GroupShuffleSplit(test_size=TEST_SIZE, n_splits=2, random_state = SEED).split(data, groups=data['t']))
+
+partition["train"] = X.index.tolist()
 
 # Preparing data generators for mini-batch training
-train_generator = DataGenerator(X, y, f, coord, partition["train"], batch_size, True, std=True)
-test_generator = DataGenerator(X, y, f, coord, partition['test'], batch_size, True, std=False)
+train_generator = DataGenerator(X, y, f, coord, partition['train'], batch_size, False, std=True)
+#test_generator = DataGenerator(X, y, f, coord, partition['test'], batch_size, False, std=True)
 
 # Model variables
-N_INPUTS = X.shape[1]
+N_INPUTS = X.shape[1] + 3
 N_OUTPUTS = y.shape[1]
 
 N_UNITS = 8
@@ -469,7 +483,7 @@ model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 model_1.apply(init_weights)
 
 # Training variables
-epochs = 100
+epochs = 300
 
 # Optimization variables
 learning_rate = 0.1
@@ -477,14 +491,18 @@ loss_fn = custom_loss
 f_loss = torch.nn.MSELoss()
 
 optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.2, threshold=1e-3, min_lr=1e-4)
+#scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=20, factor=0.2, threshold=1e-3, min_lr=1e-4)
 
 # Container variables for history purposes
 train_loss = []
 v_work = []
-val_loss = []
+#val_loss = []
 epochs_ = []
 
+stress_hist_0 = np.random.normal(0.0,1.0,(len(train_generator),batch_size,3)).astype('float64')
+stress_hist_1 = np.zeros((len(train_generator),batch_size,3)).astype('float64')
+
+scaler_s = preprocessing.StandardScaler()
 # Initializing the early_stopping object
 #early_stopping = EarlyStopping(patience=12, verbose=True)
 
@@ -517,16 +535,21 @@ for t in range(epochs):
     except:
         print('. loss: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], v_work[t], end_train - start_train))
 
-    # Test loop
-    start_test = time.time()
+    # # Test loop
+    # start_test = time.time()
 
-    batch_val_losses = test_loop(test_generator, model_1, loss_fn)
+    # batch_val_losses = test_loop(test_generator, model_1, loss_fn)
 
-    val_loss.append(torch.mean(batch_val_losses).item())
+    # val_loss.append(torch.mean(batch_val_losses).item())
 
-    end_test = time.time()
+    # end_test = time.time()
 
-    print('. v_loss: %.3e -- %.3fs' % (val_loss[t], end_test - start_test))
+    # print('. v_loss: %.3e -- %.3fs' % (val_loss[t], end_test - start_test))
+
+    stress_hist_0 = copy.deepcopy(stress_hist_1)
+    stress_hist_0 = np.reshape(stress_hist_0, (len(train_generator)*batch_size,3))
+    scaler_s.fit(stress_hist_0)
+    stress_hist_0 = scaler_s.transform(stress_hist_0).reshape((len(train_generator),batch_size,3))
 
     end_epoch = time.time()
 
@@ -551,18 +574,18 @@ print("Done!")
 
 epochs_ = np.reshape(np.array(epochs_), (len(epochs_),1))
 train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
-val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
+#val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
 
-history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
+history = pd.DataFrame(np.concatenate([epochs_, train_loss], axis=1), columns=['epoch','loss'])
 
 task = r'[%i-%ix%i-%i]-%s-%i-VFs' % (N_INPUTS, N_UNITS, H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], n_vfs)
 
 import os
-output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_testfull'
-output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_testfull/loss/'
-output_prints = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_testfull/prints/'
-output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_testfull/models/'
-output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_testfull/val/'
+output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_feedback'
+output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_feedback/loss/'
+output_prints = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_feedback/prints/'
+output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_feedback/models/'
+output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_feedback/val/'
 
 directories = [output_task, output_loss, output_prints, output_models, output_val]
 

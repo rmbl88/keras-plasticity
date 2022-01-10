@@ -88,15 +88,15 @@ def plot_history(history, output, is_custom=None, task=None):
     plt.rcParams.update(constants.PARAMS)
 
     # find position of lowest validation loss
-    minposs = hist['val_loss'].idxmin() + 1
+    #minposs = hist['val_loss'].idxmin() + 1
     
     plt.figure(figsize=(8,6), constrained_layout = True)
     plt.title(task)
     plt.xlabel('Epoch')
     plt.ylabel(r'Mean Square Error [J\textsuperscript{2}]')
     plt.plot(hist['epoch'], hist['loss'], label='Train Error', color='#4b7394')
-    plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
-    plt.axvline(minposs, linestyle='--', color='r',label='Early Stopping Checkpoint')
+    #plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
+    #plt.axvline(minposs, linestyle='--', color='r',label='Early Stopping Checkpoint')
 
     plt.legend()
     #plt.show()
