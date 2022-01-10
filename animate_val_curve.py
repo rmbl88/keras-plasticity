@@ -46,7 +46,7 @@ class NeuralNetwork(nn.Module):
         return self.layers[-1](x)
 
 # Constants
-DATA = '9-elem'
+DATA = '9-elem-jm'
 DIR_MODEL = 'outputs/' + DATA + '/models/'
 DIR_DATA = 'data/training_multi/'+ DATA + '/'
 DIR_VAL = 'outputs/' + DATA + '/val/'
@@ -193,7 +193,7 @@ with torch.no_grad():
 
 
                 io_buf = io.BytesIO()
-                fig.savefig(io_buf, format='png', dpi=300)
+                fig.savefig(io_buf, format='png', dpi=150)
                 io_buf.seek(0)
                 img_arr = np.frombuffer(io_buf.getvalue(), dtype=np.uint8)
                 img = cv2.imdecode(img_arr, 1)

@@ -25,16 +25,17 @@ plt.rcParams.update(constants.PARAMS)
 
 anim_writer=animation.PillowWriter(fps=12, codec='libx264', bitrate=2)
 
-DIR = 'outputs/9-elem/loss/'
-ARCH = '[6-8x1-3]'
+DATA = '9-elem-jm'
+DIR_LOSS = 'outputs/' + DATA + '/loss/'
+ARCH = '[6-8x2-3]'
 
 file_list = []
 df_list = []
 
-for r, d, f in os.walk(DIR):
+for r, d, f in os.walk(DIR_LOSS):
     for file in sorted(f):
         if ARCH in file and '.csv' in file:
-            file_list.append(DIR + file)
+            file_list.append(DIR_LOSS + file)
 
 df_list = [pd.read_csv(file, sep=',', index_col=0) for file in file_list]
 
@@ -52,10 +53,14 @@ losses = dict.fromkeys(np.arange(len(file_list)))
 for i, df in enumerate(df_list):
 
     label = file_list[i].split('/')[-1][:-4]
+    if '-jm-' in label:
+        label = label.replace('-jm-', '-')
     ax.plot(df['epoch'], df['loss'], label=label, lw=1.5)
     losses[i] = df['loss']
     if i == 0:
         epochs = df['epoch']
+
+plt.legend(loc='upper right', prop={'size': 12}) 
 
 ax.axvline(0, ls='-', color='lightgray', lw=0.75, zorder=10)
 
@@ -67,8 +72,8 @@ ax.legend(handles, labels)
 
 import matplotlib.ticker as ticker
 #ax.xaxis.set_major_locator(ticker.MultipleLocator(5))      
-plt.legend(loc='upper right', prop={'size': 16})      
+     
 ani = animation.FuncAnimation(fig, update, len(epochs), interval=12, blit=False, repeat_delay=3000, cache_frame_data=False)
-ani.save(DIR + ARCH + '_loss_anim.gif', writer=anim_writer, dpi=300)
+ani.save(DIR_LOSS + ARCH + '_loss_anim.gif', writer=anim_writer, dpi=150)
 
 print('hey')
