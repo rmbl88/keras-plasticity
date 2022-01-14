@@ -4,8 +4,9 @@
 import re
 
 import joblib
+from numpy.core.fromnumeric import mean
 from numpy.lib.function_base import bartlett
-from torch._C import StreamObjType
+from torch._C import StreamObjType, dtype
 from constants import *
 from functions import custom_loss, data_sampling, load_dataframes, select_features_multi, standardize_data, plot_history
 from functions import EarlyStopping
@@ -263,7 +264,7 @@ def init_weights(m):
         #torch.nn.init.zeros_(m.bias)
         torch.nn.init.ones_(m.bias)
 
-def train_loop(dataloader, model, loss_fn, optimizer):
+def train_loop(dataloader, model, loss_fn, optimizer, stress_hist=None):
     '''
     Custom loop for neural network training, using mini-batches
 
@@ -272,18 +273,16 @@ def train_loop(dataloader, model, loss_fn, optimizer):
     losses = torch.zeros(num_batches)
     v_work_real = torch.zeros(num_batches)
 
+    if t >= 99:
+        pred_hist = torch.zeros(num_batches,batch_size,3, dtype=torch.float64)
+    
     for batch in range(num_batches):
-        # Extracting variables for training
+        
+        # Extracting variables for training        
         X_train, y_train, f_train, coord = dataloader[batch]
-        
-        if batch == 0:
-            s_past = stress_hist_0[0]
-        else:
-            s_past = stress_hist_0[batch-1]
-        
+
         # Converting to pytorch tensors
-        X_train = torch.cat([torch.tensor(s_past, dtype=torch.float64),torch.tensor(X_train, dtype=torch.float64)],1)
-        X_train.requires_grad = True
+        X_train = torch.tensor(X_train, dtype=torch.float64)
         y_train = torch.tensor(y_train, dtype=torch.float64)
         f_train = torch.tensor(f_train, dtype=torch.float64) + 0.0
         coord = torch.tensor(coord, dtype=torch.float64)
@@ -300,15 +299,19 @@ def train_loop(dataloader, model, loss_fn, optimizer):
 
         total_vfs, v_disp, v_strain = get_v_fields(cent_x, cent_y, x, y)
 
-        # Computing prediction
-        # pred_1 = model[0](X_train[:,[0,3,6]])
-        # pred_2 = model[1](X_train[:,[1,4,7]])
-        # pred_3 = model[2](X_train[:,[2,5,8]])
+        if t > 99:
 
-        #pred = torch.cat([pred_1,pred_2,pred_3],1)
-        pred=model(X_train)
-        if batch != 0:
-            stress_hist_1[batch] = pred.detach().numpy()
+            if batch < trials:
+                s_past = stress_hist[batch]
+            else:
+                s_past = stress_hist[batch-trials]
+
+            pred = model(torch.cat([s_past,X_train],1))
+            pred_hist[batch] = pred  
+        else:
+            pred = model(X_train)
+            if t == 99:
+                pred_hist[batch] = pred 
 
         # Calculating global force from stress predictions
         # global_f_pred = torch.sum(pred * ELEM_AREA * ELEM_THICK / LENGTH, 0)[:-1]
@@ -359,15 +362,25 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         # Backpropagation and weight's update
         optimizer.zero_grad()
         loss.backward()
+
+        #Freezing pre-trained weights of first layer
+        if t > 99:
+            for i, param in enumerate(model.parameters()):
+                if i == 0:
+                    param.grad[:,3:] = torch.zeros_like(param.grad[:,3:])
+
         optimizer.step()
         
         # Saving loss values
         losses[batch] = loss
         v_work_real[batch] = cost
-
+    
         print('\r>Train: %d/%d' % (batch + 1, num_batches), end='')
 
-    return losses, v_work_real, total_vfs
+    if t >= 99:
+        return losses, v_work_real, total_vfs, pred_hist.detach().numpy()
+    else:
+        return losses, v_work_real, total_vfs
 
 def test_loop(dataloader, model, loss_fn):
     
@@ -443,20 +456,23 @@ df_list, _ = load_dataframes(TRAIN_MULTI_DIR)
 sampled_dfs = data_sampling(df_list, DATA_SAMPLES)
 
 # Merging training data
-data = pd.concat(sampled_dfs, axis=0, ignore_index=True)
+data_orig = pd.concat(sampled_dfs, axis=0, ignore_index=True)
 
 # Reorganizing dataset by time increment, subsequent grouping by tag and final shuffling
-data_by_t = [df for _, df in data.groupby(['t'])]
-#random.shuffle(data_by_t)
+data_by_t = [df for _, df in data_orig.groupby(['t'])]
+random.shuffle(data_by_t)
 data_by_tag = [[df for _, df in group.groupby(['tag'])] for group in data_by_t]
-#random.shuffle(data_by_tag)
+random.shuffle(data_by_tag)
 data_by_batches = list(itertools.chain(*data_by_tag))
-#random.shuffle(data_by_batches)
+random.shuffle(data_by_batches)
 
 batch_size = len(data_by_batches[0])
 
 # Concatenating data groups
 data = pd.concat(data_by_batches).reset_index(drop=True)
+
+# Number of mechnical trials
+trials=len(set(data['tag'].to_list()))
 
 # Selecting model features
 X, y, f, coord = select_features_multi(data)
@@ -472,26 +488,30 @@ train_generator = DataGenerator(X, y, f, coord, partition['train'], batch_size, 
 #test_generator = DataGenerator(X, y, f, coord, partition['test'], batch_size, False, std=True)
 
 # Model variables
-N_INPUTS = X.shape[1] + 3
+N_INPUTS = X.shape[1]
 N_OUTPUTS = y.shape[1]
 
 N_UNITS = 8
 H_LAYERS = 1
 
 model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
+model_2 = NeuralNetwork(N_INPUTS+3, N_OUTPUTS, N_UNITS, H_LAYERS)
 
 model_1.apply(init_weights)
+model_2.apply(init_weights)
 
 # Training variables
-epochs = 300
+epochs = 200
 
 # Optimization variables
-learning_rate = 0.1
+learning_rate_1 = 0.1
+learning_rate_2 = 0.1
 loss_fn = custom_loss
 f_loss = torch.nn.MSELoss()
 
-optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
-#scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=20, factor=0.2, threshold=1e-3, min_lr=1e-4)
+optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate_1)
+
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.2, threshold=1e-3, min_lr=1e-4)
 
 # Container variables for history purposes
 train_loss = []
@@ -499,10 +519,10 @@ v_work = []
 #val_loss = []
 epochs_ = []
 
-stress_hist_0 = np.random.normal(0.0,1.0,(len(train_generator),batch_size,3)).astype('float64')
-stress_hist_1 = np.zeros((len(train_generator),batch_size,3)).astype('float64')
+stress_hist = np.zeros((len(train_generator),batch_size,3)).astype('float64')
 
-scaler_s = preprocessing.StandardScaler()
+stress_scaler = preprocessing.StandardScaler()
+
 # Initializing the early_stopping object
 #early_stopping = EarlyStopping(patience=12, verbose=True)
 
@@ -521,7 +541,41 @@ for t in range(epochs):
     
     # Train loop
     start_train = time.time()
-    batch_losses, batch_v_work, n_vfs = train_loop(train_generator, model_1, loss_fn, optimizer)
+    
+    if t > 99:
+
+        stress_feed = copy.deepcopy(stress_hist)
+        stress_scaler.fit(np.reshape(stress_feed,(-1,3)))        
+        stress_feed = stress_scaler.transform(np.reshape(stress_feed,(-1,3)))    
+        stress_feed = torch.tensor(np.reshape(stress_feed,stress_hist.shape))
+        #std_, mean_ = torch.std_mean(torch.reshape(stress_feed,[-1,3]),0)
+        #stress_feed = (stress_feed - mean_)/std_
+        
+        batch_losses, batch_v_work, n_vfs, stress_hist = train_loop(train_generator, model_2, loss_fn, optimizer_2, stress_feed)
+
+    elif t == 99:
+
+        batch_losses, batch_v_work, n_vfs, stress_hist = train_loop(train_generator, model_1, loss_fn, optimizer)
+        
+        with torch.no_grad():
+            for i in range(len(model_1.layers)):
+                weight = model_1.layers[i].weight.clone()
+                bias = model_1.layers[i].bias.clone()
+                # Transfer weights of 1st layer
+                if i == 0:
+                    model_2.layers[i].weight[:, 3:] = weight
+                else:
+                    model_2.layers[i].weight = torch.nn.Parameter(weight)
+                model_2.layers[i].bias = torch.nn.Parameter(bias)
+            prelu = model_1.activation.weight.clone()
+            model_2.activation.weight = torch.nn.Parameter(prelu)
+        
+        optimizer_2 = torch.optim.Adam(params=list(model_2.parameters()), lr=learning_rate_2)
+        scheduler_2 = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer_2, 'min', patience=8, factor=0.2, threshold=1e-3, min_lr=1e-4)
+
+    else:
+
+        batch_losses, batch_v_work, n_vfs = train_loop(train_generator, model_1, loss_fn, optimizer)        
     
     train_loss.append(torch.mean(batch_losses).item())
     v_work.append(torch.mean(batch_v_work).item())
@@ -530,8 +584,15 @@ for t in range(epochs):
     
     #Apply learning rate scheduling if defined
     try:
-        scheduler.step(train_loss[t])       
-        print('. t_loss: %.3e -> lr: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], scheduler._last_lr[0], v_work[t], end_train - start_train))
+        
+        if t <= 99:
+            s = scheduler
+        else:
+            s = scheduler_2
+    
+        s.step(train_loss[t])
+        
+        print('. t_loss: %.3e -> lr: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], s._last_lr[0], v_work[t], end_train - start_train))
     except:
         print('. loss: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], v_work[t], end_train - start_train))
 
@@ -545,11 +606,6 @@ for t in range(epochs):
     # end_test = time.time()
 
     # print('. v_loss: %.3e -- %.3fs' % (val_loss[t], end_test - start_test))
-
-    stress_hist_0 = copy.deepcopy(stress_hist_1)
-    stress_hist_0 = np.reshape(stress_hist_0, (len(train_generator)*batch_size,3))
-    scaler_s.fit(stress_hist_0)
-    stress_hist_0 = scaler_s.transform(stress_hist_0).reshape((len(train_generator),batch_size,3))
 
     end_epoch = time.time()
 
@@ -600,5 +656,6 @@ history.to_csv(output_loss + task + '.csv', sep=',', encoding='utf-8', header='t
 
 plot_history(history, output_prints, True, task)
 
-torch.save(model_1.state_dict(), output_models + task + '_1.pt')
+torch.save(model_2.state_dict(), output_models + task + '_1.pt')
 joblib.dump(train_generator.scaler_x, output_models + task + '-scaler_x.pkl')
+joblib.dump(stress_scaler, output_models + task + '-scaler_stress.pkl')
