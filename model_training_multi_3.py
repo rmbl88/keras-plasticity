@@ -477,7 +477,7 @@ loss_fn = custom_loss
 f_loss = torch.nn.MSELoss()
 
 optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=5, factor=0.2, threshold=1e-3, min_lr=1e-4)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10, factor=0.2, threshold=1e-3, min_lr=1e-4)
 
 # Container variables for history purposes
 train_loss = []

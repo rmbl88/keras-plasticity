@@ -2,28 +2,28 @@
 # Defining model training constants
 SEED = 444
 VAL_DIR = 'data/validation/'
-VAL_DIR_MULTI = 'data/validation_multi/9-elem-elastoplastic/'
+VAL_DIR_MULTI = 'data/validation_multi/9-elem-1000-elastic/'
 TRAIN_DIR = 'data/training/'
-TRAIN_MULTI_DIR = 'data/training_multi/9-elem-200-plastic/'
-DATA_SAMPLES = 200
+TRAIN_MULTI_DIR = 'data/training_multi/9-elem-1000-elastic/'
+DATA_SAMPLES = 100
 TEST_SIZE = 0.2
 
-ELEM_AREA = 1
-ELEM_THICK = 0.1
 LENGTH = 3.0
+ELEM_AREA = LENGTH**2 / 9
+ELEM_THICK = 0.1
+
+FORMAT_PBAR='{l_bar}{bar:50}{r_bar}{bar:-50b}'
 
 PRE_TRAINING = False
 
 # Customizing matplotlib
 PARAMS = {'text.usetex' : True,
           'text.latex.preamble' : r"\usepackage{amsmath,newpxtext,newpxmath}",
-          'font.size' : 10,
+          'font.size' : 12,
           'font.family' : 'serif',
           'font.serif' : ['Palatino Linotype'],
           'lines.linewidth' : 0.75,
-          'axes.spines.top' : False,
-          'axes.spines.right' : False,
-          'axes.labelsize': 7,
+          'axes.labelsize': 12,
           'axes.labelpad' : 6.5,
           'lines.linewidth' : 1,
           'legend.loc' : 'best',
@@ -38,12 +38,12 @@ PARAMS = {'text.usetex' : True,
           #'ytick.right': True,
           'xtick.direction' : 'in',
           'ytick.direction': 'in',
-          'xtick.color': 'b0b0b0',
-          'ytick.color': 'b0b0b0',
+          'xtick.color': '000000',
+          'ytick.color': '000000',
           'xtick.major.width': 0.1,
           'ytick.major.width': 0.1,
           'legend.fontsize': 7,
-          'xtick.labelsize': 7,
-          'ytick.labelsize': 7
+          'xtick.labelsize': 10,
+          'ytick.labelsize': 10
           
 }

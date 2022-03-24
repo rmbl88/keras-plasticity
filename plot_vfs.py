@@ -35,14 +35,25 @@ x, y = np.meshgrid(coords, coords)
 #y = nodes[:,1]
 
 zeros_ = np.zeros_like(x)
-
+pi_=math.pi
 virtual_disp = {
-            1: [x/LENGTH, zeros_],
-            2: [zeros_,np.sin(2*y*math.pi/(3*LENGTH))],
-            3: [zeros_,y*np.sin(x*math.pi/(LENGTH))**2/LENGTH],
-            4: [np.sin(2*math.pi*x/(3*LENGTH)),zeros_],
-            5: [(math.pi*y**2/LENGTH**2)*np.sin(2*math.pi*x/LENGTH),(-2*y/LENGTH)*np.sin(math.pi*x/LENGTH)**2],
-            6: [np.square(y)*np.sin(x*math.pi/LENGTH)/LENGTH**2,np.square(x)*np.sin(y*math.pi/LENGTH)/LENGTH**2],
+            1: [zeros_, -(x**2-LENGTH)*y/LENGTH**2],
+            2: [np.sin(2*math.pi*x/(3*LENGTH)),zeros_],
+            3: [(math.pi*y**2/LENGTH**2)*np.sin(2*math.pi*x/LENGTH),(-2*y/LENGTH**2)*np.sin(math.pi*x/LENGTH)**2],
+            4: [y*np.sin(x*math.pi/LENGTH)/LENGTH, x*np.sin(y*math.pi/LENGTH**2)/LENGTH],
+            5: [zeros_,np.sin(y*math.pi/LENGTH)*np.sin(x*math.pi/LENGTH)]
+            #5: [(2*math.pi*y/LENGTH**2)*np.sin(2*math.pi*x/LENGTH),(-y/LENGTH)*np.sin(math.pi*x/LENGTH)**2],
+            #6: [np.square(y)*np.sin(x*math.pi/LENGTH)/LENGTH**2, np.square(x)*np.sin(y*math.pi/LENGTH)/LENGTH**2]
+
+            ######
+            # 1: [x/LENGTH, zeros_],
+            # 2: [zeros_,np.sin(2*y*math.pi/(3*LENGTH))],
+            # 3: [zeros_,y*np.sin(x*math.pi/(LENGTH))**2/LENGTH],
+            # 4: [np.sin(2*math.pi*x/(3*LENGTH)),zeros_],
+            # 5: [(math.pi*y**2/LENGTH**2)*np.sin(2*math.pi*x/LENGTH),(-2*y/LENGTH)*np.sin(math.pi*x/LENGTH)**2],
+            # 6: [np.square(y)*np.sin(x*math.pi/LENGTH)/LENGTH**2,np.square(x)*np.sin(y*math.pi/LENGTH)/LENGTH**2],
+            # 7: [y**2*np.cos((math.pi+x)/(2*LENGTH))/LENGTH**2,x**2*np.cos((math.pi+y)/(2*LENGTH))/LENGTH**2]
+            ######
             # 1: [x/LENGTH,zeros_],
             # 2: [np.sin(2*math.pi*x/(3*LENGTH)),zeros_],
             # 3: [(math.pi*y**2/LENGTH**2)*np.sin(2*math.pi*x/LENGTH),(-2*y/LENGTH)*np.sin(math.pi*x/LENGTH)**2],
@@ -76,7 +87,8 @@ formulas = {
             3: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{y}{L}\sin^{2}\left(\cfrac{\pi{}x}{L}\right)\end{Bmatrix}$",
             4: r"$u^{*~(%i)}=\begin{Bmatrix}\sin\left(\cfrac{2\pi{}x}{3L}\right) & 0\end{Bmatrix}$",
             5: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{\pi{}y^2}{L^2}\sin\left(\cfrac{2\pi{}x}{L}\right) & -\cfrac{2y}{L}\sin^{2}\left(\cfrac{\pi{}x}{L}\right)\end{Bmatrix}$",
-            6: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^{2}}{L^2}\sin\left(\cfrac{\pi{}x}{L}\right) & \cfrac{x^{2}}{L^2}\sin\left(\cfrac{\pi{}y}{L}\right)\end{Bmatrix}$"
+            #6: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^{2}}{L^2}\sin\left(\cfrac{\pi{}x}{L}\right) & \cfrac{x^{2}}{L^2}\sin\left(\cfrac{\pi{}y}{L}\right)\end{Bmatrix}$",
+            #7: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{y^{2}}{L^2}\sin\left(\cfrac{\pi{}x}{L}\right) & \cfrac{x^{2}}{L^2}\sin\left(\cfrac{\pi{}y}{L}\right)\end{Bmatrix}$"
             # 1: r"$u^{*~(%i)}=\begin{Bmatrix}\cfrac{x}{L} & 0\end{Bmatrix}$",
             # 2: r"$u^{*~(%i)}=\begin{Bmatrix}0 & \cfrac{y}{L}\end{Bmatrix}$",
             # 3: r"$u^{*~(%i)}=\begin{Bmatrix}0 & y\cfrac{x^2-xL}{L^2}\end{Bmatrix}$",
@@ -172,10 +184,10 @@ for i, (key, disp) in enumerate(virtual_disp.items()):
 
     k += 1
 
-for i, fig in enumerate(figs):
-    plt.savefig("virtual_fields_%i.pdf" % (i), format="pdf", dpi=300, bbox_inches='tight')
-    plt.close()
-#plt.show()
+# for i, fig in enumerate(figs):
+#     plt.savefig("virtual_fields_%i.pdf" % (i), format="pdf", dpi=300, bbox_inches='tight')
+#     plt.close()
+plt.show()
 
 # from matplotlib.backends.backend_pdf import PdfPages
 

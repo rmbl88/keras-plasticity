@@ -18,9 +18,10 @@ import tensorflow as tf
 import keras
 import copy
 from tensorflow.python.ops import gen_array_ops
-from constants import ELEM_AREA, ELEM_THICK, LENGTH
+from constants import ELEM_AREA, ELEM_THICK, FORMAT_PBAR, LENGTH
 import math
 import torch
+from tqdm import tqdm
 
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:
@@ -72,9 +73,12 @@ class EarlyStopping:
         torch.save(model.state_dict(), self.path)
         self.val_loss_min = val_loss
 
-def custom_loss(y_pred, y_true):
-        
-    return torch.mean(torch.mean(torch.square(y_pred+y_true),1))
+def custom_loss(int_work, ext_work):
+    
+    #return torch.sum(torch.square(y_pred+y_true))
+    #return torch.mean(torch.mean(torch.square(y_pred-y_true),1))
+    return (1/(int_work.shape[0]*int_work.shape[1]))*torch.sum(torch.sum(torch.abs(torch.sum(torch.sum(int_work,-1,keepdim=True),-2)-ext_work),1))
+    #return (1/(4*int_work.shape[0]*int_work.shape[1]))*torch.sum(torch.sum(torch.square(torch.sum(torch.sum(int_work,-1,keepdim=True),-2)-ext_work),1))
 
 
 def plot_history(history, output, is_custom=None, task=None):
@@ -95,7 +99,7 @@ def plot_history(history, output, is_custom=None, task=None):
     plt.xlabel('Epoch')
     plt.ylabel(r'Mean Square Error [J\textsuperscript{2}]')
     plt.plot(hist['epoch'], hist['loss'], label='Train Error', color='#4b7394')
-    #plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
+    plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
     #plt.axvline(minposs, linestyle='--', color='r',label='Early Stopping Checkpoint')
 
     plt.legend()
@@ -137,10 +141,11 @@ def standardize_data(X, y, f, scaler_x = None, scaler_y = None, scaler_f = None)
 
 def select_features_multi(df):
 
-    X = df[['exx_t-1dt','eyy_t-1dt','exy_t-1dt', 'exx_t', 'eyy_t', 'exy_t']]
+    #X = df[['exx_t-1dt', 'eyy_t-1dt', 'exy_t-1dt','exx_t', 'eyy_t', 'exy_t']]
+    X = df[['exx_t', 'eyy_t', 'exy_t']]
     y = df[['sxx_t','syy_t','sxy_t']]
     f = df[['fxx_t', 'fyy_t', 'fxy_t']]
-    coord = df[['id', 'x', 'y']]
+    coord = df[['dir','id', 'x', 'y','area']]
 
     return X, y, f, coord
 
@@ -201,10 +206,9 @@ def pre_process(df_list):
         new_dfs.append(new_df)
 
     # Add past variables
-    for i, df in enumerate(new_dfs):
+    for i, df in enumerate(tqdm(new_dfs, desc='Loading and processing data',bar_format=FORMAT_PBAR)):
 
         new_dfs[i] = add_past_step(var_list, lookback, df)
-        print(str(i))
 
     return new_dfs
 
@@ -218,10 +222,11 @@ def load_dataframes(directory):
             if '.csv' in file:
                 file_list.append(directory + file)
 
-    headers = ['tag','id', 'x', 'y', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
+    headers = ['tag','id','dir','x', 'y', 'area', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
+    #headers = ['tag','id','dir','x', 'y', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
 
     # Loading training datasets
-    df_list = [pd.read_csv(file, names=headers, sep=',') for file in file_list]
+    df_list = [pd.read_csv(file, names=headers, sep=',', index_col=False) for file in file_list]
 
     df_list = pre_process(df_list)
 
