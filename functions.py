@@ -1,27 +1,52 @@
-from itertools import permutations, combinations
-from numpy.core.fromnumeric import var
-from scipy.sparse import coo
+
 from sklearn import preprocessing
 import pandas as pd
 import os
 import numpy as np
 import copy
-import random
 import matplotlib.pyplot as plt
-from tensorflow.python.keras.backend import dtype, global_learning_phase_is_set, print_tensor
-from tensorflow.python.ops.gen_batch_ops import batch
-from tensorflow.python.ops.variables import global_variables
-from tensorflow.python.types import internal
 import constants
-import keras.backend as kb
-import tensorflow as tf
-import keras
 import copy
-from tensorflow.python.ops import gen_array_ops
-from constants import ELEM_AREA, ELEM_THICK, FORMAT_PBAR, LENGTH
-import math
+from constants import FORMAT_PBAR
 import torch
 from tqdm import tqdm
+from torch import nn
+
+# -------------------------------
+#        Class definitions
+# -------------------------------
+
+class NeuralNetwork(nn.Module):
+    def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
+        super(NeuralNetwork, self).__init__()
+        self.input_size = input_size
+        self.hidden_size  = hidden_size
+        self.n_hidden_layers = n_hidden_layers
+        self.output_size = output_size
+
+        self.layers = nn.ModuleList()
+
+        for i in range(self.n_hidden_layers):
+            if i == 0:
+                in_ = self.input_size
+            else:
+                in_ = self.hidden_size
+
+            self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
+
+        self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
+
+        self.activation_h = torch.nn.PReLU(self.hidden_size)
+        self.activation_o = torch.nn.PReLU(self.output_size)
+
+    def forward(self, x):
+
+        for layer in self.layers[:-1]:
+            
+            x = self.activation_h(layer(x))
+            
+        #return self.layers[-1](x)
+        return self.activation_o(self.layers[-1](x))
 
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:
@@ -73,6 +98,10 @@ class EarlyStopping:
         torch.save(model.state_dict(), self.path)
         self.val_loss_min = val_loss
 
+# -------------------------------
+#       Method definitions
+# -------------------------------
+
 def custom_loss(int_work, ext_work):
     
     #return torch.sum(torch.square(y_pred+y_true))
@@ -90,28 +119,16 @@ def plot_history(history, output, is_custom=None, task=None):
         hist = history
 
     plt.rcParams.update(constants.PARAMS)
-
-    # find position of lowest validation loss
-    #minposs = hist['val_loss'].idxmin() + 1
-    
+   
     plt.figure(figsize=(8,6), constrained_layout = True)
     plt.title(task)
     plt.xlabel('Epoch')
     plt.ylabel(r'Mean Square Error [J\textsuperscript{2}]')
     plt.plot(hist['epoch'], hist['loss'], label='Train Error', color='#4b7394')
     plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
-    #plt.axvline(minposs, linestyle='--', color='r',label='Early Stopping Checkpoint')
-
-    plt.legend()
-    #plt.show()
-
     
-    # plt.figure()
-    # plt.xlabel('Epoch')
-    # plt.ylabel(r'Mean Square Error [MPa\textsuperscript{2}]')
-    # plt.plot(hist['epoch'], hist['mse'], label='Train Error', color='#4b7394')
-    # plt.plot(hist['epoch'], hist['val_mse'], label = 'Test Error', color='#6db1e2')
-    # plt.legend()
+    plt.legend()
+  
     plt.savefig(output + task + '.png', format="png", dpi=600, bbox_inches='tight')
 
 def standardize_data(X, y, f, scaler_x = None, scaler_y = None, scaler_f = None):
@@ -149,26 +166,30 @@ def select_features_multi(df):
 
     return X, y, f, coord
 
-def data_sampling(df_list, n_samples, rand_seed=None):
 
-    sampled_dfs = []
+#-----------------------------------
+#   DEPRECATED
+#-----------------------------------
+# def data_sampling(df_list, n_samples, rand_seed=None):
 
-    for df in df_list:
-        
-        if rand_seed != None:
-        
-            idx = random.sample(range(0, len(df.index.values)), n_samples)
-        
-        else:
-        
-            idx = np.round(np.linspace(0, len(df.index.values) - 1, n_samples)).astype(int)
-        
-        idx.sort()
-        sampled_dfs.append(df.iloc[idx])
+#     sampled_dfs = []
 
-        sampled_dfs = [df.reset_index(drop=True) for df in sampled_dfs]
+#     for df in df_list:
+        
+#         if rand_seed != None:
+        
+#             idx = random.sample(range(0, len(df.index.values)), n_samples)
+        
+#         else:
+        
+#             idx = np.round(np.linspace(0, len(df.index.values) - 1, n_samples)).astype(int)
+        
+#         idx.sort()
+#         sampled_dfs.append(df.iloc[idx])
 
-    return sampled_dfs
+#         sampled_dfs = [df.reset_index(drop=True) for df in sampled_dfs]
+
+#     return sampled_dfs
 
 def drop_features(df, drop_list):
 
@@ -231,34 +252,3 @@ def load_dataframes(directory):
     df_list = pre_process(df_list)
 
     return df_list, file_list
-
-
-# def plot_learning_curve(train_sizes, train_scores, test_scores):
-    
-#     train_scores_mean = np.mean(-train_scores, axis=1)
-#     train_scores_std = np.std(-train_scores, axis=1)
-#     test_scores_mean = np.mean(-test_scores, axis=1)
-#     test_scores_std = np.std(-test_scores, axis=1)
-
-#     #plt.rcParams.update(constants.PARAMS)
-    
-#     plt.xlabel("Training samples")
-#     plt.ylabel("Score")    
-
-#     # Plot learning curve
-#     plt.grid(alpha=0.1)
-#     plt.fill_between(train_sizes, train_scores_mean - train_scores_std,
-#                          train_scores_mean + train_scores_std, alpha=0.1,
-#                          color="r")
-#     plt.fill_between(train_sizes, test_scores_mean - test_scores_std,
-#                          test_scores_mean + test_scores_std, alpha=0.1,
-#                          color="g")
-#     plt.plot(train_sizes, train_scores_mean, 'o-', color="r",
-#                  label="Training score")
-#     plt.plot(train_sizes, test_scores_mean, 'o-', color="g",
-#                  label="Cross-validation score")
-#     plt.legend(loc="best")
-    
-#     # create_folder('prints')    
-#     # save_fig(plt, 'prints/', 'learning','curves')
-#     plt.show()

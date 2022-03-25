@@ -6,8 +6,8 @@ import operator
 import joblib
 from sklearn.utils import shuffle
 from constants import *
-from functions import custom_loss, data_sampling, load_dataframes, select_features_multi, standardize_data, plot_history
-from functions import EarlyStopping
+from functions import custom_loss, load_dataframes, select_features_multi, standardize_data, plot_history
+from functions import (EarlyStopping, NeuralNetwork)
 from sklearn.model_selection import GroupShuffleSplit
 import copy
 from re import S
@@ -53,10 +53,9 @@ class DataGenerator(tf.keras.utils.Sequence):
 
     def __getitem__(self, index):
         'Generate one batch of data'
-        # Generate indexes of the batch
-        indexes = np.array([self.indexes[index]+i for i in range(self.batch_size)])
+        indexes = np.array([self.indexes[index]+i for i in range(self.batch_size)])  # Generate indexes of the batch
 
-        # Generate data
+        # Generate data according to batch size specifications
         if self.shuffle == True:
             if batch_size > 9:
                 index_groups = np.array_split(indexes, self.t_pts)
@@ -75,60 +74,54 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.indexes = np.arange(0, len(self.list_IDs), self.batch_size)
         if self.shuffle == True:
             np.random.shuffle(self.indexes)
+            
 
     def standardize(self):
+        'Standardizes neural network input data'
         idx = self.X.index
         self.X, _, _, self.scaler_x, _, _ = standardize_data(self.X, self.y, self.f)
-        #self.f, self.scaler_f = standardize_(self.f)
-        #self.coord, self.scaler_coord = standardize_(self.coord[['x','y']])
 
         self.X = pd.DataFrame(self.X, index=idx)
-        #self.y = pd.DataFrame(self.y, index=idx)
-        #self.f = pd.DataFrame(self.f, index=idx)
-        #self.coord = pd.DataFrame(self.coord, index=idx)
-
+        
     def __data_generation(self, list_IDs_temp):
-        'Generates data containing batch_size samples' # X : (n_samples, *dim, n_channels)
+        'Generates data containing batch_size samples'
         X = np.asarray(self.X.iloc[list_IDs_temp], dtype=np.float32)
         y = np.asarray(self.y.iloc[list_IDs_temp], dtype=np.float32)
         f = np.asarray(self.f.iloc[list_IDs_temp], dtype=np.float32)
         coord = np.asarray(self.coord.iloc[list_IDs_temp], dtype=np.float32)
         return X, y, f, coord
 
-class NeuralNetwork(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
-        super(NeuralNetwork, self).__init__()
-        self.input_size = input_size
-        self.hidden_size  = hidden_size
-        self.n_hidden_layers = n_hidden_layers
-        self.output_size = output_size
+# class NeuralNetwork(nn.Module):
+#     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
+#         super(NeuralNetwork, self).__init__()
+#         self.input_size = input_size
+#         self.hidden_size  = hidden_size
+#         self.n_hidden_layers = n_hidden_layers
+#         self.output_size = output_size
 
-        self.layers = nn.ModuleList()
+#         self.layers = nn.ModuleList()
 
-        for i in range(self.n_hidden_layers):
-            if i == 0:
-                in_ = self.input_size
-            else:
-                in_ = self.hidden_size
+#         for i in range(self.n_hidden_layers):
+#             if i == 0:
+#                 in_ = self.input_size
+#             else:
+#                 in_ = self.hidden_size
 
-            self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
+#             self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
 
-        self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
+#         self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
 
-        self.activation_h = torch.nn.PReLU(self.hidden_size)
-        self.activation_o = torch.nn.PReLU(self.output_size)
+#         self.activation_h = torch.nn.PReLU(self.hidden_size)
+#         self.activation_o = torch.nn.PReLU(self.output_size)
 
-    def forward(self, x):
+#     def forward(self, x):
 
-        for layer in self.layers[:-1]:
+#         for layer in self.layers[:-1]:
             
-            x = self.activation_h(layer(x))
+#             x = self.activation_h(layer(x))
             
-        #return self.layers[-1](x)
-        return self.activation_o(self.layers[-1](x))
-    
-    def compute_l1_loss(self, w):
-      return (torch.abs(w)**0.25).sum()
+#         #return self.layers[-1](x)
+#         return self.activation_o(self.layers[-1](x))
 
 # -------------------------------
 #       Method definitions
@@ -493,10 +486,10 @@ random.seed(SEED)
 df_list, _ = load_dataframes(TRAIN_MULTI_DIR)
 
 # Sampling data pass random seed for random sampling
-sampled_dfs = data_sampling(df_list, DATA_SAMPLES)
+#sampled_dfs = data_sampling(df_list, DATA_SAMPLES)
 
 # Merging training data
-data = pd.concat(sampled_dfs, axis=0, ignore_index=True)
+data = pd.concat(df_list, axis=0, ignore_index=True)
 
 t_pts = 8
 
