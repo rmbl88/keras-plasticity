@@ -5,7 +5,9 @@ VAL_DIR = 'data/validation/'
 VAL_DIR_MULTI = 'data/validation_multi/9-elem-1000-elastic/'
 TRAIN_DIR = 'data/training/'
 TRAIN_MULTI_DIR = 'data/training_multi/9-elem-1000-elastic/'
+
 DATA_SAMPLES = 100
+LOOK_BACK = 0
 TEST_SIZE = 0.2
 
 LENGTH = 3.0

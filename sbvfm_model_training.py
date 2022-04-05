@@ -6,8 +6,8 @@ import operator
 import joblib
 from sklearn.utils import shuffle
 from constants import *
-from functions import custom_loss, load_dataframes, select_features_multi, standardize_data, plot_history
-from functions import (EarlyStopping, NeuralNetwork)
+from functions import (custom_loss, load_dataframes, prescribe_u, select_features_multi, standardize_data, plot_history, read_mesh,global_strain_disp,global_dof)
+from functions import (EarlyStopping, NeuralNetwork, Element)
 from sklearn.model_selection import GroupShuffleSplit
 import copy
 from re import S
@@ -26,9 +26,10 @@ import itertools
 from scipy.optimize import fsolve
 import wandb
 from torch.autograd.functional import jacobian
-import geotorch
+
 from sympy import pi
 import geotorch
+from tqdm import tqdm
 # -------------------------------
 #        Class definitions
 # -------------------------------
@@ -38,7 +39,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.X = deformation
         self.y = stress
         self.f = force
-        self.coord = coord[['dir','id','x','y','area']]
+        self.coord = coord[['dir','id','cent_x','cent_y','area']]
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.list_IDs = list_IDs
@@ -74,7 +75,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.indexes = np.arange(0, len(self.list_IDs), self.batch_size)
         if self.shuffle == True:
             np.random.shuffle(self.indexes)
-            
+ 
     def standardize(self):
         'Standardizes neural network input data'
         idx = self.X.index
@@ -89,6 +90,8 @@ class DataGenerator(tf.keras.utils.Sequence):
         f = np.asarray(self.f.iloc[list_IDs_temp], dtype=np.float32)
         coord = np.asarray(self.coord.iloc[list_IDs_temp], dtype=np.float32)
         return X, y, f, coord
+
+
 
 # class NeuralNetwork(nn.Module):
 #     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
@@ -389,6 +392,7 @@ def test_loop(dataloader, model, loss_fn):
     Wint = torch.zeros((num_batches,1,3))
     Wint_real = torch.zeros((num_batches,1,3))
     Wext = torch.zeros((num_batches,1,3))
+    t_pts = dataloader.t_pts
     n_elems = batch_size//t_pts
 
     model.eval()
@@ -475,27 +479,37 @@ def test_loop(dataloader, model, loss_fn):
 # Initiating wandb
 wandb.init(project="pytorch_linear_model", entity="rmbl")
 
-torch.set_default_dtype(torch.float32)
+torch.set_default_dtype(torch.float64)
 torch.set_printoptions(precision=8)
 
 # Specifying random seed
 random.seed(SEED)
 
+mesh, connectivity, dof = read_mesh(TRAIN_MULTI_DIR)
+
+elements = [Element(connectivity[i,:],mesh[connectivity[i,1:]-1,1:],dof[i,:]-1) for i in tqdm(range(connectivity.shape[0]))]
+
+b_glob = global_strain_disp(elements,mesh.shape[0])
+
+x_symm = mesh[mesh[:,1]==0][:,0]
+y_symm = mesh[mesh[:,-1]==0][:,0]
+
+b_glob = prescribe_u(b_glob,[x_symm,y_symm])
+
 # Loading data
 df_list, _ = load_dataframes(TRAIN_MULTI_DIR)
-
-# Sampling data pass random seed for random sampling
-#sampled_dfs = data_sampling(df_list, DATA_SAMPLES)
 
 # Merging training data
 data = pd.concat(df_list, axis=0, ignore_index=True)
 
-t_pts = 8
+DATA_POINTS = len(df_list[0])
+
+T_PTS = 8
 
 # Performing test/train split
 partition = {"train": None, "test": None}
 
-if t_pts == DATA_SAMPLES:
+if T_PTS == DATA_SAMPLES:
     # Reorganizing dataset by tag, subsequent grouping by time increment
     data_by_tag = [df for _, df in data.groupby(['tag'])]
     random.shuffle(data_by_tag)
@@ -526,7 +540,7 @@ else:
 
     partition['train'], partition['test'] = next(GroupShuffleSplit(test_size=TEST_SIZE, n_splits=2, random_state = SEED).split(data, groups=data['t']))
 
-batch_size = len(data_by_batches[0]) * t_pts
+batch_size = len(data_by_batches[0]) * T_PTS
 
 #Concatenating data groups
 #data = pd.concat(data_by_batches).reset_index(drop=True)
@@ -595,8 +609,8 @@ batch_size = len(data_by_batches[0]) * t_pts
 X, y, f, coord = select_features_multi(data)
 
 # Preparing data generators for mini-batch training
-train_generator = DataGenerator(X, y, f, coord, partition["train"], batch_size, True, std=True, t_pts=t_pts)
-test_generator = DataGenerator(X, y, f, coord, partition['test'], batch_size, False, std=False, t_pts=t_pts)
+train_generator = DataGenerator(X, y, f, coord, partition["train"], batch_size, True, std=True, t_pts=T_PTS)
+test_generator = DataGenerator(X, y, f, coord, partition['test'], batch_size, False, std=False, t_pts=T_PTS)
 
 # Model variables
 N_INPUTS = X.shape[1]

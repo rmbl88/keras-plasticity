@@ -1,4 +1,3 @@
-
 from sklearn import preprocessing
 import pandas as pd
 import os
@@ -7,10 +6,11 @@ import copy
 import matplotlib.pyplot as plt
 import constants
 import copy
-from constants import FORMAT_PBAR
+from constants import FORMAT_PBAR, LOOK_BACK
 import torch
 from tqdm import tqdm
 from torch import nn
+from io import StringIO
 
 # -------------------------------
 #        Class definitions
@@ -98,16 +98,113 @@ class EarlyStopping:
         torch.save(model.state_dict(), self.path)
         self.val_loss_min = val_loss
 
+class Element():
+    def __init__(self, connect, node_coord, dof) -> None:
+        self.id = connect[0]
+        self.connect = connect[1:]
+        self.node_coord = torch.tensor(node_coord)
+        self.global_dof = dof
+        self.local_dof = np.arange(len(dof))
+    
+    def b_el(self, csi=0, eta=0):
+
+        x = [-1,1,1,-1]
+        y = [-1,-1,1,1]
+
+        n = list(zip(x,y))
+
+        dN_dcsi = torch.tensor([0.25*(i)*(1+eta*j) for (i,j) in n])
+        dN_deta = torch.tensor([0.25*(1+csi*i)*(j) for (i,j) in n])
+
+        dN_csi_eta = torch.stack([dN_dcsi,dN_deta],0)
+        J = dN_csi_eta @ self.node_coord
+
+        dN_x_y = torch.linalg.solve(J,dN_csi_eta)
+
+        b_el = torch.zeros(3,len(n)*2)
+
+        x_dof = self.local_dof[::2]
+        y_dof = self.local_dof[1::2]
+
+        b_el[0,x_dof] += dN_x_y[0,:]
+        b_el[1,y_dof] += dN_x_y[1,:]
+
+        b_el[2,x_dof] += dN_x_y[1,:]
+        b_el[2,y_dof] += dN_x_y[0,:]
+
+        return b_el
+        
+
 # -------------------------------
 #       Method definitions
 # -------------------------------
+
+def global_strain_disp(elements, n_nodes):
+    total_dofs = n_nodes * 2
+    b_glob = torch.zeros([3,total_dofs])
+
+    for element in elements:
+        b_glob[:,list(element.global_dof)] += element.b_el()
+    
+    return b_glob
+
+def prescribe_u(b_glob, conditions):
+    b = copy.deepcopy(b_glob)
+    
+    for condition in conditions:
+        b[:,condition]=0
+    
+    return b 
 
 def custom_loss(int_work, ext_work):
     
     #return torch.sum(torch.square(y_pred+y_true))
     #return torch.mean(torch.mean(torch.square(y_pred-y_true),1))
     return (1/(int_work.shape[0]*int_work.shape[1]))*torch.sum(torch.sum(torch.abs(torch.sum(torch.sum(int_work,-1,keepdim=True),-2)-ext_work),1))
-    #return (1/(4*int_work.shape[0]*int_work.shape[1]))*torch.sum(torch.sum(torch.square(torch.sum(torch.sum(int_work,-1,keepdim=True),-2)-ext_work),1))
+    #return (1/(4*int_work.shape[0]*int_work.shape[1]))*torch.sum(torch.sum(torch.square(torch.sum(torch.sum(int_work,-1,keepdim=True),-2)-ext_work),1)) 
+
+def global_dof(connect):
+    return np.array(sum([[2*i-1,2*i] for i in connect],[]))
+
+def read_mesh(dir):
+    
+    def get_substring_index(list, sub):
+        return next((s for s in list if sub in s), None)
+
+    inp_file = ''
+    for r, d, f in os.walk(dir):
+        for file in f:
+            if '.inp' in file:
+                inp_file = dir+file
+
+    lines = []
+    with open(inp_file) as f:
+        lines = f.readlines()
+    f.close()
+
+    start_part = lines.index(get_substring_index(lines,'*Part, name'))
+    end_part = lines.index(get_substring_index(lines,'*End Part'))
+
+    lines = lines[start_part:end_part+1]
+
+    start_mesh = lines.index(get_substring_index(lines,'*Node'))
+    end_mesh = lines.index(get_substring_index(lines,'*Element, type'))
+
+    start_connect = end_mesh
+    end_connect = lines.index(get_substring_index(lines,'*Nset, nset'))
+
+    mesh = ''.join(lines[start_mesh+1:end_mesh]).replace(' ','').split('\n')
+    mesh = pd.read_csv(StringIO('\n'.join(mesh)),names=['node','x','y'])
+
+    connect_str = ''.join(lines[start_connect+1:end_connect]).replace(' ','').split('\n')[:-1]
+
+    elem_nodes = len(connect_str[0].split(','))-1
+
+    connectivity = pd.read_csv(StringIO('\n'.join(connect_str)),names=['id']+['n%i'% i for i in range(elem_nodes)])
+    dof = [[int(j) for j in i.split(',')][1:] for i in connect_str]
+    dof = np.array([sum([[2*i-1,2*i] for i in a],[]) for a in dof])
+
+    return mesh.values, connectivity.values, dof
 
 
 def plot_history(history, output, is_custom=None, task=None):
@@ -162,7 +259,7 @@ def select_features_multi(df):
     X = df[['exx_t', 'eyy_t', 'exy_t']]
     y = df[['sxx_t','syy_t','sxy_t']]
     f = df[['fxx_t', 'fyy_t', 'fxy_t']]
-    coord = df[['dir','id', 'x', 'y','area']]
+    coord = df[['dir','id', 'cent_x', 'cent_y','area']]
 
     return X, y, f, coord
 
@@ -216,7 +313,7 @@ def add_past_step(var_list, lookback, df):
 def pre_process(df_list):
 
     var_list = [['sxx_t','syy_t','sxy_t'],['exx_t','eyy_t','exy_t'],['fxx_t','fyy_t','fxy_t']]
-    lookback = 2
+    #lookback = 2
     
     new_dfs = []
 
@@ -226,10 +323,11 @@ def pre_process(df_list):
         new_df = drop_features(df, ['ezz_t', 'szz_t', 'fzz_t'])
         new_dfs.append(new_df)
 
-    # Add past variables
-    for i, df in enumerate(tqdm(new_dfs, desc='Loading and processing data',bar_format=FORMAT_PBAR)):
+    if LOOK_BACK > 0:
+        # Add past variables
+        for i, df in enumerate(tqdm(new_dfs, desc='Loading and processing data',bar_format=FORMAT_PBAR)):
 
-        new_dfs[i] = add_past_step(var_list, lookback, df)
+            new_dfs[i] = add_past_step(var_list, LOOK_BACK, df)
 
     return new_dfs
 
@@ -243,11 +341,11 @@ def load_dataframes(directory):
             if '.csv' in file:
                 file_list.append(directory + file)
 
-    headers = ['tag','id','dir','x', 'y', 'area', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
+    #headers = ['tag','id','dir','x', 'y', 'area', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
     #headers = ['tag','id','dir','x', 'y', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
 
     # Loading training datasets
-    df_list = [pd.read_csv(file, names=headers, sep=',', index_col=False) for file in file_list]
+    df_list = [pd.read_csv(file, sep=',', index_col=False, header=0) for file in file_list]
 
     df_list = pre_process(df_list)
 
