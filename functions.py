@@ -1,3 +1,4 @@
+from readline import parse_and_bind
 from sklearn import preprocessing
 import pandas as pd
 import os
@@ -11,6 +12,10 @@ import torch
 from tqdm import tqdm
 from torch import nn
 from io import StringIO
+from torch.nn.utils import (
+  parameters_to_vector as Params2Vec,
+  vector_to_parameters as Vec2Params
+)
 
 # -------------------------------
 #        Class definitions
@@ -137,7 +142,47 @@ class Element():
 
 # -------------------------------
 #       Method definitions
-# -------------------------------
+# ------------------------------
+
+def get_dataset_batches(data_generator, varIndex=0):
+    
+    return [torch.stack(iter(data_generator).__next__()[varIndex]) for i in range(len(data_generator))]
+
+def param_vector(model):
+
+    params = [param.data for name, param in model.named_parameters() if param.requires_grad and 'weight' in name and 'activation' not in name]
+
+    return params
+
+def param_deltas(model):
+
+    #d_sigma = torch.zeros()
+ 
+    model_orig = copy.deepcopy(model)
+
+    with torch.no_grad():
+        
+        model_dict = {key: value for key, value in model_orig.state_dict().items() if 'layer' in key and 'weight' in key}
+        delta_dict = copy.deepcopy(model_dict)
+        
+        total_params = sum([value.shape[0]*value.shape[1] for key, value in model_dict.items()])
+        
+        eval_dicts = [model_orig.state_dict() for param in range(total_params)]
+
+        k = 0
+        for key, weight_matrix in model_dict.items():
+
+            param_vector = copy.deepcopy(weight_matrix).flatten()
+
+            for i in range(len(param_vector)):
+
+                param_vector[i] -= 0.1 * param_vector[i]
+
+                delta_dict[key] = param_vector.unflatten(0,weight_matrix.shape)
+
+                eval_dicts[k].update(delta_dict)
+
+    return eval_dicts
 
 def global_strain_disp(elements, n_nodes):
     total_dofs = n_nodes * 2
@@ -152,7 +197,7 @@ def prescribe_u(b_glob, conditions):
     b = copy.deepcopy(b_glob)
     
     for condition in conditions:
-        b[:,condition]=0
+        b[:,condition-1]=0
     
     return b 
 

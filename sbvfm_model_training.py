@@ -6,7 +6,7 @@ import operator
 import joblib
 from sklearn.utils import shuffle
 from constants import *
-from functions import (custom_loss, load_dataframes, prescribe_u, select_features_multi, standardize_data, plot_history, read_mesh,global_strain_disp,global_dof)
+from functions import (custom_loss, load_dataframes, prescribe_u, select_features_multi, standardize_data, plot_history, read_mesh,global_strain_disp,global_dof,param_deltas)
 from functions import (EarlyStopping, NeuralNetwork, Element)
 from sklearn.model_selection import GroupShuffleSplit
 import copy
@@ -23,13 +23,16 @@ import math
 import torch
 import time
 import itertools
-from scipy.optimize import fsolve
 import wandb
 from torch.autograd.functional import jacobian
 
 from sympy import pi
-import geotorch
 from tqdm import tqdm
+
+from torch.nn.utils import (
+  parameters_to_vector as Params2Vec,
+  vector_to_parameters as Vec2Params
+)
 # -------------------------------
 #        Class definitions
 # -------------------------------
@@ -262,11 +265,11 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         X_train, y_train, f_train, coord = dataloader[batch]
         
         # Converting to pytorch tensors
-        X_train = torch.tensor(X_train, dtype=torch.float32)
+        X_train = torch.tensor(X_train, dtype=torch.float64)
         X_train.requires_grad = True
-        y_train = torch.tensor(y_train, dtype=torch.float32)
-        f_train = torch.tensor(f_train, dtype=torch.float32) + 0.0
-        coord_torch = torch.tensor(coord, dtype=torch.float32)
+        y_train = torch.tensor(y_train, dtype=torch.float64)
+        f_train = torch.tensor(f_train, dtype=torch.float64) + 0.0
+        coord_torch = torch.tensor(coord, dtype=torch.float64)
          
         # Extracting centroid coordinates
         dir = coord_torch[:,0][0]
@@ -404,11 +407,11 @@ def test_loop(dataloader, model, loss_fn):
             X_test, y_test, f_test, coord = dataloader[batch]
             
             # Converting to pytorch tensors
-            X_test = torch.tensor(train_generator.scaler_x.transform(X_test), dtype=torch.float32)
+            X_test = torch.tensor(train_generator.scaler_x.transform(X_test), dtype=torch.float64)
             #X_test = torch.tensor(X_test, dtype=torch.float64)
-            y_test = torch.tensor(y_test, dtype=torch.float32)
-            f_test = torch.tensor(f_test, dtype=torch.float32) + 0.0
-            coord_torch = torch.tensor(coord, dtype=torch.float32)
+            y_test = torch.tensor(y_test, dtype=torch.float64)
+            f_test = torch.tensor(f_test, dtype=torch.float64) + 0.0
+            coord_torch = torch.tensor(coord, dtype=torch.float64)
             
             # # Extracting centroid coordinates
             dir = coord_torch[:,0][0]
@@ -477,7 +480,7 @@ def test_loop(dataloader, model, loss_fn):
 # -------------------------------
 
 # Initiating wandb
-wandb.init(project="pytorch_linear_model", entity="rmbl")
+#wandb.init(project="pytorch_linear_model", entity="rmbl")
 
 torch.set_default_dtype(torch.float64)
 torch.set_printoptions(precision=8)
@@ -643,7 +646,7 @@ l = []
 # Initializing the early_stopping object
 #early_stopping = EarlyStopping(patience=12, verbose=True)
 
-wandb.watch(model_1)
+#wandb.watch(model_1)
 
 w_int = np.zeros((epochs,1,4))
 w_int_real = np.zeros((epochs,1,4))
@@ -661,10 +664,12 @@ for t in range(epochs):
 
     #Shuffling batches
     train_generator.on_epoch_end()
+
+    param_dicts = param_deltas(model_1)
     
     # Train loop
     start_train = time.time()
-    batch_losses, batch_v_work, n_vfs, l_sec = train_loop(train_generator, model_1, loss_fn, optimizer)
+    batch_losses, batch_v_work, n_vfs, l_sec = train_loop(train_generator, model_1, loss_fn, optimizer, param_dicts)
     
     train_loss.append(torch.mean(batch_losses).item())
     v_work.append(torch.mean(batch_v_work).item())
@@ -703,13 +708,13 @@ for t in range(epochs):
     #      print("Early stopping")
     #      break
 
-    wandb.log({
-        "Epoch": t,
-        "Train Loss": train_loss[t],
-        "Test Loss": val_loss[t],
-        #"Learning Rate": scheduler._last_lr[0]
-        }
-        )
+    # wandb.log({
+    #     "Epoch": t,
+    #     "Train Loss": train_loss[t],
+    #     "Test Loss": val_loss[t],
+    #     #"Learning Rate": scheduler._last_lr[0]
+    #     }
+    #     )
 
 print("Done!")
 
