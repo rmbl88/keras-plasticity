@@ -163,8 +163,7 @@ def param_deltas(model):
     with torch.no_grad():
         
         model_dict = {key: value for key, value in model_orig.state_dict().items() if 'layer' in key and 'weight' in key}
-        delta_dict = copy.deepcopy(model_dict)
-        
+
         total_params = sum([value.shape[0]*value.shape[1] for key, value in model_dict.items()])
         
         eval_dicts = [model_orig.state_dict() for param in range(total_params)]
@@ -172,15 +171,19 @@ def param_deltas(model):
         k = 0
         for key, weight_matrix in model_dict.items():
 
-            param_vector = copy.deepcopy(weight_matrix).flatten()
-
-            for i in range(len(param_vector)):
+            for i in range(len(weight_matrix.flatten())):
+                
+                param_vector = copy.deepcopy(weight_matrix).flatten()
+                
+                delta_dict = copy.deepcopy(model_dict)
 
                 param_vector[i] -= 0.1 * param_vector[i]
 
                 delta_dict[key] = param_vector.unflatten(0,weight_matrix.shape)
 
                 eval_dicts[k].update(delta_dict)
+
+                k += 1
 
     return eval_dicts
 
