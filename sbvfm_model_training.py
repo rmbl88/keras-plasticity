@@ -162,35 +162,25 @@ def sigma_deltas(model, X_train, pred, param_deltas):
 
     return delta_stress
 
-def sbv_fields(d_sigma, id, b_glob, t_pts, n_elems):
+def sbv_fields(d_sigma, b_glob, t_pts, n_elems):
 
-    id_reshaped = torch.reshape(id, (t_pts,n_elems))
+    d_s = torch.reshape(d_sigma,(d_sigma.shape[0],t_pts, n_elems*d_sigma.shape[-1],1))
 
-    sorted_ids, indices = torch.sort(id_reshaped,-1)
-    
-    d_sigma_reshaped = torch.reshape(d_sigma,(d_sigma.shape[0],t_pts,n_elems*3,1))
+    b = b_glob.unsqueeze(0).repeat(d_sigma.shape[0],t_pts,n_elems,1)
 
-    #d_sigma_ordered = torch.zeros_like(d_sigma_reshaped)
-
-    # for i in range(d_sigma_ordered.shape[0]):
-    #     for j in range(d_sigma_ordered.shape[1]):
-    #         d_sigma_ordered[i,j] = d_sigma_reshaped[i][j][:,indices[j,:]]
-
-    b = b_glob.unsqueeze(0).repeat(d_sigma.shape[0],t_pts,n_elems*3,1)
-
-    v_disp = torch.linalg.pinv(b_glob) @ d_sigma_reshaped
+    v_disp = torch.linalg.pinv(b) @ d_s
 
     # left_symm = global_dof(mesh[mesh[:,1]==0][:,0])[::2]
     # bottom_symm = global_dof(mesh[mesh[:,-1]==0][:,0])[1::2]
 
     # b_glob = prescribe_u(b_glob,[left_symm,bottom_symm])
 
-    v_strain = b_glob @ v_disp
+    v_strain = b @ v_disp
 
     print('hey')
 
     
-    return None
+    return v_disp, v_strain
 
 def init_weights(m):
     '''
@@ -234,6 +224,10 @@ def train_loop(dataloader, model, loss_fn, optimizer, param_deltas):
         # Extracting centroid coordinates
         #dir = coord_torch[:,0][0]
         id = coord_torch[:,1]
+
+        id_reshaped = torch.reshape(id, (t_pts,n_elems,1))
+        indices = id_reshaped[:, :, 0].sort()[1]
+
         
         #cent_x = coord_torch[:,2]
         #cent_y = coord_torch[:,3]
@@ -254,9 +248,18 @@ def train_loop(dataloader, model, loss_fn, optimizer, param_deltas):
         #pred = torch.cat([pred_1,pred_2,pred_3],1)
         pred=model(X_train)
 
-        d_sigma = sigma_deltas(model, X_train, pred, param_deltas)
+        pred_reshaped = torch.reshape(pred,(t_pts,n_elems,pred.shape[-1]))
+        pred_sorted = pred_reshaped[torch.arange(pred_reshaped.size(0)).unsqueeze(1), indices].detach()
 
-        total_vfs, v_disp, v_strain = sbv_fields(d_sigma, id, b_glob, t_pts, n_elems)
+        X_train_reshaped = torch.reshape(X_train,(t_pts,n_elems,X_train.shape[-1])).detach()
+        X_train_sorted = X_train_reshaped[torch.arange(X_train_reshaped.size(0)).unsqueeze(1), indices].detach()
+
+        pred_sorted = torch.reshape(pred_sorted,pred.shape)
+        X_train_sorted = torch.reshape(X_train_sorted,X_train.shape)
+
+        d_sigma = sigma_deltas(model, X_train_sorted, pred_sorted, param_deltas)
+
+        v_disp, v_strain = sbv_fields(d_sigma, b_glob, t_pts, n_elems)
 
         # Calculating global force from stress predictions
         # global_f_pred = torch.sum(pred * ELEM_AREA * ELEM_THICK / LENGTH, 0)[:-1]
