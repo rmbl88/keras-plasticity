@@ -189,20 +189,34 @@ def param_deltas(model):
 
 def global_strain_disp(elements, n_nodes):
     total_dofs = n_nodes * 2
-    b_glob = torch.zeros([3,total_dofs])
+    n_pts = len(elements)
+    n_comps = 3
+    b_glob = torch.zeros([n_comps * n_pts, total_dofs])
 
-    for element in elements:
-        b_glob[:,list(element.global_dof)] += element.b_el()
+    for i, element in enumerate(elements):
+        
+        b_glob[n_comps*i:n_comps*i+n_comps,list(element.global_dof)] += element.b_el()
     
     return b_glob
 
-def prescribe_u(b_glob, conditions):
-    b = copy.deepcopy(b_glob)
+def prescribe_u(u, bcs):
+      
+    # Applying symmetry bcs
+    for edge, dofs in bcs['symm'].items():
+        u[:,:,dofs] = 0
+
+    v_disp = torch.zeros(u.shape[0],u.shape[1],1,2)
+    for i, (edge, dofs) in enumerate(bcs['load'].items()): 
+        dof_x = dofs[::2]-1
+        dof_y = dofs[1::2]-1
+        v_disp[:,:,:,0] = torch.mean(u[:,:,dof_x],2)
+        v_disp[:,:,:,1] = torch.mean(u[:,:,dof_y],2)   
+
+    return u, v_disp 
+
+def sbvf_loss(int_work, ext_work):
     
-    for condition in conditions:
-        b[:,condition-1]=0
-    
-    return b 
+    return (1/(int_work.shape[0]*int_work.shape[1]))*torch.sum(torch.sum(torch.sum(torch.abs((int_work-ext_work)),-2),-2))
 
 def custom_loss(int_work, ext_work):
     

@@ -7,7 +7,7 @@ import joblib
 from sklearn.utils import shuffle
 from constants import *
 from functions import (
-    custom_loss, 
+    sbvf_loss, 
     load_dataframes, 
     prescribe_u, 
     select_features_multi, 
@@ -162,23 +162,18 @@ def sigma_deltas(model, X_train, pred, param_deltas):
 
     return delta_stress
 
-def sbv_fields(d_sigma, b_glob, t_pts, n_elems):
+def sbv_fields(d_sigma, b_glob, n_elems, bcs):
 
-    d_s = torch.reshape(d_sigma,(d_sigma.shape[0],t_pts, n_elems*d_sigma.shape[-1],1))
+    # Reshaping d_sigma for least-square system
+    d_s = torch.reshape(d_sigma,(d_sigma.shape[0], T_PTS, n_elems * d_sigma.shape[-1],1))
 
-    b = b_glob.unsqueeze(0).repeat(d_sigma.shape[0],t_pts,n_elems,1)
+    # Computing virtual displacements (all dofs)
+    v_u = torch.linalg.pinv(b_glob) @ d_s
 
-    v_disp = torch.linalg.pinv(b) @ d_s
+    # Prescribing displacements
+    v_u, v_disp = prescribe_u(v_u, bcs)
 
-    # left_symm = global_dof(mesh[mesh[:,1]==0][:,0])[::2]
-    # bottom_symm = global_dof(mesh[mesh[:,-1]==0][:,0])[1::2]
-
-    # b_glob = prescribe_u(b_glob,[left_symm,bottom_symm])
-
-    v_strain = b @ v_disp
-
-    print('hey')
-
+    v_strain = torch.reshape(b_glob @ v_u, d_sigma.shape)
     
     return v_disp, v_strain
 
@@ -205,7 +200,6 @@ def train_loop(dataloader, model, loss_fn, optimizer, param_deltas):
     '''
     num_batches = len(dataloader)
     losses = torch.zeros(num_batches)
-    l_sec = torch.zeros(num_batches)
     v_work_real = torch.zeros(num_batches)
     t_pts = dataloader.t_pts
     n_elems = batch_size//t_pts
@@ -221,122 +215,52 @@ def train_loop(dataloader, model, loss_fn, optimizer, param_deltas):
         f_train = torch.tensor(f_train, dtype=torch.float64) + 0.0
         coord_torch = torch.tensor(coord, dtype=torch.float64)
          
-        # Extracting centroid coordinates
-        #dir = coord_torch[:,0][0]
+        # Extracting element ids
         id = coord_torch[:,1]
-
+        # Reshaping and sorting element ids array
         id_reshaped = torch.reshape(id, (t_pts,n_elems,1))
         indices = id_reshaped[:, :, 0].sort()[1]
-
         
-        #cent_x = coord_torch[:,2]
-        #cent_y = coord_torch[:,3]
-        
+        # Extracting element area
         area = torch.reshape(coord_torch[:,4],[batch_size,1])
 
-        # Defining surface coordinates where load is applied
-        #n_surf_nodes = int((9**0.5) + 1)
-     
-        #x = LENGTH * torch.ones(n_surf_nodes, dtype=torch.float)
-        #y = torch.tensor(np.linspace(0, LENGTH, n_surf_nodes), dtype=torch.float)
-
-        # Computing prediction
-        # pred_1 = model[0](X_train[:,[0,3,6]])
-        # pred_2 = model[1](X_train[:,[1,4,7]])
-        # pred_3 = model[2](X_train[:,[2,5,8]])
-
-        #pred = torch.cat([pred_1,pred_2,pred_3],1)
+        # Computing model stress prediction
         pred=model(X_train)
 
+        # Reshaping prediction to sort according to the sorted element ids
         pred_reshaped = torch.reshape(pred,(t_pts,n_elems,pred.shape[-1]))
-        pred_sorted = pred_reshaped[torch.arange(pred_reshaped.size(0)).unsqueeze(1), indices].detach()
+        pred_ = pred_reshaped[torch.arange(pred_reshaped.size(0)).unsqueeze(1), indices]
 
+        y_reshaped = torch.reshape(y_train,((t_pts,n_elems,y_train.shape[-1])))
+        y_ = y_reshaped[torch.arange(y_reshaped.size(0)).unsqueeze(1), indices]
+        y_ = torch.reshape(y_,y_train.shape)
+
+        # Reshaping input tensor to sort according to the sorted element ids
         X_train_reshaped = torch.reshape(X_train,(t_pts,n_elems,X_train.shape[-1])).detach()
         X_train_sorted = X_train_reshaped[torch.arange(X_train_reshaped.size(0)).unsqueeze(1), indices].detach()
 
-        pred_sorted = torch.reshape(pred_sorted,pred.shape)
+        # Reshaping tensors back to original shape in order to be able to pass through ANN model
+        pred_ = torch.reshape(pred_,pred.shape)
         X_train_sorted = torch.reshape(X_train_sorted,X_train.shape)
 
-        d_sigma = sigma_deltas(model, X_train_sorted, pred_sorted, param_deltas)
+        # Computing stress perturbation from perturbed model parameters
+        d_sigma = sigma_deltas(model, X_train_sorted, pred_.detach(), param_deltas)
 
-        v_disp, v_strain = sbv_fields(d_sigma, b_glob, t_pts, n_elems)
+        # Computing sensitivity-based virtual fields
+        v_disp, v_strain = sbv_fields(d_sigma, b_glob, n_elems, bcs)
 
-        # Calculating global force from stress predictions
-        # global_f_pred = torch.sum(pred * ELEM_AREA * ELEM_THICK / LENGTH, 0)[:-1]
-
-        #dsde = batch_jacobian(model,X_train)
-        #e_pred = torch.linalg.solve(dsde,pred)
-        #L = torch.linalg.eigh(0.5*(dsde+torch.permute(dsde,(0,2,1)))).eigenvalues
-        #SPD = torch.einsum('bij,bjk->bik', dsde, torch.permute(dsde,(0,2,1)))
-        #C = torch.linalg.cholesky(SPD)
-        #H = torch.einsum('bij,bjk->bik', dsde, torch.permute(dsde,(0,2,1)))
-        # x = copy.deepcopy(X_train).detach().numpy()
-        # x = torch.tensor(dataloader.scaler_x.inverse_transform(x))
-        # dsde = get_batch_jacobian(model, x, N_OUTPUTS)[:,:,-3:]
-        #s = torch.reshape(dsde @ torch.reshape(torch.tensor(x[:,3:]),[9,3,1]),[9,3])
-
-        #e = torch.reshape(torch.linalg.solve(dsde, torch.reshape(pred,[9,3,1])),[9,3])
-        # ltri = torch.stack([torch.tril(dsde[i]).flatten() for i in range(batch_size)])
-        # ltri = torch.stack([ltri[i][ltri[i].nonzero()] for i in range(batch_size)]).detach().numpy()
-        #print('hey')
-        # #Ensure H
-        # sols = []
-        # for i in range(batch_size):
-        #     l = fsolve(func, [1.0,0.0,1.0,0.0,0.0,1.0], args=ltri[i].reshape(-1), xtol=1e-3)
-        #     h = np.zeros((3, 3))
-        #     inds = np.triu_indices(len(h))
-        #     h[inds] = l
-        #     h = torch.tensor(h + h.T - np.diag(np.diag(h)), dtype=torch.float32)
-        #     sols.append(h)
-
-        # H = torch.stack(sols)
-        # e = X_train[:,-3:].reshape([batch_size, 3, 1])
-        # s = (H @ e).reshape([batch_size,3])
-        
-        # w_int = torch.reshape(-ELEM_THICK * torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[6,-1]).T
-        # w_int_real =torch.reshape(-ELEM_THICK * torch.sum(y_train * v_strain[:] * ELEM_AREA, -1, keepdims=True),[6,-1]).T
-
-        # w_int = torch.cat([coord[:,1:],w_int],1)
-        # w_int_real = torch.cat([coord[:,1:],w_int_real],1)
-
-        # Computing the internal virtual works
-        #int_work = - torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA * ELEM_THICK, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
-        #int_work = torch.reshape(int_work,[-1,1])
-
-        #int_work = -torch.sum(torch.sum(pred * v_strain[:] * area * ELEM_THICK, -1, keepdims=True),1)
-        #int_work = -torch.sum(torch.sum(pred.view([t_pts,n_elems,3]) * v_strain.view([total_vfs,t_pts,n_elems,3])* area.view([t_pts,n_elems,1]) * ELEM_THICK, -1, keepdims=True),2)
-
-        int_work = torch.reshape((pred * v_strain * area * ELEM_THICK),[total_vfs,t_pts,n_elems,3])
+        # Computing predicted virtual work       
+        int_work = torch.sum(torch.reshape((pred_ * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1,keepdim=True)
        
-        # Computing the internal virtual work coming from stress labels (results checking only)
-        # int_work_real = torch.sum(torch.reshape(torch.sum(y_train * v_strain[:] * ELEM_AREA * ELEM_THICK, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)        
-        # int_work_real = torch.reshape(int_work_real,[-1,1])
+        # Computing real virtual work
+        int_work_real = torch.reshape((y_ * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3])
         
-        #int_work_real = -torch.sum(torch.sum(y_train * v_strain[:] * area * ELEM_THICK, -1, keepdims=True),1) 
-        #int_work_real = -torch.sum(torch.sum(y_train.view([t_pts,n_elems,3]) * v_strain.view([total_vfs,t_pts,n_elems,3])* area.view([t_pts,n_elems,1]) * ELEM_THICK, -1, keepdims=True),2)
-
-        int_work_real = torch.reshape((y_train * v_strain * area * ELEM_THICK),[total_vfs,t_pts,n_elems,3])
-        
-        # Extracting global force components and filtering duplicate values
-        #f = f_train[:,:2][::batch_size,:]
         f = f_train[:,:2][::n_elems,:]
 
         # Computing external virtual work
-        #ext_work = torch.mean(torch.sum(f*v_disp[:],-1,keepdims=True),1)     
-        ext_work = torch.sum(torch.reshape(f,[t_pts,1,2])*torch.mean(v_disp,1),-1,keepdim=True).permute(1,0,2)
-        
-        # Compute L1 loss component
-        # l1_weight = 0.01
-        # l1_parameters = []
-        # for parameter in model.layers[0].parameters():
-        #     l1_parameters.append(parameter.view(-1))
-        # l = l1_weight * model.compute_l1_loss(torch.cat(l1_parameters))
-        #l= torch.sum(torch.square(torch.abs(e_pred-X_train)))
-        
-        l=0
-
+        ext_work = torch.sum(torch.reshape(f,[t_pts,1,2])*v_disp,-1,keepdim=True)
+            
         # Computing losses        
-        #loss = loss_fn(int_work, ext_work)
         loss = loss_fn(int_work,ext_work)
         cost = loss_fn(int_work_real, ext_work)
 
@@ -348,14 +272,12 @@ def train_loop(dataloader, model, loss_fn, optimizer, param_deltas):
         # Saving loss values
         losses[batch] = loss
         v_work_real[batch] = cost
-        l_sec[batch] = l
 
         print('\r>Train: %d/%d' % (batch + 1, num_batches), end='')
     
+    return losses, v_work_real
     
-    return losses, v_work_real, total_vfs, l_sec
-
-def test_loop(dataloader, model, loss_fn):
+def test_loop(dataloader, model, loss_fn, param_deltas):
     
     num_batches = len(dataloader)
     test_losses = torch.zeros(num_batches)
@@ -380,53 +302,46 @@ def test_loop(dataloader, model, loss_fn):
             f_test = torch.tensor(f_test, dtype=torch.float64) + 0.0
             coord_torch = torch.tensor(coord, dtype=torch.float64)
             
-            # # Extracting centroid coordinates
-            dir = coord_torch[:,0][0]
+            # Extracting element ids
             id = coord_torch[:,1]
-            cent_x = coord_torch[:,2]
-            cent_y = coord_torch[:,3]
+            # Reshaping and sorting element ids array
+            id_reshaped = torch.reshape(id, (t_pts,n_elems,1))
+            indices = id_reshaped[:, :, 0].sort()[1]
+
             area = torch.reshape(coord_torch[:,4],[batch_size,1])
-
-            # # Defining surface coordinates where load is applied
-            n_surf_nodes = int((batch_size**0.5) + 1)
-            x = LENGTH * torch.ones(n_surf_nodes, dtype=torch.float32)
-            y = torch.tensor(np.linspace(0, LENGTH, n_surf_nodes), dtype=torch.float32)
-
-            total_vfs, v_disp, v_strain = get_v_fields(cent_x, cent_y, x, y, dir)
-
-            # pred_1 = model[0](X_test[:,[0,3,6]])
-            # pred_2 = model[1](X_test[:,[1,4,7]])
-            # pred_3 = model[2](X_test[:,[2,5,8]])
 
             # pred = torch.cat([pred_1,pred_2,pred_3],1)
             pred = model(X_test)
 
-            # Computing the internal virtual works
-            # int_work = -ELEM_THICK * torch.sum(torch.reshape(torch.sum(pred * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
-            # int_work = torch.reshape(int_work,[-1,1])
-            #int_work = -torch.sum(torch.sum(pred * v_strain[:] * area[:] * ELEM_THICK, -1, keepdims=True),1)
+            # Reshaping prediction to sort according to the sorted element ids
+            pred_reshaped = torch.reshape(pred,(t_pts,n_elems,pred.shape[-1]))
+            pred_ = pred_reshaped[torch.arange(pred_reshaped.size(0)).unsqueeze(1), indices]
 
-            # int_work = -torch.sum(torch.sum(pred.view([t_pts,n_elems,3]) * v_strain.view([total_vfs,t_pts,n_elems,3])* area.view([t_pts,n_elems,1]) * ELEM_THICK, -1, keepdims=True),2)
+            y_reshaped = torch.reshape(y_test,((t_pts,n_elems,y_test.shape[-1])))
+            y_ = y_reshaped[torch.arange(y_reshaped.size(0)).unsqueeze(1), indices]
+            y_ = torch.reshape(y_,y_test.shape)
 
-            int_work = torch.reshape((pred * v_strain * area * ELEM_THICK),[total_vfs,t_pts,n_elems,3])
+            # Reshaping input tensor to sort according to the sorted element ids
+            X_test_reshaped = torch.reshape(X_test,(t_pts,n_elems,X_test.shape[-1])).detach()
+            X_test_sorted = X_test_reshaped[torch.arange(X_test_reshaped.size(0)).unsqueeze(1), indices].detach()
 
-            # int_work_real = -ELEM_THICK * torch.sum(torch.reshape(torch.sum(y_test * v_strain[:] * ELEM_AREA, -1, keepdims=True),[total_vfs,batch_size//batch_size,batch_size,1]),2)
-            # int_work_real = torch.reshape(int_work_real,[-1,1])
-            #int_work_real = -torch.sum(torch.sum(y_test * v_strain[:] * area[:] * ELEM_THICK, -1, keepdims=True),1) 
+            # Reshaping tensors back to original shape in order to be able to pass through ANN model
+            pred_ = torch.reshape(pred_,pred.shape)
+            X_test_sorted = torch.reshape(X_test_sorted,X_test.shape)
 
-            #int_work_real = -torch.sum(torch.sum(y_test.view([t_pts,n_elems,3]) * v_strain.view([total_vfs,t_pts,n_elems,3])* area.view([t_pts,n_elems,1]) * ELEM_THICK, -1, keepdims=True),2)
+            # Computing stress perturbation from perturbed model parameters
+            d_sigma = sigma_deltas(model, X_test_sorted, pred_.detach(), param_deltas)
 
-            int_work_real = torch.reshape((y_test * v_strain * area * ELEM_THICK),[total_vfs,t_pts,n_elems,3])
+            # Computing sensitivity-based virtual fields
+            v_disp, v_strain = sbv_fields(d_sigma, b_glob, n_elems, bcs)
 
-            # Extracting global force components and filtering duplicate values
-            #f = f_test[:,:2][::batch_size,:]
+            int_work = torch.reshape((pred_ * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3])
+
+            #int_work_real = torch.reshape((y_ * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3])
 
             f = f_test[:,:2][::n_elems,:]
             
-            # Computing external virtual work
-            #ext_work = torch.mean(torch.sum(f*v_disp[:],-1,keepdims=True),1)
-            
-            ext_work = torch.sum(f.view(t_pts,1,2)*torch.mean(v_disp,1),-1,keepdims=True).permute(1,0,2) 
+            ext_work = torch.sum(torch.reshape(f,[t_pts,1,2])*v_disp,-1,keepdim=True)
 
             # Computing losses        
             # test_loss = loss_fn(int_work, ext_work)
@@ -460,6 +375,20 @@ mesh, connectivity, dof = read_mesh(TRAIN_MULTI_DIR)
 elements = [Element(connectivity[i,:],mesh[connectivity[i,1:]-1,1:],dof[i,:]-1) for i in tqdm(range(connectivity.shape[0]))]
 
 b_glob = global_strain_disp(elements,mesh.shape[0])
+
+bcs = {
+    'symm': {
+        'left': global_dof(mesh[mesh[:,1]==0][:,0])[::2],
+        'bottom': global_dof(mesh[mesh[:,-1]==0][:,0])[1::2]
+        },
+    'load': {
+        'right': global_dof(mesh[mesh[:,1]==3][:,0])
+    }
+
+
+}
+# left_symm = global_dof(mesh[mesh[:,1]==0][:,0])[::2]
+    # bottom_symm = global_dof(mesh[mesh[:,-1]==0][:,0])[1::2]
 
 # Loading data
 df_list, _ = load_dataframes(TRAIN_MULTI_DIR)
@@ -593,7 +522,7 @@ epochs = 500
 
 # Optimization variables
 learning_rate = 0.01
-loss_fn = custom_loss
+loss_fn = sbvf_loss
 f_loss = torch.nn.MSELoss()
 
 optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
@@ -604,7 +533,6 @@ train_loss = []
 v_work = []
 val_loss = []
 epochs_ = []
-l = []
 # Initializing the early_stopping object
 #early_stopping = EarlyStopping(patience=12, verbose=True)
 
@@ -628,28 +556,30 @@ for t in range(epochs):
     train_generator.on_epoch_end()
 
     param_dicts = param_deltas(model_1)
+
+    if t == 0:
+        n_vfs = len(param_dicts)
     
     # Train loop
     start_train = time.time()
-    batch_losses, batch_v_work, n_vfs, l_sec = train_loop(train_generator, model_1, loss_fn, optimizer, param_dicts)
+    batch_losses, batch_v_work = train_loop(train_generator, model_1, loss_fn, optimizer, param_dicts)
     
     train_loss.append(torch.mean(batch_losses).item())
     v_work.append(torch.mean(batch_v_work).item())
-    l.append(torch.mean(l_sec).item())
 
     end_train = time.time()
     
     #Apply learning rate scheduling if defined
     try:
         scheduler.step(train_loss[t])       
-        print('. t_loss: %.3e | l_sec: %.3e -> lr: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], l[t], scheduler._last_lr[0], v_work[t], end_train - start_train))
+        print('. t_loss: %.3e -> lr: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], scheduler._last_lr[0], v_work[t], end_train - start_train))
     except:
-        print('. t_loss: %.3e | l_sec: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], l[t], v_work[t], end_train - start_train))
+        print('. t_loss: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], v_work[t], end_train - start_train))
 
     # Test loop
     start_test = time.time()
 
-    batch_val_losses = test_loop(test_generator, model_1, loss_fn)
+    batch_val_losses = test_loop(test_generator, model_1, loss_fn, param_dicts)
 
     val_loss.append(torch.mean(batch_val_losses).item())
 
@@ -700,11 +630,11 @@ history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), 
 task = r'[%i-%ix%i-%i]-%s-%i-VFs' % (N_INPUTS, N_UNITS, H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], n_vfs)
 
 import os
-output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_indirect'
-output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_indirect/loss/'
-output_prints = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_indirect/prints/'
-output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_indirect/models/'
-output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_indirect/val/'
+output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf'
+output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/loss/'
+output_prints = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/prints/'
+output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/models/'
+output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/val/'
 
 directories = [output_task, output_loss, output_prints, output_models, output_val]
 
