@@ -12,6 +12,7 @@ import torch
 from tqdm import tqdm
 from torch import nn
 from io import StringIO
+import math
 from torch.nn.utils import (
   parameters_to_vector as Params2Vec,
   vector_to_parameters as Vec2Params
@@ -126,7 +127,7 @@ class Element():
 
         dN_x_y = torch.linalg.solve(J,dN_csi_eta)
 
-        b_el = torch.zeros(3,len(n)*2)
+        b_el = torch.zeros(3,len(self.local_dof))
 
         x_dof = self.local_dof[::2]
         y_dof = self.local_dof[1::2]
@@ -156,17 +157,13 @@ def param_vector(model):
 
 def param_deltas(model):
 
-    #d_sigma = torch.zeros()
- 
-    model_orig = copy.deepcopy(model)
-
     with torch.no_grad():
         
-        model_dict = {key: value for key, value in model_orig.state_dict().items() if 'layer' in key and 'weight' in key}
+        model_dict = {key: value for key, value in model.state_dict().items()}
 
-        total_params = sum([value.shape[0]*value.shape[1] for key, value in model_dict.items()])
+        total_params = sum([len(value.flatten()) for key, value in model_dict.items()])
         
-        eval_dicts = [model_orig.state_dict() for param in range(total_params)]
+        eval_dicts = [model.state_dict() for param in range(total_params)]
 
         k = 0
         for key, weight_matrix in model_dict.items():
@@ -177,7 +174,7 @@ def param_deltas(model):
                 
                 delta_dict = copy.deepcopy(model_dict)
 
-                param_vector[i] -= 0.1 * param_vector[i]
+                param_vector[i] += -0.15 * param_vector[i]
 
                 delta_dict[key] = param_vector.unflatten(0,weight_matrix.shape)
 
@@ -187,36 +184,125 @@ def param_deltas(model):
 
     return eval_dicts
 
-def global_strain_disp(elements, n_nodes):
-    total_dofs = n_nodes * 2
+def global_strain_disp(elements, total_dofs, bcs):
+    g_dof = list(np.arange(total_dofs))
     n_pts = len(elements)
     n_comps = 3
     b_glob = torch.zeros([n_comps * n_pts, total_dofs])
 
     for i, element in enumerate(elements):
         
-        b_glob[n_comps*i:n_comps*i+n_comps,list(element.global_dof)] += element.b_el()
+        b_glob[n_comps*i:n_comps*i + n_comps, element.global_dof-1] += element.b_el()
     
-    return b_glob
+    b_bar = b_glob
+    bc_fixed = []
+    bc_slaves = []
+    bc_masters = []
+
+    for edge, props in bcs.items():
+
+        edge_dof_x = list(props['dof'][::2]-1)
+        edge_dof_y = list(props['dof'][1::2]-1)
+
+        if edge == 'left' or edge == 'bottom':
+        
+            master_dof = list(props['dof'][0:2]-1)
+            slave_dof = list(props['dof'][2:]-1)
+
+        elif edge == 'right' or edge == 'top':
+
+            master_dof = list(props['dof'][-2:]-1)
+            slave_dof = list(props['dof'][:-2]-1)
+
+        # Set bc along x-direction
+        if props['cond'][0] == 0:
+            pass
+        elif props['cond'][0] == 1:
+            bc_fixed += edge_dof_x
+        elif props['cond'][0] == 2:
+            b_bar[:, master_dof[0]] += torch.sum(b_bar[:,slave_dof[::2]],1)
+            bc_slaves += slave_dof[::2]
+            bc_masters.append(master_dof[0])
+        
+        if props['cond'][1] == 0:
+            pass
+        elif props['cond'][1] == 1:
+            bc_fixed += edge_dof_y
+        elif props['cond'][1] == 2:
+            b_bar[:, master_dof[1]] += torch.sum(b_bar[:,slave_dof[1::2]],1)
+            bc_slaves += slave_dof[1::2]
+            bc_masters.append(master_dof[1])
+
+    actDOFs = list(set(g_dof)-set(sum([bc_fixed,bc_slaves],[])))
+
+    b_bar = torch.index_select(b_bar, 1, torch.tensor(actDOFs))
+
+    b_inv = torch.linalg.pinv(b_bar)
+    
+    return b_glob, b_bar, b_inv, actDOFs
 
 def prescribe_u(u, bcs):
-      
-    # Applying symmetry bcs
-    for edge, dofs in bcs['symm'].items():
-        u[:,:,dofs] = 0
-
     v_disp = torch.zeros(u.shape[0],u.shape[1],1,2)
-    for i, (edge, dofs) in enumerate(bcs['load'].items()): 
-        dof_x = dofs[::2]-1
-        dof_y = dofs[1::2]-1
-        v_disp[:,:,:,0] = torch.mean(u[:,:,dof_x],2)
-        v_disp[:,:,:,1] = torch.mean(u[:,:,dof_y],2)   
+    for edge, props in bcs.items():
+
+        edge_dof_x = list(props['dof'][::2]-1)
+        edge_dof_y = list(props['dof'][1::2]-1)
+
+        if edge == 'left' or edge == 'bottom':
+        
+            master_dof = list(props['dof'][0:2]-1)
+            slave_dof = list(props['dof'][2:]-1)
+
+        elif edge == 'right' or edge == 'top':
+
+            master_dof = list(props['dof'][-2:]-1)
+            slave_dof = list(props['dof'][:-2]-1)
+
+        # Setting bcs along x_direction
+        if props['cond'][0] == 0:
+            pass
+        elif props['cond'][0] == 1:
+            u[:,:,edge_dof_x] = 0
+        elif props['cond'][0] == 2:
+            u[:,:,slave_dof[::2]] = torch.reshape(u[:,:,master_dof[0]],(u.shape[0],u.shape[1],1,1))
+            v_disp[:,:,:,0] = torch.mean(u[:,:,edge_dof_x],2)
+
+        # Setting bcs along y_direction
+        if props['cond'][0] == 0:
+            pass
+        elif props['cond'][0] == 1:
+            u[:,:,edge_dof_y] = 0
+        elif props['cond'][0] == 2:
+            u[:,:,slave_dof[1::2]] = torch.reshape(u[:,:,master_dof[1]],(u.shape[0],u.shape[1],1,1))
+            v_disp[:,:,:,1] = torch.mean(u[:,:,edge_dof_y],2)
+
+    # # Applying symmetry bcs
+    # for edge, dofs in bcs['symm'].items():
+    #     if edge == 'left':
+    #         u[:,:,dofs[::2]-1] = 0
+    #     elif edge == 'bottom':
+    #         u[:,:,dofs[1::2]-1] = 0
+
+    # v_disp = torch.zeros(u.shape[0],u.shape[1],1,2)
+    # for i, (edge, dofs) in enumerate(bcs['load'].items()): 
+    #     dof_x = dofs[::2]-1
+    #     dof_y = dofs[1::2]-1
+    #     v_disp[:,:,:,0] = torch.mean(u[:,:,dof_x],2)
+    #     v_disp[:,:,:,1] = torch.mean(u[:,:,dof_y],2)   
 
     return u, v_disp 
 
 def sbvf_loss(int_work, ext_work):
-    
-    return (1/(int_work.shape[0]*int_work.shape[1]))*torch.sum(torch.sum(torch.sum(torch.abs((int_work-ext_work)),-2),-2))
+       
+    ivw_sort = torch.sort(torch.abs(int_work.detach()).flatten(),descending=True).values
+    #ivw_sort = torch.sort(torch.abs(int_work.detach()),1,descending=True).values
+
+    numSteps = math.floor(0.3*len(ivw_sort))
+    alpha = torch.mean(ivw_sort[0:numSteps]) * torch.ones((int_work.shape[0],1))
+    #alpha = torch.mean(ivw_sort[:,0:numSteps,:],1)
+
+    return torch.sum((1/alpha**2)*torch.sum(torch.square(int_work-ext_work),1))
+    #return torch.sum((1/alpha)*torch.sum(torch.abs(int_work-ext_work),1))
 
 def custom_loss(int_work, ext_work):
     
@@ -226,7 +312,7 @@ def custom_loss(int_work, ext_work):
     #return (1/(4*int_work.shape[0]*int_work.shape[1]))*torch.sum(torch.sum(torch.square(torch.sum(torch.sum(int_work,-1,keepdim=True),-2)-ext_work),1)) 
 
 def global_dof(connect):
-    return np.array(sum([[2*i-1,2*i] for i in connect],[]))
+    return np.array(sum([[2*i-1,2*i] for i in connect],[])).astype(int)
 
 def read_mesh(dir):
     
@@ -322,9 +408,8 @@ def select_features_multi(df):
     y = df[['sxx_t','syy_t','sxy_t']]
     f = df[['fxx_t', 'fyy_t', 'fxy_t']]
     coord = df[['dir','id', 'cent_x', 'cent_y','area']]
-
-    return X, y, f, coord
-
+    info = df[['tag','inc']]
+    return X, y, f, coord, info
 
 #-----------------------------------
 #   DEPRECATED

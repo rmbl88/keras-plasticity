@@ -2,11 +2,11 @@
 # Defining model training constants
 SEED = 444
 VAL_DIR = 'data/validation/'
-VAL_DIR_MULTI = 'data/validation_multi/9-elem-1000-elastic/'
+VAL_DIR_MULTI = 'data/validation_multi/100-elem-25-elastic/'
 TRAIN_DIR = 'data/training/'
-TRAIN_MULTI_DIR = 'data/training_multi/9-elem-1000-elastic/'
+TRAIN_MULTI_DIR = 'data/training_multi/100-elem-25-elastic/'
 
-DATA_SAMPLES = 100
+DATA_SAMPLES = 50
 LOOK_BACK = 0
 TEST_SIZE = 0.2
 

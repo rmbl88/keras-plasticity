@@ -50,7 +50,7 @@ def set_size(width, fraction=1, subplots=(1, 1)):
 file_list = []
 df_list = []
 
-DIR = "outputs/9-elem-1000-elastic_indirect/val/"
+DIR = "outputs/100-elem-25-elastic_sbvf/val/"
 
 for r, d, f in os.walk(DIR):
     for file in sorted(f):
@@ -74,8 +74,8 @@ plt.rc('axes', prop_cycle=default_cycler)
 for i,file in enumerate(file_list):
 
     str = file.split('/')[-1][:-4]
-    trial = str[:-2]
-    elem = str[-1]
+    trial = str.split('_x_')[0]
+    elem = str.split('_x_')[-1]
 
     ex_var_abaqus = df_list[i]['exx_t']*100
     ey_var_abaqus = df_list[i]['eyy_t']*100

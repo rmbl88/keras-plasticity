@@ -3,7 +3,7 @@ import constants
 import joblib
 import tensorflow as tf
 from tensorflow import keras
-from functions import custom_loss, load_dataframes, data_sampling, select_features_multi, standardize_data
+from functions import custom_loss, load_dataframes, select_features_multi, standardize_data
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -21,37 +21,6 @@ from torchmetrics import MeanSquaredError
 from scipy import fftpack
 from scipy.signal import find_peaks
 import geotorch
-
-def despike(yi, th=1.e-8):
-    '''Remove spike from array yi, the spike area is where the difference between 
-    the neigboring points is higher than th.'''
-    y = np.copy(yi) # use y = y1 if it is OK to modify input array
-    n = len(y)
-    x = np.arange(n)
-    c = np.argmax(y)
-    d = abs(np.diff(y))
-    try:
-        l = c - 1 - np.where(d[c-1::-1]<th)[0][0]
-        r = c + np.where(d[c:]<th)[0][0] + 1
-    except: # no spike, return unaltered array
-        return y
-    # for fit, use area twice wider then the spike
-    if (r-l) <= 3:
-        l -= 1
-        r += 1
-    s = int(round((r-l)/2.))
-    lx = l - s
-    rx = r + s
-    # make a gap at spike area
-    xgapped = np.concatenate((x[lx:l],x[r:rx]))
-    ygapped = np.concatenate((y[lx:l],y[r:rx]))
-    # quadratic fit of the gapped array
-    z = np.polyfit(xgapped,ygapped,2)
-    p = np.poly1d(z)
-    y[l:r] = p(x[l:r])
-    return y
-
-from scipy.signal import savgol_filter
 
 class NeuralNetwork(nn.Module):
     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
@@ -84,9 +53,6 @@ class NeuralNetwork(nn.Module):
             
         #return self.layers[-1](x)
         return self.activation_o(self.layers[-1](x))
-    
-    def compute_l1_loss(self, w):
-      return (torch.abs(w)**0.25).sum()
 
 plt.rcParams.update(constants.PARAMS)
 
@@ -103,52 +69,36 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 # Loading data scalers
 #x_scaler = joblib.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs-scaler_x.pkl')
 #x_scaler = joblib.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs-scaler_x.pkl')
-x_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-6x1-3]-9-elem-1000-elastic-4-VFs-scaler_x.pkl')
+#x_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-6x1-3]-9-elem-1000-elastic-4-VFs-scaler_x.pkl')
+x_scaler = joblib.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x1-3]-100-elem-25-elastic-30-VFs-scaler_x.pkl')
 #y_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-3x1-3]-9-elem-1000-elastic-scaler_y.pkl')
 
 
 # Loading ANN model
-model_1 = NeuralNetwork(3, 3, 6, 1)
+model_1 = NeuralNetwork(3, 3, 3, 1)
 # model_2 = NeuralNetwork(3, 1, 8, 1)
 # model_3 = NeuralNetwork(3, 1, 8, 1)
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
-model_1.load_state_dict(torch.load('outputs/9-elem-1000-elastic_indirect/models/[3-6x1-3]-9-elem-1000-elastic-4-VFs_1.pt'))
+model_1.load_state_dict(torch.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x1-3]-100-elem-25-elastic-30-VFs_1.pt'))
 
 model_1.eval()
-# model_2.eval()
-# model_3.eval()
-#model = keras.models.load_model('models/ann3', compile=False)
-
-#model.summary()
 
 # Sampling data pass random seed for random sampling
-sampled_dfs = data_sampling(df_list, constants.DATA_SAMPLES)
+#sampled_dfs = data_sampling(df_list, constants.DATA_SAMPLES)
 
-#mean_squared_error = torchmetrics.MeanSquaredLogError()
-mean_squared_error = torchmetrics.R2Score()
+error = torchmetrics.SymmetricMeanAbsolutePercentageError()
+elem_list = []
 
 print("----------------------\nMSE\n----------------------\n\tSxx\tSyy\tSxy\n")
 with torch.no_grad():
-    for i, df in enumerate(sampled_dfs):
+    for i, df in enumerate(df_list):
 
-        X, y, _, _ = select_features_multi(df)
+        X, y, _, _, _ = select_features_multi(df)
         X_scaled=x_scaler.transform(X)
-        # Apply previous validation dataset
-        #X_val, y_val, _, _ = standardize_data(X, y, x_scaler, y_scaler)
-
-        #y_pred = model.predict(X_val)
-
-        #y_pred_inv = model_1(torch.tensor(X.values)).detach().numpy()
+        
         y_pred_inv = model_1(torch.tensor(X_scaled)).detach().numpy()
-        #y_pred_inv = y_scaler.inverse_transform(model_1(torch.tensor(X_scaled)).detach().numpy())
-
-        #y_pred_inv_1 = model_1(torch.tensor(X_scaled[:,[0,3,6]]))
-        # y_pred_inv_2 = model_2(torch.tensor(X_scaled[:,[1,4,7]]))
-        # y_pred_inv_3 = model_3(torch.tensor(X_scaled[:,[2,5,8]]))
-
-        #y_pred_inv = y_scaler.inverse_transform(y_pred)
-
+    
         ex_var_abaqus = df['exx_t']
         ey_var_abaqus = df['eyy_t']
         exy_var_abaqus = df['exy_t']
@@ -160,22 +110,15 @@ with torch.no_grad():
         sy_pred_var = y_pred_inv[:,1]
         sxy_pred_var = y_pred_inv[:,2]
 
-        # sx_pred_var = torch.reshape(y_pred_inv_1,(sx_var_abaqus.shape[0],))
-        # sy_pred_var = torch.reshape(y_pred_inv_2,(sy_var_abaqus.shape[0],))
-        # sxy_pred_var = torch.reshape(y_pred_inv_3,(sxy_var_abaqus.shape[0],)) 
+        mse_x = error(torch.from_numpy(sx_pred_var), torch.from_numpy(sx_var_abaqus.values))
+        mse_y = error(torch.from_numpy(sy_pred_var), torch.from_numpy(sy_var_abaqus.values))
+        mse_xy = error(torch.from_numpy(sxy_pred_var), torch.from_numpy(sxy_var_abaqus.values))
 
-        mse_x = mean_squared_error(sx_pred_var, torch.tensor(sx_var_abaqus))
-        mse_y = mean_squared_error(sy_pred_var, torch.tensor(sy_var_abaqus))
-        mse_xy = mean_squared_error(sxy_pred_var, torch.tensor(sxy_var_abaqus))
+        if mse_x < 1.7 or mse_y < 1.7 or mse_xy < 1.7:
+            elem_list.append(df['id'][0])
 
         print("%i\t%0.5f\t%0.5f\t%0.5f" % (i, mse_x, mse_y, mse_xy))
-
-        # sx_pred_var = y_pred[:,0]
-        # sy_pred_var = y_pred[:,1]
-        # sxy_pred_var = y_pred[:,2]
-
-        # popt, pcov = scipy.optimize.curve_fit(func, exy_var_abaqus, sxy_var_abaqus)
-        
+       
         fig , (ax1, ax2, ax3) = plt.subplots(1,3)
         fig.suptitle(r''+ df['tag'][0].replace('_','\_') + ': element \#' + str(df['id'][0]),fontsize=14)
         fig.set_size_inches(10, 5)
@@ -205,11 +148,11 @@ with torch.no_grad():
         #results = model.evaluate(X_val,y_val[:,:3])
         
         #plt.show()
-        elem_list = [1,2,3,4,5,6,7,8,9]
+        
         if df['id'][0] in elem_list:
             predictions = pd.DataFrame(y_pred_inv, columns=['pred_x','pred_y','pred_xy'])
             results = pd.concat([df[['exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']],predictions], axis=1)
-            results.to_csv('outputs/9-elem-1000-elastic_indirect/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',',float_format='%.12f')
+            results.to_csv('outputs/100-elem-25-elastic_sbvf/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',',float_format='%.12f')
             
 
         
