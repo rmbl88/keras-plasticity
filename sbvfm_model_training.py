@@ -205,8 +205,8 @@ def train_loop(dataloader, model, loss_fn, optimizer):
     Custom loop for neural network training, using mini-batches
 
     '''
-
-    param_dicts = param_deltas(copy.deepcopy(model))
+    mdl = copy.deepcopy(model)
+    param_dicts = param_deltas(copy.deepcopy(mdl))
     n_vfs = len(param_dicts)
 
     num_batches = len(dataloader)
@@ -215,17 +215,17 @@ def train_loop(dataloader, model, loss_fn, optimizer):
     t_pts = dataloader.t_pts
     n_elems = batch_size//t_pts
 
+    model.train()
     for batch in range(num_batches):
 
         # Extracting variables for training
         X_train, y_train, f_train, coord, tag, inc = dataloader[batch]
         
         # Converting to pytorch tensors
-        X_train = torch.tensor(X_train, dtype=torch.float64)
-        X_train.requires_grad = True
-        y_train = torch.tensor(y_train, dtype=torch.float64)
-        f_train = torch.tensor(f_train, dtype=torch.float64) + 0.0
-        coord_torch = torch.tensor(coord, dtype=torch.float64)
+        X_train = torch.as_tensor(X_train, dtype=torch.float64)
+        y_train = torch.as_tensor(y_train, dtype=torch.float64)
+        f_train = torch.as_tensor(f_train, dtype=torch.float64) + 0.0
+        coord_torch = torch.as_tensor(coord, dtype=torch.float64)
          
         # Extracting element ids
         id = coord_torch[:,1]
@@ -319,11 +319,11 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
             X_test, y_test, f_test, coord, _, _ = dataloader[batch]
             
             # Converting to pytorch tensors
-            X_test = torch.tensor(train_generator.scaler_x.transform(X_test), dtype=torch.float64)
+            X_test = torch.as_tensor(train_generator.scaler_x.transform(X_test), dtype=torch.float64)
             #X_test = torch.tensor(X_test, dtype=torch.float64)
-            y_test = torch.tensor(y_test, dtype=torch.float64)
-            f_test = torch.tensor(f_test, dtype=torch.float64) + 0.0
-            coord_torch = torch.tensor(coord, dtype=torch.float64)
+            y_test = torch.as_tensor(y_test, dtype=torch.float64)
+            f_test = torch.as_tensor(f_test, dtype=torch.float64) + 0.0
+            coord_torch = torch.as_tensor(coord, dtype=torch.float64)
             
             # Extracting element ids
             id = coord_torch[:,1]
@@ -391,10 +391,11 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
 #wandb.init(project="pytorch_linear_model", entity="rmbl")
 
 torch.set_default_dtype(torch.float64)
-torch.set_printoptions(precision=8)
+# torch.set_printoptions(precision=8)
 
 # Specifying random seed
 random.seed(SEED)
+torch.manual_seed(SEED)
 
 mesh, connectivity, dof = read_mesh(TRAIN_MULTI_DIR)
 
@@ -416,7 +417,7 @@ bcs = {
         'cond': [0,1],
         'dof': global_dof(mesh[mesh[:,-1]==y_min][:,0])},
     'right': {
-        'cond': [2,1],
+        'cond': [2,0],
         'dof': global_dof(mesh[mesh[:,1]==x_max][:,0])},
     'top': {
         'cond': [0,0],
@@ -494,10 +495,10 @@ model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 model_1.apply(init_weights)
 
 # Training variables
-epochs = 2000 
+epochs = 1000 
 
 # Optimization variables
-learning_rate = 0.05
+learning_rate = 0.1
 loss_fn = sbvf_loss
 f_loss = torch.nn.MSELoss()
 
@@ -514,10 +515,6 @@ epochs_ = []
 
 #wandb.watch(model_1)
 
-w_int = np.zeros((epochs,1,4))
-w_int_real = np.zeros((epochs,1,4))
-w_ext = np.zeros((epochs,1,4))
-
 VFs = {key: dict.fromkeys(set(info['inc'])) for key in set(info['tag'])}
 
 for t in range(epochs):
@@ -530,9 +527,6 @@ for t in range(epochs):
 
     #Shuffling batches
     train_generator.on_epoch_end()
-
-    # if t == 0:
-    #     n_vfs = len(param_dicts)
     
     # Train loop
     start_train = time.time()
@@ -559,10 +553,6 @@ for t in range(epochs):
 
     end_test = time.time()
 
-    # w_int[t] = np.insert(a.detach().numpy(), 0, t, axis=1)
-    # w_int_real[t] = np.insert(b.detach().numpy(), 0, t, axis=1)
-    # w_ext[t] = np.insert(c.detach().numpy(), 0, t, axis=1)
-
     print('. v_loss: %.3e -- %.3fs' % (val_loss[t], end_test - start_test))
 
     end_epoch = time.time()
@@ -587,12 +577,6 @@ print("Done!")
 # load the last checkpoint with the best model
 #model.load_state_dict(torch.load('checkpoint.pt'))
 
-# w_int = pd.DataFrame(np.reshape(w_int,(-1,4)),columns=['epoch','vf1','vf2','vf3'])
-# w_int_real = pd.DataFrame(np.reshape(w_int_real,(-1,4)),columns=['epoch','vf1','vf2','vf3'])
-# w_ext = pd.DataFrame(np.reshape(w_ext,(-1,4)),columns=['epoch','vf1','vf2','vf3'])
-# joblib.dump(w_int,'w_int.pkl')
-# joblib.dump(w_ext,'w_ext.pkl')
-# joblib.dump(w_int_real,'w_int_real.pkl')
 
 epochs_ = np.reshape(np.array(epochs_), (len(epochs_),1))
 train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
@@ -627,4 +611,3 @@ torch.save(model_1.state_dict(), output_models + task + '_1.pt')
 joblib.dump(VFs, 'sbvfs.pkl')
 if train_generator.std == True:
     joblib.dump(train_generator.scaler_x, output_models + task + '-scaler_x.pkl')
-#joblib.dump(stress_scaler, output_models + task + '-scaler_stress.pkl')

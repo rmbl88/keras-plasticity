@@ -8,7 +8,7 @@ TRAIN_MULTI_DIR = 'data/training_multi/100-elem-25-elastic/'
 
 DATA_SAMPLES = 50
 LOOK_BACK = 0
-TEST_SIZE = 0.2
+TEST_SIZE = 0.3
 
 LENGTH = 3.0
 ELEM_AREA = LENGTH**2 / 9

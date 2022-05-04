@@ -13,6 +13,7 @@ from tqdm import tqdm
 from torch import nn
 from io import StringIO
 import math
+import torch.nn.functional as F
 from torch.nn.utils import (
   parameters_to_vector as Params2Vec,
   vector_to_parameters as Vec2Params
@@ -159,7 +160,7 @@ def param_deltas(model):
 
     with torch.no_grad():
         
-        model_dict = {key: value for key, value in model.state_dict().items()}
+        model_dict = {key: value for key, value in model.state_dict().items() if 'activation' not in key}
 
         total_params = sum([len(value.flatten()) for key, value in model_dict.items()])
         
@@ -234,8 +235,11 @@ def global_strain_disp(elements, total_dofs, bcs):
             bc_masters.append(master_dof[1])
 
     actDOFs = list(set(g_dof)-set(sum([bc_fixed,bc_slaves],[])))
+    
+    if len(list(set(bc_masters).intersection(bc_fixed)))!=0:
+        raise Exception('Incompatible BCs, adjacent boundary conditions cannot be both fixed/uniform').with_traceback()
 
-    b_bar = torch.index_select(b_bar, 1, torch.tensor(actDOFs))
+    b_bar = torch.index_select(b_bar, 1, torch.as_tensor(actDOFs))
 
     b_inv = torch.linalg.pinv(b_bar)
     
@@ -265,30 +269,18 @@ def prescribe_u(u, bcs):
             u[:,:,edge_dof_x] = 0
         elif props['cond'][0] == 2:
             u[:,:,slave_dof[::2]] = torch.reshape(u[:,:,master_dof[0]],(u.shape[0],u.shape[1],1,1))
+        
             v_disp[:,:,:,0] = torch.mean(u[:,:,edge_dof_x],2)
 
         # Setting bcs along y_direction
-        if props['cond'][0] == 0:
+        if props['cond'][1] == 0:
             pass
-        elif props['cond'][0] == 1:
+        elif props['cond'][1] == 1:
             u[:,:,edge_dof_y] = 0
-        elif props['cond'][0] == 2:
+        elif props['cond'][1] == 2:
             u[:,:,slave_dof[1::2]] = torch.reshape(u[:,:,master_dof[1]],(u.shape[0],u.shape[1],1,1))
+        
             v_disp[:,:,:,1] = torch.mean(u[:,:,edge_dof_y],2)
-
-    # # Applying symmetry bcs
-    # for edge, dofs in bcs['symm'].items():
-    #     if edge == 'left':
-    #         u[:,:,dofs[::2]-1] = 0
-    #     elif edge == 'bottom':
-    #         u[:,:,dofs[1::2]-1] = 0
-
-    # v_disp = torch.zeros(u.shape[0],u.shape[1],1,2)
-    # for i, (edge, dofs) in enumerate(bcs['load'].items()): 
-    #     dof_x = dofs[::2]-1
-    #     dof_y = dofs[1::2]-1
-    #     v_disp[:,:,:,0] = torch.mean(u[:,:,dof_x],2)
-    #     v_disp[:,:,:,1] = torch.mean(u[:,:,dof_y],2)   
 
     return u, v_disp 
 
