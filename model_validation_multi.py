@@ -3,7 +3,7 @@ import constants
 import joblib
 import tensorflow as tf
 from tensorflow import keras
-from functions import custom_loss, load_dataframes, select_features_multi, standardize_data
+from functions import (custom_loss, load_dataframes, select_features_multi, standardize_data,SoftplusLayer,NeuralNetwork)
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
@@ -22,37 +22,37 @@ from scipy import fftpack
 from scipy.signal import find_peaks
 import geotorch
 
-class NeuralNetwork(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
-        super(NeuralNetwork, self).__init__()
-        self.input_size = input_size
-        self.hidden_size  = hidden_size
-        self.n_hidden_layers = n_hidden_layers
-        self.output_size = output_size
+# class NeuralNetwork(nn.Module):
+#     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
+#         super(NeuralNetwork, self).__init__()
+#         self.input_size = input_size
+#         self.hidden_size  = hidden_size
+#         self.n_hidden_layers = n_hidden_layers
+#         self.output_size = output_size
 
-        self.layers = nn.ModuleList()
+#         self.layers = nn.ModuleList()
 
-        for i in range(self.n_hidden_layers):
-            if i == 0:
-                in_ = self.input_size
-            else:
-                in_ = self.hidden_size
+#         for i in range(self.n_hidden_layers):
+#             if i == 0:
+#                 in_ = self.input_size
+#             else:
+#                 in_ = self.hidden_size
 
-            self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
+#             self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
 
-        self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
+#         self.layers.append(SoftplusLayer(self.hidden_size, self.output_size, bias=True))
 
-        self.activation_h = torch.nn.PReLU(self.hidden_size)
-        self.activation_o = torch.nn.PReLU(self.output_size)
+#         self.activation_h = torch.nn.PReLU(self.hidden_size)
+#         self.activation_o = torch.nn.PReLU(self.output_size)
 
-    def forward(self, x):
+#     def forward(self, x):
 
-        for layer in self.layers[:-1]:
+#         for layer in self.layers[:-1]:
             
-            x = self.activation_h(layer(x))
+#             x = self.activation_h(layer(x))
             
-        #return self.layers[-1](x)
-        return self.activation_o(self.layers[-1](x))
+#         #return self.layers[-1](x)
+#         return self.activation_o(self.layers[-1](x))
 
 plt.rcParams.update(constants.PARAMS)
 
@@ -70,7 +70,7 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #x_scaler = joblib.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs-scaler_x.pkl')
 #x_scaler = joblib.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs-scaler_x.pkl')
 #x_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-6x1-3]-9-elem-1000-elastic-4-VFs-scaler_x.pkl')
-x_scaler = joblib.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x1-3]-100-elem-25-elastic-24-VFs-scaler_x.pkl')
+x_scaler = joblib.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x1-3]-100-elem-25-elastic-30-VFs-scaler_x.pkl')
 #y_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-3x1-3]-9-elem-1000-elastic-scaler_y.pkl')
 
 
@@ -80,7 +80,7 @@ model_1 = NeuralNetwork(3, 3, 3, 1)
 # model_3 = NeuralNetwork(3, 1, 8, 1)
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
-model_1.load_state_dict(torch.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x1-3]-100-elem-25-elastic-24-VFs_1.pt'))
+model_1.load_state_dict(torch.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x1-3]-100-elem-25-elastic-30-VFs_1.pt'))
 
 model_1.eval()
 
@@ -114,8 +114,7 @@ with torch.no_grad():
         mse_y = error(torch.from_numpy(sy_pred_var), torch.from_numpy(sy_var_abaqus.values))
         mse_xy = error(torch.from_numpy(sxy_pred_var), torch.from_numpy(sxy_var_abaqus.values))
 
-        if mse_x < 1.7 or mse_y < 1.7 or mse_xy < 1.7:
-            elem_list.append(df['id'][0])
+        elem_list.append(df['id'][0])
 
         print("%i\t%0.5f\t%0.5f\t%0.5f" % (i, mse_x, mse_y, mse_xy))
        

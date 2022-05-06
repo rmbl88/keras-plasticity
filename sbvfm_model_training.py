@@ -101,10 +101,10 @@ class DataGenerator(tf.keras.utils.Sequence):
         
     def __data_generation(self, list_IDs_temp):
         'Generates data containing batch_size samples'
-        X = np.asarray(self.X.iloc[list_IDs_temp], dtype=np.float32)
-        y = np.asarray(self.y.iloc[list_IDs_temp], dtype=np.float32)
-        f = np.asarray(self.f.iloc[list_IDs_temp], dtype=np.float32)
-        coord = np.asarray(self.coord.iloc[list_IDs_temp], dtype=np.float32)
+        X = np.asarray(self.X.iloc[list_IDs_temp], dtype=np.float64)
+        y = np.asarray(self.y.iloc[list_IDs_temp], dtype=np.float64)
+        f = np.asarray(self.f.iloc[list_IDs_temp], dtype=np.float64)
+        coord = np.asarray(self.coord.iloc[list_IDs_temp], dtype=np.float64)
         tag = self.tag.iloc[list_IDs_temp]
         t = self.t.iloc[list_IDs_temp]
         return X, y, f, coord, tag, t
@@ -206,14 +206,14 @@ def train_loop(dataloader, model, loss_fn, optimizer):
 
     '''
     mdl = copy.deepcopy(model)
-    param_dicts = param_deltas(copy.deepcopy(mdl))
+    param_dicts = param_deltas(mdl)
     n_vfs = len(param_dicts)
 
     num_batches = len(dataloader)
     losses = torch.zeros(num_batches)
     v_work_real = torch.zeros(num_batches)
     t_pts = dataloader.t_pts
-    n_elems = batch_size//t_pts
+    n_elems = batch_size // t_pts
 
     model.train()
     for batch in range(num_batches):
@@ -222,10 +222,10 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         X_train, y_train, f_train, coord, tag, inc = dataloader[batch]
         
         # Converting to pytorch tensors
-        X_train = torch.as_tensor(X_train, dtype=torch.float64)
-        y_train = torch.as_tensor(y_train, dtype=torch.float64)
-        f_train = torch.as_tensor(f_train, dtype=torch.float64) + 0.0
-        coord_torch = torch.as_tensor(coord, dtype=torch.float64)
+        X_train = torch.from_numpy(X_train)
+        y_train = torch.from_numpy(y_train)
+        f_train = torch.from_numpy(f_train) + 0.0
+        coord_torch = torch.from_numpy(coord)
          
         # Extracting element ids
         id = coord_torch[:,1]
@@ -266,7 +266,8 @@ def train_loop(dataloader, model, loss_fn, optimizer):
             incs = inc[::n_elems].values.tolist()
                 
             for i,(n,j) in enumerate(tuple(zip(tags,incs))):
-                VFs[n][j] = v_u[:,i]
+                VFs[n]['u'][j] = v_u[:,i]
+                VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i]
             
         # Computing predicted virtual work       
         int_work = torch.sum(torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
@@ -284,8 +285,13 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         cost = loss_fn(int_work_real, ext_work)
 
         # Backpropagation and weight's update
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
         loss.backward()
+
+        # Update the weights every other iteration 
+        # Accumulates gradients from more data samples so the estimation of gradients is more accurate and weights are updated more towards the local/global minimum
+        # (https://towardsdatascience.com/optimize-pytorch-performance-for-speed-and-memory-efficiency-2022-84f453916ea6)
+        # if (batch+1) % 2 == 0 or (batch+1) == num_batches:
         optimizer.step()
         
         # Saving loss values
@@ -303,9 +309,7 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
 
     num_batches = len(dataloader)
     test_losses = torch.zeros(num_batches)
-    Wint = torch.zeros((num_batches,1,3))
-    Wint_real = torch.zeros((num_batches,1,3))
-    Wext = torch.zeros((num_batches,1,3))
+   
     t_pts = dataloader.t_pts
     n_elems = batch_size//t_pts
     n_vfs = v_strain.shape[0]
@@ -319,11 +323,11 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
             X_test, y_test, f_test, coord, _, _ = dataloader[batch]
             
             # Converting to pytorch tensors
-            X_test = torch.as_tensor(train_generator.scaler_x.transform(X_test), dtype=torch.float64)
+            X_test = torch.from_numpy(train_generator.scaler_x.transform(X_test))
             #X_test = torch.tensor(X_test, dtype=torch.float64)
-            y_test = torch.as_tensor(y_test, dtype=torch.float64)
-            f_test = torch.as_tensor(f_test, dtype=torch.float64) + 0.0
-            coord_torch = torch.as_tensor(coord, dtype=torch.float64)
+            y_test = torch.from_numpy(y_test)
+            f_test = torch.from_numpy(f_test) + 0.0
+            coord_torch = torch.from_numpy(coord)
             
             # Extracting element ids
             id = coord_torch[:,1]
@@ -443,7 +447,7 @@ T_PTS = 8
 # Performing test/train split
 partition = {"train": None, "test": None}
 
-if T_PTS == DATA_SAMPLES:
+if T_PTS == DATA_POINTS:
     # Reorganizing dataset by tag, subsequent grouping by time increment
     data_by_tag = [df for _, df in data.groupby(['tag'])]
     random.shuffle(data_by_tag)
@@ -495,15 +499,15 @@ model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 model_1.apply(init_weights)
 
 # Training variables
-epochs = 1000 
+epochs = 1000
 
 # Optimization variables
-learning_rate = 0.1
+learning_rate = 0.05
 loss_fn = sbvf_loss
 f_loss = torch.nn.MSELoss()
 
 optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=20, factor=0.2, threshold=1e-3, min_lr=1e-5)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, factor=0.2, threshold=1e-3, min_lr=1e-5)
 
 # Container variables for history purposes
 train_loss = []
@@ -511,11 +515,13 @@ v_work = []
 val_loss = []
 epochs_ = []
 # Initializing the early_stopping object
-#early_stopping = EarlyStopping(patience=12, verbose=True)
+#early_stopping = EarlyStopping(patience=50, verbose=True)
 
 #wandb.watch(model_1)
-
-VFs = {key: dict.fromkeys(set(info['inc'])) for key in set(info['tag'])}
+VFs = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['u','e']} for key in set(info['tag'])}
+#VFs = {key: dict.fromkeys(set(info['inc'])) for key in set(info['tag'])}
+wInt = {key: dict.fromkeys(set(info['inc'])) for key in set(info['tag'])}
+wExt = {key: dict.fromkeys(set(info['inc'])) for key in set(info['tag'])}
 
 for t in range(epochs):
 
@@ -558,11 +564,11 @@ for t in range(epochs):
     end_epoch = time.time()
 
     # # Check validation loss for early stopping
-    # early_stopping(val_loss[t], model)
+    #early_stopping(val_loss[t], model_1)
 
     # if early_stopping.early_stop:
-    #      print("Early stopping")
-    #      break
+    #     print("Early stopping")
+    #     break
 
     # wandb.log({
     #     "Epoch": t,
@@ -575,7 +581,7 @@ for t in range(epochs):
 print("Done!")
 
 # load the last checkpoint with the best model
-#model.load_state_dict(torch.load('checkpoint.pt'))
+# model_1.load_state_dict(torch.load('checkpoint.pt'))
 
 
 epochs_ = np.reshape(np.array(epochs_), (len(epochs_),1))

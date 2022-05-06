@@ -22,6 +22,65 @@ from torch.nn.utils import (
 # -------------------------------
 #        Class definitions
 # -------------------------------
+class SoftplusLayer(nn.Module):
+    r"""Applies a softplus transformation to the incoming data
+
+    Args:
+        in_features: size of each input sample
+        out_features: size of each output sample
+        bias: If set to ``False``, the layer will not learn an additive bias.
+            Default: ``True``
+
+    Shape:
+        - Input: :math:`(*, H_{in})` where :math:`*` means any number of
+          dimensions including none and :math:`H_{in} = \text{in\_features}`.
+        - Output: :math:`(*, H_{out})` where all but the last dimension
+          are the same shape as the input and :math:`H_{out} = \text{out\_features}`.
+
+    Attributes:
+        weight: the learnable weights of the module of shape
+            :math:`(\text{out\_features}, \text{in\_features})`. The values are
+            initialized from :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})`, where
+            :math:`k = \frac{1}{\text{in\_features}}`
+        bias:   the learnable bias of the module of shape :math:`(\text{out\_features})`.
+                If :attr:`bias` is ``True``, the values are initialized from
+                :math:`\mathcal{U}(-\sqrt{k}, \sqrt{k})` where
+                :math:`k = \frac{1}{\text{in\_features}}`
+    """
+    __constants__ = ['in_features', 'out_features']
+    in_features: int
+    out_features: int
+    weight: torch.Tensor
+
+    def __init__(self, in_features: int, out_features: int, bias: bool = True, device=None, dtype=None) -> None:
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        super(SoftplusLayer, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.weight = nn.Parameter(torch.empty((out_features, in_features), **factory_kwargs))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_features, **factory_kwargs))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
+        # uniform(-1/sqrt(in_features), 1/sqrt(in_features)). For details, see
+        # https://github.com/pytorch/pytorch/issues/57109
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        if self.bias is not None:
+            fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
+            bound = 1 / math.sqrt(fan_in) if fan_in > 0 else 0
+            nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return F.linear(input, F.softplus(self.weight), self.bias)
+
+    def extra_repr(self) -> str:
+        return 'in_features={}, out_features={}, bias={}'.format(
+            self.in_features, self.out_features, self.bias is not None
+        )
 
 class NeuralNetwork(nn.Module):
     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
@@ -146,21 +205,22 @@ class Element():
 #       Method definitions
 # ------------------------------
 
-def get_dataset_batches(data_generator, varIndex=0):
+# def get_dataset_batches(data_generator, varIndex=0):
     
-    return [torch.stack(iter(data_generator).__next__()[varIndex]) for i in range(len(data_generator))]
+#     return [torch.stack(iter(data_generator).__next__()[varIndex]) for i in range(len(data_generator))]
 
-def param_vector(model):
+# def param_vector(model):
 
-    params = [param.data for name, param in model.named_parameters() if param.requires_grad and 'weight' in name and 'activation' not in name]
+#     params = [param.data for name, param in model.named_parameters() if param.requires_grad and 'weight' in name and 'activation' not in name]
 
-    return params
+#     return params
 
 def param_deltas(model):
-
+    
+    model.eval()
     with torch.no_grad():
         
-        model_dict = {key: value for key, value in model.state_dict().items() if 'activation' not in key}
+        model_dict = {key: value for key, value in model.state_dict().items()}
 
         total_params = sum([len(value.flatten()) for key, value in model_dict.items()])
         
@@ -168,34 +228,38 @@ def param_deltas(model):
 
         k = 0
         for key, weight_matrix in model_dict.items():
-
-            for i in range(len(weight_matrix.flatten())):
+            
+            matrix_len = len(weight_matrix.flatten()) 
+            
+            for i in range(matrix_len):
                 
                 param_vector = copy.deepcopy(weight_matrix).flatten()
                 
                 delta_dict = copy.deepcopy(model_dict)
 
-                param_vector[i] += -0.15 * param_vector[i]
+                param_vector[i] -= 0.15 * param_vector[i]
 
                 delta_dict[key] = param_vector.unflatten(0,weight_matrix.shape)
 
                 eval_dicts[k].update(delta_dict)
-
+                
                 k += 1
 
     return eval_dicts
 
 def global_strain_disp(elements, total_dofs, bcs):
-    g_dof = list(np.arange(total_dofs))
+    
+    g_dof = list(range(total_dofs))
     n_pts = len(elements)
     n_comps = 3
     b_glob = torch.zeros([n_comps * n_pts, total_dofs])
 
+    # Assembly of global strain-displacement matrix
     for i, element in enumerate(elements):
         
         b_glob[n_comps*i:n_comps*i + n_comps, element.global_dof-1] += element.b_el()
     
-    b_bar = b_glob
+    b_bar = copy.deepcopy(b_glob)
     bc_fixed = []
     bc_slaves = []
     bc_masters = []
@@ -225,6 +289,7 @@ def global_strain_disp(elements, total_dofs, bcs):
             bc_slaves += slave_dof[::2]
             bc_masters.append(master_dof[0])
         
+        # Set bc along y-direction
         if props['cond'][1] == 0:
             pass
         elif props['cond'][1] == 1:
@@ -234,18 +299,23 @@ def global_strain_disp(elements, total_dofs, bcs):
             bc_slaves += slave_dof[1::2]
             bc_masters.append(master_dof[1])
 
+    # Defining the active degrees of freedom
     actDOFs = list(set(g_dof)-set(sum([bc_fixed,bc_slaves],[])))
     
+    # Checking for incompatible boundary conditions
     if len(list(set(bc_masters).intersection(bc_fixed)))!=0:
         raise Exception('Incompatible BCs, adjacent boundary conditions cannot be both fixed/uniform').with_traceback()
 
+    # Discarding redundant boundary conditions
     b_bar = torch.index_select(b_bar, 1, torch.as_tensor(actDOFs))
 
+    # Computing pseudo-inverse strain-displacement matrix
     b_inv = torch.linalg.pinv(b_bar)
     
     return b_glob, b_bar, b_inv, actDOFs
 
 def prescribe_u(u, bcs):
+    U = copy.deepcopy(u)
     v_disp = torch.zeros(u.shape[0],u.shape[1],1,2)
     for edge, props in bcs.items():
 
@@ -266,23 +336,23 @@ def prescribe_u(u, bcs):
         if props['cond'][0] == 0:
             pass
         elif props['cond'][0] == 1:
-            u[:,:,edge_dof_x] = 0
+            U[:,:,edge_dof_x] = 0
         elif props['cond'][0] == 2:
-            u[:,:,slave_dof[::2]] = torch.reshape(u[:,:,master_dof[0]],(u.shape[0],u.shape[1],1,1))
+            U[:,:,slave_dof[::2]] = torch.reshape(U[:,:,master_dof[0]],(U.shape[0],U.shape[1],1,1))
         
-            v_disp[:,:,:,0] = torch.mean(u[:,:,edge_dof_x],2)
+            v_disp[:,:,:,0] = torch.mean(U[:,:,edge_dof_x],2)
 
         # Setting bcs along y_direction
         if props['cond'][1] == 0:
             pass
         elif props['cond'][1] == 1:
-            u[:,:,edge_dof_y] = 0
+            U[:,:,edge_dof_y] = 0
         elif props['cond'][1] == 2:
-            u[:,:,slave_dof[1::2]] = torch.reshape(u[:,:,master_dof[1]],(u.shape[0],u.shape[1],1,1))
+            U[:,:,slave_dof[1::2]] = torch.reshape(U[:,:,master_dof[1]],(U.shape[0],U.shape[1],1,1))
         
-            v_disp[:,:,:,1] = torch.mean(u[:,:,edge_dof_y],2)
+            v_disp[:,:,:,1] = torch.mean(U[:,:,edge_dof_y],2)
 
-    return u, v_disp 
+    return U, v_disp 
 
 def sbvf_loss(int_work, ext_work):
        
@@ -363,6 +433,7 @@ def plot_history(history, output, is_custom=None, task=None):
     plt.ylabel(r'Mean Square Error [J\textsuperscript{2}]')
     plt.plot(hist['epoch'], hist['loss'], label='Train Error', color='#4b7394')
     plt.plot(hist['epoch'], hist['val_loss'], label = 'Test Error', color='#6db1e2')
+    plt.yscale('log')
     
     plt.legend()
   
