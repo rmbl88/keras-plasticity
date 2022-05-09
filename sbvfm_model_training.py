@@ -261,24 +261,27 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         # Computing sensitivity-based virtual fields
         v_u, v_disp, v_strain = sbv_fields(d_sigma, b_glob, b_inv, n_elems, bcs, active_dof)
 
-        if t == epochs - 1:
-            tags = tag[::n_elems].values.tolist()
-            incs = inc[::n_elems].values.tolist()
-                
-            for i,(n,j) in enumerate(tuple(zip(tags,incs))):
-                VFs[n]['u'][j] = v_u[:,i]
-                VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i]
-            
         # Computing predicted virtual work       
         int_work = torch.sum(torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
        
         # Computing real virtual work
         int_work_real = torch.sum(torch.sum(torch.reshape((y_train * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
-        
+
         f = f_train[:,:2][::n_elems,:]
 
         # Computing external virtual work
         ext_work = torch.sum(torch.reshape(f,[t_pts,1,2])*v_disp,-1)
+
+        if t == 0:
+            tags = tag[::n_elems].values.tolist()
+            incs = inc[::n_elems].values.tolist()
+            
+            for i,(n,j) in enumerate(tuple(zip(tags,incs))):
+                VFs[n]['u'][j] = v_u[:,i]
+                VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i]
+                W_virt[n]['w_int'][j] = torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1).detach()[:,i]
+                W_virt[n]['w_int_real'][j] = torch.sum(torch.reshape((y_train * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1)[:,i]
+                W_virt[n]['w_ext'][j] = ext_work[:,i]
             
         # Computing losses        
         loss = loss_fn(int_work,ext_work)
@@ -499,14 +502,14 @@ model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 model_1.apply(init_weights)
 
 # Training variables
-epochs = 1000
+epochs = 1150
 
 # Optimization variables
 learning_rate = 0.05
 loss_fn = sbvf_loss
 f_loss = torch.nn.MSELoss()
 
-optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
+optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate, weight_decay=0.01)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, factor=0.2, threshold=1e-3, min_lr=1e-5)
 
 # Container variables for history purposes
@@ -520,8 +523,7 @@ epochs_ = []
 #wandb.watch(model_1)
 VFs = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['u','e']} for key in set(info['tag'])}
 #VFs = {key: dict.fromkeys(set(info['inc'])) for key in set(info['tag'])}
-wInt = {key: dict.fromkeys(set(info['inc'])) for key in set(info['tag'])}
-wExt = {key: dict.fromkeys(set(info['inc'])) for key in set(info['tag'])}
+W_virt = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['w_int','w_int_real','w_ext']} for key in set(info['tag'])}
 
 for t in range(epochs):
 
@@ -614,6 +616,6 @@ history.to_csv(output_loss + task + '.csv', sep=',', encoding='utf-8', header='t
 plot_history(history, output_prints, True, task)
 
 torch.save(model_1.state_dict(), output_models + task + '_1.pt')
-joblib.dump(VFs, 'sbvfs.pkl')
+joblib.dump([VFs, W_virt], 'sbvfs.pkl')
 if train_generator.std == True:
     joblib.dump(train_generator.scaler_x, output_models + task + '-scaler_x.pkl')
