@@ -22,6 +22,55 @@ from torch.nn.utils import (
 # -------------------------------
 #        Class definitions
 # -------------------------------
+class soft_exponential(nn.Module):
+    '''
+    Implementation of soft exponential activation.
+    Shape:
+        - Input: (N, *) where * means, any number of additional
+          dimensions
+        - Output: (N, *), same shape as the input
+    Parameters:
+        - alpha - trainable parameter
+    References:
+        - See related paper:
+        https://arxiv.org/pdf/1602.01321.pdf
+    Examples:
+        >>> a1 = soft_exponential(256)
+        >>> x = torch.randn(256)
+        >>> x = a1(x)
+    '''
+    def __init__(self, alpha = None):
+        '''
+        Initialization.
+        INPUT:
+            - in_features: shape of the input
+            - aplha: trainable parameter
+            aplha is initialized with zero value by default
+        '''
+        super(soft_exponential,self).__init__()
+        
+        # initialize alpha
+        if alpha == None:
+            self.alpha = nn.Parameter(torch.tensor(0.0)) # create a tensor out of alpha
+        else:
+            self.alpha = nn.Parameter(torch.tensor(alpha)) # create a tensor out of alpha
+            
+        self.alpha.requiresGrad = True # set requiresGrad to true!
+
+    def forward(self, x):
+        '''
+        Forward pass of the function.
+        Applies the function to the input elementwise.
+        '''
+        if (self.alpha == 0.0):
+            return x
+
+        if (self.alpha < 0.0):
+            return - torch.log(1 - self.alpha * (x + self.alpha)) / self.alpha
+
+        if (self.alpha > 0.0):
+            return (torch.exp(self.alpha * x) - 1)/ self.alpha + self.alpha
+
 class SoftplusLayer(nn.Module):
     r"""Applies a softplus transformation to the incoming data
 
@@ -114,6 +163,43 @@ class NeuralNetwork(nn.Module):
         #return self.layers[-1](x)
         return self.activation_o(self.layers[-1](x))
 
+class ICNN(nn.Module):
+    def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
+        super(ICNN, self).__init__()
+        self.input_size = input_size
+        self.hidden_size  = hidden_size
+        self.n_hidden_layers = n_hidden_layers
+        self.output_size = output_size
+
+        self.layers = nn.ModuleList()
+        self.passthrough = nn.ModuleList()
+
+        for i in range(self.n_hidden_layers):
+            if i == 0:
+                in_ = self.input_size
+                self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
+            else:
+                in_ = self.hidden_size
+                self.layers.append(SoftplusLayer(in_, self.hidden_size, bias=True))
+
+        self.layers.append(SoftplusLayer(self.hidden_size, self.output_size, bias=True))
+
+        for layer in self.layers[1:]:
+            self.passthrough.append(torch.nn.Linear(input_size,layer.in_features,bias=False))
+
+        self.activation = torch.nn.Softplus()
+
+    def forward(self, x):
+
+        xx = self.layers[0](x)
+        
+        for i,layer in enumerate(self.layers[1:-1]):
+            
+            xx = self.activation(layer(xx)+self.passthrough[i](x))
+            
+        #return self.layers[-1](x)
+        return self.activation(self.layers[-1](xx))
+
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
@@ -160,7 +246,7 @@ class EarlyStopping:
     def save_checkpoint(self, val_loss, model):
         '''Saves model when validation loss decrease.'''
         if self.verbose:
-            self.trace_func(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
+            self.trace_func(f'Validation loss decreased ({self.val_loss_min:.5e} --> {val_loss:.5e}).  Saving model ...')
         torch.save(model.state_dict(), self.path)
         self.val_loss_min = val_loss
 
@@ -237,7 +323,7 @@ def param_deltas(model):
                 
                 delta_dict = copy.deepcopy(model_dict)
 
-                param_vector[i] -= 0.15 * param_vector[i]
+                param_vector[i] -= 0.05 * param_vector[i]
 
                 delta_dict[key] = param_vector.unflatten(0,weight_matrix.shape)
 

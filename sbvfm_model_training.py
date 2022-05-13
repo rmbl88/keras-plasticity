@@ -8,6 +8,7 @@ import joblib
 from sklearn.utils import shuffle
 from constants import *
 from functions import (
+    ICNN,
     sbvf_loss, 
     load_dataframes, 
     prescribe_u, 
@@ -50,12 +51,12 @@ from torch.nn.utils import (
 class DataGenerator(tf.keras.utils.Sequence):
     def __init__(self, deformation, stress, force, coord, info, list_IDs, batch_size, shuffle, std=True, t_pts=1):
         super().__init__()
-        self.X = deformation
-        self.y = stress
-        self.f = force
-        self.coord = coord[['dir','id','cent_x','cent_y','area']]
-        self.tag = info['tag']
-        self.t = info['inc']
+        self.X = deformation.iloc[list_IDs].reset_index(drop=True)
+        self.y = stress.iloc[list_IDs].reset_index(drop=True)
+        self.f = force.iloc[list_IDs].reset_index(drop=True)
+        self.coord = coord[['dir','id','cent_x','cent_y','area']].iloc[list_IDs].reset_index(drop=True)
+        self.tag = info['tag'].iloc[list_IDs].reset_index(drop=True)
+        self.t = info['inc'].iloc[list_IDs].reset_index(drop=True)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.list_IDs = list_IDs
@@ -176,7 +177,7 @@ def sbv_fields(d_sigma, b_glob, b_inv, n_elems, bcs, active_dof):
 
     # Computing virtual displacements (all dofs)
     v_u[:, :, active_dof] = b_inv @ d_s
-
+    
     # Prescribing displacements
     v_u, v_disp = prescribe_u(v_u, bcs)
 
@@ -205,6 +206,8 @@ def train_loop(dataloader, model, loss_fn, optimizer):
     Custom loop for neural network training, using mini-batches
 
     '''
+    global W_virt
+
     mdl = copy.deepcopy(model)
     param_dicts = param_deltas(mdl)
     n_vfs = len(param_dicts)
@@ -220,7 +223,7 @@ def train_loop(dataloader, model, loss_fn, optimizer):
 
         # Extracting variables for training
         X_train, y_train, f_train, coord, tag, inc = dataloader[batch]
-        
+       
         # Converting to pytorch tensors
         X_train = torch.from_numpy(X_train)
         y_train = torch.from_numpy(y_train)
@@ -271,17 +274,6 @@ def train_loop(dataloader, model, loss_fn, optimizer):
 
         # Computing external virtual work
         ext_work = torch.sum(torch.reshape(f,[t_pts,1,2])*v_disp,-1)
-
-        if t == 0:
-            tags = tag[::n_elems].values.tolist()
-            incs = inc[::n_elems].values.tolist()
-            
-            for i,(n,j) in enumerate(tuple(zip(tags,incs))):
-                VFs[n]['u'][j] = v_u[:,i]
-                VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i]
-                W_virt[n]['w_int'][j] = torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1).detach()[:,i]
-                W_virt[n]['w_int_real'][j] = torch.sum(torch.reshape((y_train * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1)[:,i]
-                W_virt[n]['w_ext'][j] = ext_work[:,i]
             
         # Computing losses        
         loss = loss_fn(int_work,ext_work)
@@ -301,6 +293,16 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         losses[batch] = loss
         v_work_real[batch] = cost
 
+        tags = tag[::n_elems].values.tolist()
+        incs = inc[::n_elems].values.tolist()
+        
+        for i,(n,j) in enumerate(tuple(zip(tags,incs))):
+            VFs[n]['u'][j] = v_u[:,i].detach()
+            VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i].detach()
+            W_virt[n]['w_int'][j] = int_work[:,i].detach()
+            W_virt[n]['w_int_real'][j] = int_work_real[:,i].detach()
+            W_virt[n]['w_ext'][j] = ext_work[:,i].detach()
+
         print('\r>Train: %d/%d' % (batch + 1, num_batches), end='')
     
     return losses, v_work_real, v_disp, v_strain, v_u
@@ -309,6 +311,8 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
     
     # param_dicts = param_deltas(copy.deepcopy(model))
     # n_vfs = len(param_dicts)
+
+    global W_virt
 
     num_batches = len(dataloader)
     test_losses = torch.zeros(num_batches)
@@ -323,7 +327,7 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
         for batch in range(num_batches):
 
             # Extracting variables for testing
-            X_test, y_test, f_test, coord, _, _ = dataloader[batch]
+            X_test, y_test, f_test, coord, tag, inc = dataloader[batch]
             
             # Converting to pytorch tensors
             X_test = torch.from_numpy(train_generator.scaler_x.transform(X_test))
@@ -370,7 +374,7 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
 
             int_work = torch.sum(torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
 
-            #int_work_real = torch.reshape((y_ * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3])
+            int_work_real = torch.sum(torch.sum(torch.reshape((y_test * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
 
             f = f_test[:,:2][::n_elems,:]
             
@@ -381,14 +385,20 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
             test_loss = loss_fn(int_work, ext_work)
             test_losses[batch] = test_loss
 
-            # Wint[batch] = torch.mean(int_work.T,1)
-            # Wint_real[batch] = torch.mean(int_work_real.T,1)
-            # Wext[batch] = torch.mean(ext_work.T,1)
+            tags = tag[::n_elems].values.tolist()
+            incs = inc[::n_elems].values.tolist()
+            
+            for i,(n,j) in enumerate(tuple(zip(tags,incs))):
+                VFs[n]['u'][j] = v_u[:,i]
+                VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i]
+                W_virt[n]['w_int'][j] = int_work[:,i]
+                W_virt[n]['w_int_real'][j] = int_work_real[:,i]
+                W_virt[n]['w_ext'][j] = ext_work[:,i]
 
             print('\r>Test: %d/%d' % (batch + 1, num_batches), end='')
 
     
-    return test_losses#, torch.mean(Wint,0), torch.mean(Wint_real,0), torch.mean(Wext,0)
+    return test_losses
 
 # -------------------------------
 #           Main script
@@ -445,12 +455,12 @@ data = pd.concat(df_list, axis=0, ignore_index=True)
 
 DATA_POINTS = len(df_list[0])
 
-T_PTS = 8
+T_PTS = 51
 
 # Performing test/train split
 partition = {"train": None, "test": None}
 
-if T_PTS == DATA_POINTS:
+if T_PTS==DATA_SAMPLES:
     # Reorganizing dataset by tag, subsequent grouping by time increment
     data_by_tag = [df for _, df in data.groupby(['tag'])]
     random.shuffle(data_by_tag)
@@ -459,10 +469,12 @@ if T_PTS == DATA_POINTS:
     data_by_batches = list(itertools.chain(*data_by_t))
     #random.shuffle(data_by_batches)
 
+    batch_size = len(data_by_batches[0]) * T_PTS
+
     data = pd.concat(data_by_batches).reset_index(drop=True)
 
     trials = list(set(data['tag'].values))
-    test_trials = random.sample(trials, round(len(trials)*TEST_SIZE))
+    test_trials = random.sample(trials, math.floor(len(trials)*TEST_SIZE))
     train_trials = list(set(trials).difference(test_trials))
 
     partition['train'] = data[data['tag'].isin(train_trials)].index.tolist()
@@ -477,11 +489,22 @@ else:
     data_by_batches = list(itertools.chain(*data_by_tag))
     random.shuffle(data_by_batches)
 
+    batch_size = len(data_by_batches[0]) * T_PTS
+
     data = pd.concat(data_by_batches).reset_index(drop=True)
 
-    partition['train'], partition['test'] = next(GroupShuffleSplit(test_size=TEST_SIZE, n_splits=2, random_state = SEED).split(data, groups=data['t']))
+    batches = np.array_split(data.index.tolist(),len(data_by_batches))
+    idx = list(range(len(batches)))
+    test_batch_idxs = random.sample(idx, math.floor(len(batches)*TEST_SIZE))
+    test_batch_idxs.sort()
+    train_batch_idxs = list(set(idx).difference(test_batch_idxs))
 
-batch_size = len(data_by_batches[0]) * T_PTS
+    partition['train'] = list(itertools.chain.from_iterable([batches[i].tolist() for i in train_batch_idxs]))
+    partition['test'] = list(itertools.chain.from_iterable([batches[i].tolist() for i in test_batch_idxs]))
+
+    #partition['train'], partition['test'] = next(GroupShuffleSplit(test_size=TEST_SIZE, n_splits=2, random_state = SEED).split(data, groups=data['t']))
+
+# batch_size = len(data_by_batches[0]) * T_PTS
 
 # Selecting model features
 X, y, f, coord, info = select_features_multi(data)
@@ -502,15 +525,17 @@ model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 model_1.apply(init_weights)
 
 # Training variables
-epochs = 1150
+epochs = 2000
 
 # Optimization variables
-learning_rate = 0.05
+learning_rate = 0.2
 loss_fn = sbvf_loss
 f_loss = torch.nn.MSELoss()
 
-optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate, weight_decay=0.01)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, factor=0.2, threshold=1e-3, min_lr=1e-5)
+optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=20, factor=0.1, threshold=1e-3, min_lr=1e-5)
+
+#scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,0.99)
 
 # Container variables for history purposes
 train_loss = []
@@ -518,7 +543,7 @@ v_work = []
 val_loss = []
 epochs_ = []
 # Initializing the early_stopping object
-#early_stopping = EarlyStopping(patience=50, verbose=True)
+early_stopping = EarlyStopping(patience=35, delta=1e-7, verbose=True)
 
 #wandb.watch(model_1)
 VFs = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['u','e']} for key in set(info['tag'])}
@@ -547,7 +572,8 @@ for t in range(epochs):
     
     #Apply learning rate scheduling if defined
     try:
-        scheduler.step(train_loss[t])       
+        scheduler.step(train_loss[t])
+        #scheduler.step()
         print('. t_loss: %.3e -> lr: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], scheduler._last_lr[0], v_work[t], end_train - start_train))
     except:
         print('. t_loss: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], v_work[t], end_train - start_train))
@@ -565,12 +591,13 @@ for t in range(epochs):
 
     end_epoch = time.time()
 
-    # # Check validation loss for early stopping
-    #early_stopping(val_loss[t], model_1)
+    if t > 50:
+        # # Check validation loss for early stopping
+        early_stopping(val_loss[t], model_1)
 
-    # if early_stopping.early_stop:
-    #     print("Early stopping")
-    #     break
+        if early_stopping.early_stop:
+            print("Early stopping")
+            break
 
     # wandb.log({
     #     "Epoch": t,

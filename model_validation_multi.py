@@ -3,7 +3,7 @@ import constants
 import joblib
 import tensorflow as tf
 from tensorflow import keras
-from functions import (custom_loss, load_dataframes, select_features_multi, standardize_data,SoftplusLayer,NeuralNetwork)
+from functions import (custom_loss, load_dataframes, select_features_multi, standardize_data,SoftplusLayer,NeuralNetwork,ICNN)
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
