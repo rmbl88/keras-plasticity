@@ -1,26 +1,15 @@
+from distutils.log import error
 from tensorflow.python.keras.backend import dtype
 import constants
 import joblib
-import tensorflow as tf
-from tensorflow import keras
-from functions import (custom_loss, load_dataframes, select_features_multi, standardize_data,SoftplusLayer,NeuralNetwork,ICNN)
+from functions import (load_dataframes, select_features_multi,NeuralNetwork)
 import matplotlib.pyplot as plt
 import pandas as pd
-import numpy as np
-import seaborn as sns
 from cycler import cycler
-from operator import itemgetter
-import torch.nn.functional as F
 import torchmetrics
-import scipy.optimize
 
 import torch
 
-from torch import nn
-from torchmetrics import MeanSquaredError
-from scipy import fftpack
-from scipy.signal import find_peaks
-import geotorch
 
 # class NeuralNetwork(nn.Module):
 #     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
@@ -88,12 +77,16 @@ model_1.eval()
 #sampled_dfs = data_sampling(df_list, constants.DATA_SAMPLES)
 
 error = torchmetrics.MeanAbsoluteError()
+
 elem_list = []
 
-print("----------------------\nMSE\n----------------------\n\tSxx\tSyy\tSxy\n")
+print("--------------------------------------\n\tMean Absolute Error\n--------------------------------------")
 with torch.no_grad():
     for i, df in enumerate(df_list):
-
+        
+        if df['id'][0] == 1:
+            print("\n%s\tSxx\tSyy\tSxy\n" %(df['tag'][0]))
+        
         X, y, _, _, _ = select_features_multi(df)
         X_scaled=x_scaler.transform(X)
         
@@ -116,7 +109,7 @@ with torch.no_grad():
 
         elem_list.append(df['id'][0])
 
-        print("%i\t%0.5f\t%0.5f\t%0.5f" % (i, mse_x, mse_y, mse_xy))
+        print("Elem #%i\t\t%0.5f\t%0.5f\t%0.5f" % (df['id'][0], mse_x, mse_y, mse_xy))
        
         fig , (ax1, ax2, ax3) = plt.subplots(1,3)
         fig.suptitle(r''+ df['tag'][0].replace('_','\_') + ': element \#' + str(df['id'][0]),fontsize=14)
