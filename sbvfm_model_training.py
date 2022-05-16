@@ -518,14 +518,14 @@ N_INPUTS = X.shape[1]
 N_OUTPUTS = y.shape[1]
 
 N_UNITS = 3
-H_LAYERS = 1
+H_LAYERS = 0
 
 model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 
 model_1.apply(init_weights)
 
 # Training variables
-epochs = 2000
+epochs = 4000
 
 # Optimization variables
 learning_rate = 0.2

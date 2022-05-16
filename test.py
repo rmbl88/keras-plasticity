@@ -90,7 +90,7 @@ for i,file in enumerate(file_list):
 
     fig , (ax1, ax2, ax3) = plt.subplots(1,3)
     # fig.set_size_inches(12, 3.35)
-    fig.set_size_inches(set_size(484,subplots=(1, 3)))
+    fig.set_size_inches(set_size(600,subplots=(1, 3)))
     fig.subplots_adjust(bottom=0.28, wspace=0.4)
     fig.suptitle(r'' + trial.replace('_','\_') + ': element \#' + elem, fontsize=9)
 

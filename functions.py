@@ -141,27 +141,36 @@ class NeuralNetwork(nn.Module):
 
         self.layers = nn.ModuleList()
 
-        for i in range(self.n_hidden_layers):
-            if i == 0:
-                in_ = self.input_size
-            else:
-                in_ = self.hidden_size
+        if self.n_hidden_layers == 0:
+            self.layers.append(SoftplusLayer(self.input_size,self.output_size,bias=True))
+            #self.activation = torch.nn.PReLU()
+        else:   
+            for i in range(self.n_hidden_layers):
+                if i == 0:
+                    in_ = self.input_size
+                else:
+                    in_ = self.hidden_size
 
-            self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
+                self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
 
-        self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
+            self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
 
-        self.activation_h = torch.nn.PReLU(self.hidden_size)
-        self.activation_o = torch.nn.PReLU(self.output_size)
+            self.activation_h = torch.nn.PReLU(self.hidden_size)
+            self.activation_o = torch.nn.PReLU(self.output_size)
 
     def forward(self, x):
 
-        for layer in self.layers[:-1]:
-            
-            x = self.activation_h(layer(x))
-            
-        #return self.layers[-1](x)
-        return self.activation_o(self.layers[-1](x))
+        if self.n_hidden_layers == 0:
+
+            return self.layers[0](x)
+
+        else:
+            for layer in self.layers[:-1]:
+                
+                x = self.activation_h(layer(x))
+                
+            #return self.layers[-1](x)
+            return self.activation_o(self.layers[-1](x))
 
 class ICNN(nn.Module):
     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):

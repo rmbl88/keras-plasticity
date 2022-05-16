@@ -70,17 +70,17 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #x_scaler = joblib.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs-scaler_x.pkl')
 #x_scaler = joblib.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs-scaler_x.pkl')
 #x_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-6x1-3]-9-elem-1000-elastic-4-VFs-scaler_x.pkl')
-x_scaler = joblib.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x1-3]-100-elem-25-elastic-30-VFs-scaler_x.pkl')
+x_scaler = joblib.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x0-3]-100-elem-25-elastic-12-VFs-scaler_x.pkl')
 #y_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-3x1-3]-9-elem-1000-elastic-scaler_y.pkl')
 
 
 # Loading ANN model
-model_1 = NeuralNetwork(3, 3, 3, 1)
+model_1 = NeuralNetwork(3, 3, 3, 0)
 # model_2 = NeuralNetwork(3, 1, 8, 1)
 # model_3 = NeuralNetwork(3, 1, 8, 1)
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
-model_1.load_state_dict(torch.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x1-3]-100-elem-25-elastic-30-VFs_1.pt'))
+model_1.load_state_dict(torch.load('outputs/100-elem-25-elastic_sbvf/models/[3-3x0-3]-100-elem-25-elastic-12-VFs_1.pt'))
 
 model_1.eval()
 

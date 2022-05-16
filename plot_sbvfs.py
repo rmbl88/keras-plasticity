@@ -198,8 +198,8 @@ for tag in tags:
     ax2.set_ylabel('W_int rel. error [%]')
     ax2.set_xlabel('t_step')
     
-    plt.show()
-    # plt.savefig('stats_%s.png'%(tag), format="png", dpi=100, bbox_inches='tight')
-    # plt.close(fig)
+    #plt.show()
+    plt.savefig('stats_%s.png'%(tag), format="png", dpi=100, bbox_inches='tight')
+    plt.close(fig)
         
 print('hey')
