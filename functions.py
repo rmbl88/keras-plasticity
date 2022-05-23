@@ -169,8 +169,8 @@ class NeuralNetwork(nn.Module):
                 
                 x = self.activation_h(layer(x))
                 
-            #return self.layers[-1](x)
-            return self.activation_o(self.layers[-1](x))
+            return self.layers[-1](x)
+            #return self.activation_o(self.layers[-1](x))
 
 class ICNN(nn.Module):
     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
@@ -194,20 +194,20 @@ class ICNN(nn.Module):
         self.layers.append(SoftplusLayer(self.hidden_size, self.output_size, bias=True))
 
         for layer in self.layers[1:]:
-            self.passthrough.append(torch.nn.Linear(input_size,layer.in_features,bias=False))
+            self.passthrough.append(torch.nn.Linear(input_size,layer.out_features,bias=False))
 
-        self.activation = torch.nn.Softplus()
+        self.activation = torch.nn.ReLU()
 
     def forward(self, x):
 
-        xx = self.layers[0](x)
+        xx = self.activation(self.layers[0](x))
         
         for i,layer in enumerate(self.layers[1:-1]):
             
             xx = self.activation(layer(xx)+self.passthrough[i](x))
             
         #return self.layers[-1](x)
-        return self.activation(self.layers[-1](xx))
+        return self.activation(self.layers[-1](xx)+self.passthrough[-1](x))
 
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:
@@ -332,7 +332,7 @@ def param_deltas(model):
                 
                 delta_dict = copy.deepcopy(model_dict)
 
-                param_vector[i] -= 0.05 * param_vector[i]
+                param_vector[i] -= 0.15 * param_vector[i]
 
                 delta_dict[key] = param_vector.unflatten(0,weight_matrix.shape)
 
@@ -562,36 +562,13 @@ def standardize_data(X, y, f, scaler_x = None, scaler_y = None, scaler_f = None)
 def select_features_multi(df):
 
     #X = df[['exx_t-1dt', 'eyy_t-1dt', 'exy_t-1dt','exx_t', 'eyy_t', 'exy_t']]
+    #X = df[['exx_dt', 'eyy_dt', 'exy_dt', 'exx_t', 'eyy_t', 'exy_t']]
     X = df[['exx_t', 'eyy_t', 'exy_t']]
     y = df[['sxx_t','syy_t','sxy_t']]
     f = df[['fxx_t', 'fyy_t', 'fxy_t']]
     coord = df[['dir','id', 'cent_x', 'cent_y','area']]
     info = df[['tag','inc']]
     return X, y, f, coord, info
-
-#-----------------------------------
-#   DEPRECATED
-#-----------------------------------
-# def data_sampling(df_list, n_samples, rand_seed=None):
-
-#     sampled_dfs = []
-
-#     for df in df_list:
-        
-#         if rand_seed != None:
-        
-#             idx = random.sample(range(0, len(df.index.values)), n_samples)
-        
-#         else:
-        
-#             idx = np.round(np.linspace(0, len(df.index.values) - 1, n_samples)).astype(int)
-        
-#         idx.sort()
-#         sampled_dfs.append(df.iloc[idx])
-
-#         sampled_dfs = [df.reset_index(drop=True) for df in sampled_dfs]
-
-#     return sampled_dfs
 
 def drop_features(df, drop_list):
 
@@ -605,20 +582,24 @@ def add_past_step(var_list, lookback, df):
 
     for i in range(lookback):
         for j, vars in enumerate(var_list):
+            t = df[vars].values
             t_past = df[vars].values[:-(i+1)]
             zeros = np.zeros((i+1,3))
             t_past = np.vstack([zeros, t_past])
+            dt = (t-t_past)/0.02
             past_vars = [s.replace('_t','_t-'+str(i+1)+'dt') for s in vars]
+            d_vars = [s.replace('_t','_dt') for s in vars]
             t_past = pd.DataFrame(t_past, columns=past_vars)
+            dt = pd.DataFrame(dt, columns=d_vars)
 
-            new_df = pd.concat([new_df, t_past], axis=1)
+            new_df = pd.concat([new_df, t_past, dt], axis=1)
 
     return new_df
 
 def pre_process(df_list):
 
     var_list = [['sxx_t','syy_t','sxy_t'],['exx_t','eyy_t','exy_t'],['fxx_t','fyy_t','fxy_t']]
-    #lookback = 2
+    #lookback = 1
     
     new_dfs = []
 

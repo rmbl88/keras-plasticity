@@ -1,11 +1,9 @@
 # ---------------------------------
 #    Library and function imports
 # ---------------------------------
-import re
-import operator
-from statistics import mean
+import os
+import shutil
 import joblib
-from sklearn.utils import shuffle
 from constants import *
 from functions import (
     ICNN,
@@ -19,16 +17,14 @@ from functions import (
     global_strain_disp,
     param_deltas,
     global_dof)
-from functions import (EarlyStopping, NeuralNetwork, Element)
-from sklearn.model_selection import GroupShuffleSplit
+from functions import (
+    EarlyStopping,
+    NeuralNetwork,
+    Element)
 import copy
-from re import S
 from torch import nn
-import torch.nn.functional as F
-
 import tensorflow as tf
 import pandas as pd
-
 import random
 import numpy as np
 import math
@@ -38,18 +34,21 @@ import itertools
 import wandb
 from torch.autograd.functional import jacobian
 
-from sympy import pi
 from tqdm import tqdm
 
-from torch.nn.utils import (
-  parameters_to_vector as Params2Vec,
-  vector_to_parameters as Vec2Params
-)
-# -------------------------------
+# -----------------------------------------
+#   DEPRECATED IMPORTS
+# -----------------------------------------
+# from torch.nn.utils import (
+#   parameters_to_vector as Params2Vec,
+#   vector_to_parameters as Vec2Params
+# )
+
+# ----------------------------------------
 #        Class definitions
-# -------------------------------
+# ----------------------------------------
 class DataGenerator(tf.keras.utils.Sequence):
-    def __init__(self, deformation, stress, force, coord, info, list_IDs, batch_size, shuffle, std=True, t_pts=1):
+    def __init__(self, deformation, stress, force, coord, info, list_IDs, batch_size, shuffle=False, std=True, t_pts=1):
         super().__init__()
         self.X = deformation.iloc[list_IDs].reset_index(drop=True)
         self.y = stress.iloc[list_IDs].reset_index(drop=True)
@@ -109,40 +108,6 @@ class DataGenerator(tf.keras.utils.Sequence):
         tag = self.tag.iloc[list_IDs_temp]
         t = self.t.iloc[list_IDs_temp]
         return X, y, f, coord, tag, t
-
-
-
-# class NeuralNetwork(nn.Module):
-#     def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
-#         super(NeuralNetwork, self).__init__()
-#         self.input_size = input_size
-#         self.hidden_size  = hidden_size
-#         self.n_hidden_layers = n_hidden_layers
-#         self.output_size = output_size
-
-#         self.layers = nn.ModuleList()
-
-#         for i in range(self.n_hidden_layers):
-#             if i == 0:
-#                 in_ = self.input_size
-#             else:
-#                 in_ = self.hidden_size
-
-#             self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
-
-#         self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
-
-#         self.activation_h = torch.nn.PReLU(self.hidden_size)
-#         self.activation_o = torch.nn.PReLU(self.output_size)
-
-#     def forward(self, x):
-
-#         for layer in self.layers[:-1]:
-            
-#             x = self.activation_h(layer(x))
-            
-#         #return self.layers[-1](x)
-#         return self.activation_o(self.layers[-1](x))
 
 # -------------------------------
 #       Method definitions
@@ -206,7 +171,7 @@ def train_loop(dataloader, model, loss_fn, optimizer):
     Custom loop for neural network training, using mini-batches
 
     '''
-    global W_virt
+    global w_virt
 
     mdl = copy.deepcopy(model)
     param_dicts = param_deltas(mdl)
@@ -274,7 +239,7 @@ def train_loop(dataloader, model, loss_fn, optimizer):
 
         # Computing external virtual work
         ext_work = torch.sum(torch.reshape(f,[t_pts,1,2])*v_disp,-1)
-            
+
         # Computing losses        
         loss = loss_fn(int_work,ext_work)
         cost = loss_fn(int_work_real, ext_work)
@@ -282,11 +247,6 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         # Backpropagation and weight's update
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
-
-        # Update the weights every other iteration 
-        # Accumulates gradients from more data samples so the estimation of gradients is more accurate and weights are updated more towards the local/global minimum
-        # (https://towardsdatascience.com/optimize-pytorch-performance-for-speed-and-memory-efficiency-2022-84f453916ea6)
-        # if (batch+1) % 2 == 0 or (batch+1) == num_batches:
         optimizer.step()
         
         # Saving loss values
@@ -297,11 +257,11 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         incs = inc[::n_elems].values.tolist()
         
         for i,(n,j) in enumerate(tuple(zip(tags,incs))):
-            VFs[n]['u'][j] = v_u[:,i].detach()
-            VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i].detach()
-            W_virt[n]['w_int'][j] = int_work[:,i].detach()
-            W_virt[n]['w_int_real'][j] = int_work_real[:,i].detach()
-            W_virt[n]['w_ext'][j] = ext_work[:,i].detach()
+            VFs[n]['u'][j] = v_u[:,i].detach().numpy()
+            VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i].detach().numpy()
+            w_virt[n]['w_int'][j] = int_work[:,i].detach().numpy()
+            w_virt[n]['w_int_real'][j] = int_work_real[:,i].detach().numpy()
+            w_virt[n]['w_ext'][j] = ext_work[:,i].detach().numpy()
 
         print('\r>Train: %d/%d' % (batch + 1, num_batches), end='')
     
@@ -312,7 +272,7 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
     # param_dicts = param_deltas(copy.deepcopy(model))
     # n_vfs = len(param_dicts)
 
-    global W_virt
+    global w_virt
 
     num_batches = len(dataloader)
     test_losses = torch.zeros(num_batches)
@@ -330,21 +290,20 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
             X_test, y_test, f_test, coord, tag, inc = dataloader[batch]
             
             # Converting to pytorch tensors
-            X_test = torch.from_numpy(train_generator.scaler_x.transform(X_test))
-            #X_test = torch.tensor(X_test, dtype=torch.float64)
+            if train_generator.std == True:
+                X_test = torch.from_numpy(train_generator.scaler_x.transform(X_test))
+            else:
+                X_test = torch.tensor(X_test, dtype=torch.float64)
+
             y_test = torch.from_numpy(y_test)
             f_test = torch.from_numpy(f_test) + 0.0
             coord_torch = torch.from_numpy(coord)
             
             # Extracting element ids
             id = coord_torch[:,1]
-            # # Reshaping and sorting element ids array
-            # id_reshaped = torch.reshape(id, (t_pts,n_elems,1))
-            # indices = id_reshaped[:, :, 0].sort()[1]
 
             area = torch.reshape(coord_torch[:,4],[batch_size,1])
 
-            # pred = torch.cat([pred_1,pred_2,pred_3],1)
             pred = model(X_test)
 
             # # Reshaping prediction to sort according to the sorted element ids
@@ -389,20 +348,25 @@ def test_loop(dataloader, model, loss_fn, v_disp, v_strain):
             incs = inc[::n_elems].values.tolist()
             
             for i,(n,j) in enumerate(tuple(zip(tags,incs))):
-                VFs[n]['u'][j] = v_u[:,i]
-                VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i]
-                W_virt[n]['w_int'][j] = int_work[:,i]
-                W_virt[n]['w_int_real'][j] = int_work_real[:,i]
-                W_virt[n]['w_ext'][j] = ext_work[:,i]
+                VFs[n]['u'][j] = v_u[:,i].detach().numpy()
+                VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i].detach().numpy()
+                w_virt[n]['w_int'][j] = int_work[:,i].detach().numpy()
+                w_virt[n]['w_int_real'][j] = int_work_real[:,i].detach().numpy()
+                w_virt[n]['w_ext'][j] = ext_work[:,i].detach().numpy()
 
             print('\r>Test: %d/%d' % (batch + 1, num_batches), end='')
 
-    
     return test_losses
 
 # -------------------------------
 #           Main script
 # -------------------------------
+
+# Creating temporary folder
+try:
+    os.makedirs('./temp')          
+except FileExistsError:
+    pass
 
 # Initiating wandb
 #wandb.init(project="pytorch_linear_model", entity="rmbl")
@@ -453,8 +417,6 @@ df_list, _ = load_dataframes(TRAIN_MULTI_DIR)
 # Merging training data
 data = pd.concat(df_list, axis=0, ignore_index=True)
 
-DATA_POINTS = len(df_list[0])
-
 T_PTS = 51
 
 # Performing test/train split
@@ -502,10 +464,6 @@ else:
     partition['train'] = list(itertools.chain.from_iterable([batches[i].tolist() for i in train_batch_idxs]))
     partition['test'] = list(itertools.chain.from_iterable([batches[i].tolist() for i in test_batch_idxs]))
 
-    #partition['train'], partition['test'] = next(GroupShuffleSplit(test_size=TEST_SIZE, n_splits=2, random_state = SEED).split(data, groups=data['t']))
-
-# batch_size = len(data_by_batches[0]) * T_PTS
-
 # Selecting model features
 X, y, f, coord, info = select_features_multi(data)
 
@@ -517,8 +475,8 @@ test_generator = DataGenerator(X, y, f, coord, info, partition['test'], batch_si
 N_INPUTS = X.shape[1]
 N_OUTPUTS = y.shape[1]
 
-N_UNITS = 3
-H_LAYERS = 0
+N_UNITS = 4
+H_LAYERS = 2
 
 model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 
@@ -528,12 +486,13 @@ model_1.apply(init_weights)
 epochs = 4000
 
 # Optimization variables
-learning_rate = 0.2
+learning_rate = 0.1
 loss_fn = sbvf_loss
 f_loss = torch.nn.MSELoss()
 
 optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=20, factor=0.1, threshold=1e-3, min_lr=1e-5)
+#scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, factor=0.2, threshold=1e-3, min_lr=1e-5)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,T_0=20, T_mult=1, eta_min=0.001)
 
 #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,0.99)
 
@@ -543,12 +502,12 @@ v_work = []
 val_loss = []
 epochs_ = []
 # Initializing the early_stopping object
-early_stopping = EarlyStopping(patience=35, delta=1e-7, verbose=True)
+early_stopping = EarlyStopping(patience=75, delta=1e-7, path='temp/checkpoint.pt', verbose=True)
 
 #wandb.watch(model_1)
 VFs = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['u','e']} for key in set(info['tag'])}
 #VFs = {key: dict.fromkeys(set(info['inc'])) for key in set(info['tag'])}
-W_virt = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['w_int','w_int_real','w_ext']} for key in set(info['tag'])}
+w_virt = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['w_int','w_int_real','w_ext']} for key in set(info['tag'])}
 
 for t in range(epochs):
 
@@ -572,7 +531,7 @@ for t in range(epochs):
     
     #Apply learning rate scheduling if defined
     try:
-        scheduler.step(train_loss[t])
+        scheduler.step()
         #scheduler.step()
         print('. t_loss: %.3e -> lr: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], scheduler._last_lr[0], v_work[t], end_train - start_train))
     except:
@@ -610,8 +569,7 @@ for t in range(epochs):
 print("Done!")
 
 # load the last checkpoint with the best model
-# model_1.load_state_dict(torch.load('checkpoint.pt'))
-
+model_1.load_state_dict(torch.load('temp/checkpoint.pt'))
 
 epochs_ = np.reshape(np.array(epochs_), (len(epochs_),1))
 train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
@@ -622,14 +580,14 @@ history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), 
 
 task = r'[%i-%ix%i-%i]-%s-%i-VFs' % (N_INPUTS, N_UNITS, H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], v_strain.shape[0])
 
-import os
 output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf'
 output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/loss/'
-output_prints = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/prints/'
+output_stats = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/stats/'
 output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/models/'
 output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/val/'
+output_logs = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/logs/'
 
-directories = [output_task, output_loss, output_prints, output_models, output_val]
+directories = [output_task, output_loss, output_stats, output_models, output_val, output_logs]
 
 for dir in directories:
     try:
@@ -640,9 +598,17 @@ for dir in directories:
 
 history.to_csv(output_loss + task + '.csv', sep=',', encoding='utf-8', header='true')
 
-plot_history(history, output_prints, True, task)
+plot_history(history, output_loss, True, task)
 
-torch.save(model_1.state_dict(), output_models + task + '_1.pt')
-joblib.dump([VFs, W_virt], 'sbvfs.pkl')
+torch.save(model_1.state_dict(), output_models + task + '.pt')
+np.save(output_logs + 'sbvfs.npy', VFs)
+np.save(output_logs + 'w_virt.npy', w_virt)
+#joblib.dump([VFs, W_virt], 'sbvfs.pkl')
 if train_generator.std == True:
     joblib.dump(train_generator.scaler_x, output_models + task + '-scaler_x.pkl')
+
+# Deleting temp folder
+try:
+    shutil.rmtree('temp/')    
+except FileNotFoundError:
+    pass
