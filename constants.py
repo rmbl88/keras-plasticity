@@ -4,7 +4,7 @@ SEED = 444
 VAL_DIR = 'data/validation/'
 VAL_DIR_MULTI = 'data/validation_multi/9-elem-50-elastic/'
 TRAIN_DIR = 'data/training/'
-TRAIN_MULTI_DIR = 'data/training_multi/9-elem-50-plastic/'
+TRAIN_MULTI_DIR = 'data/training_multi/9-elem-50-elastic/'
 
 DATA_SAMPLES = 51
 LOOK_BACK = 1

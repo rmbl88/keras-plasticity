@@ -1,3 +1,4 @@
+from copy import copy
 from distutils.log import error
 from sklearn.metrics import r2_score
 from tensorflow.python.keras.backend import dtype
@@ -17,6 +18,14 @@ import math
 from torch.autograd import Variable
 from matplotlib.gridspec import GridSpec
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+import copy
+
+def get_elastic_matrix(mean,var):
+    s = np.sqrt(var)
+    D = np.array([[230769.231,69230.769,0],[69230.769,230769.231,0],[0,0,80769.231]])
+    w = D*s
+    b = -w@(-mean/s)
+    return torch.from_numpy(w),torch.from_numpy(b)
 
 def shap_analysis(model, df_list, scaler):
 
@@ -70,7 +79,7 @@ def shap_analysis(model, df_list, scaler):
         cb=fig.axes[2*i+1]
         cb.set_ylabel('')
         cb.set_box_aspect(3)
-    #plt.show()
+    plt.show()
     return shap_values
 
 plt.rcParams.update(constants.PARAMS)
@@ -90,7 +99,7 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #x_scaler = joblib.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs-scaler_x.pkl')
 #x_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-6x1-3]-9-elem-1000-elastic-4-VFs-scaler_x.pkl')
 
-x_scaler = joblib.load('outputs/9-elem-50-elastic_sbvf/models/[3-3x0-3]-100-elem-25-elastic-12-VFs-scaler_x.pkl')
+x_scaler = joblib.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs-scaler_x.pkl')
 #y_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-3x1-3]-9-elem-1000-elastic-scaler_y.pkl')
 
 #x_scaler = joblib.load('outputs/9-elem-50-plastic_sbvf/models/[6-3x1-3]-9-elem-50-plastic-51-VFs-scaler_x.pkl')
@@ -103,10 +112,20 @@ model_1 = NeuralNetwork(3, 3, 0, 0)
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
 
-model_1.load_state_dict(torch.load('outputs/9-elem-50-elastic_sbvf/models/[3-3x0-3]-100-elem-25-elastic-12-VFs_1.pt'))
+model_1.load_state_dict(torch.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-50-plastic_sbvf/models/[6-3x1-3]-9-elem-50-plastic-51-VFs.pt'))
-model_1.eval()
 
+
+model_2 = NeuralNetwork(3, 3, 0, 0)
+
+w,b = get_elastic_matrix(x_scaler.mean_,x_scaler.var_)
+# w = torch.tensor([[79.12783467,8.415587345,0],[23.7383503,28.05195794,0],[0,0,5.06826111]],dtype=torch.float64)
+# b = torch.tensor([1.04E+02,-6.10646E-07,5.425392226],dtype=torch.float64)
+model_2.layers[0].weight = torch.nn.Parameter(w)
+model_2.layers[0].bias = torch.nn.Parameter(b)
+
+model_1.eval()
+model_2.eval()
 #a = shap_analysis(model_1,df_list,x_scaler)
 
 # Sampling data pass random seed for random sampling
@@ -124,12 +143,13 @@ with torch.no_grad():
     for i, df in enumerate(df_list):
         
         if df['id'][0] == 1:
-            print("\n%s\tSxx\tSyy\tSxy\tr2_x\tr2_y\tr2_xy\n" %(df['tag'][0]))
+            print("\n%s\tSxx\tSyy\tSxy\tr2_x\tr2_y\tr2_xy\tr2_x_D\tr2_y_D\tr2_xy_D\n" %(df['tag'][0]))
         
         X, y, _, _, _ = select_features_multi(df)
         X_scaled=x_scaler.transform(X)
         
         y_pred_inv = model_1(torch.tensor(X_scaled)).detach().numpy()
+        y_pred_inv_2 = model_2(torch.tensor(X_scaled)).detach().numpy()
     
         ex_var_abaqus = df['exx_t']
         ey_var_abaqus = df['eyy_t']
@@ -142,21 +162,33 @@ with torch.no_grad():
         sy_pred_var = y_pred_inv[:,1]
         sxy_pred_var = y_pred_inv[:,2]
 
+        sx_pred_var_2 = y_pred_inv_2[:,0]
+        sy_pred_var_2 = y_pred_inv_2[:,1]
+        sxy_pred_var_2 = y_pred_inv_2[:,2]
+
         mse_x = err(torch.from_numpy(sx_pred_var), torch.from_numpy(sx_var_abaqus.values))
         mse_y = err(torch.from_numpy(sy_pred_var), torch.from_numpy(sy_var_abaqus.values))
         mse_xy = err(torch.from_numpy(sxy_pred_var), torch.from_numpy(sxy_var_abaqus.values))
 
-        maes.append([mse_x, mse_y, mse_xy])
+        mse_x_2 = err(torch.from_numpy(sx_pred_var_2), torch.from_numpy(sx_var_abaqus.values))
+        mse_y_2 = err(torch.from_numpy(sy_pred_var_2), torch.from_numpy(sy_var_abaqus.values))
+        mse_xy_2 = err(torch.from_numpy(sxy_pred_var_2), torch.from_numpy(sxy_var_abaqus.values))
+
+        maes.append([mse_x, mse_y, mse_xy, mse_x_2, mse_y_2, mse_xy_2])
 
         r2_x = r2(torch.from_numpy(sx_pred_var), torch.from_numpy(sx_var_abaqus.values))
         r2_y = r2(torch.from_numpy(sy_pred_var), torch.from_numpy(sy_var_abaqus.values))
         r2_xy = r2(torch.from_numpy(sxy_pred_var), torch.from_numpy(sxy_var_abaqus.values))
 
-        r2_scores.append([r2_x, r2_y, r2_xy])
+        r2_x_2 = r2(torch.from_numpy(sx_pred_var_2), torch.from_numpy(sx_var_abaqus.values))
+        r2_y_2 = r2(torch.from_numpy(sy_pred_var_2), torch.from_numpy(sy_var_abaqus.values))
+        r2_xy_2 = r2(torch.from_numpy(sxy_pred_var_2), torch.from_numpy(sxy_var_abaqus.values))
+
+        r2_scores.append([r2_x, r2_y, r2_xy, r2_x_2, r2_y_2, r2_xy_2])
 
         elem_list.append(df['id'][0])
 
-        print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'][0], mse_x, mse_y, mse_xy, r2_x, r2_y, r2_xy))
+        print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'][0], mse_x, mse_y, mse_xy, mse_x_2, mse_y_2, mse_xy_2, r2_x, r2_y, r2_xy, r2_x_2, r2_y_2, r2_xy_2))
        
         # fig , (ax1, ax2, ax3) = plt.subplots(1,3)
         # fig.suptitle(r''+ df['tag'][0].replace('_','\_') + ': element \#' + str(df['id'][0]),fontsize=14)
@@ -184,10 +216,10 @@ with torch.no_grad():
         #plt.show()
         
         if df['id'][0] in elem_list:
-            predictions = pd.DataFrame(y_pred_inv, columns=['pred_x','pred_y','pred_xy'])
+            predictions = pd.DataFrame(np.concatenate([y_pred_inv,y_pred_inv_2],axis=1), columns=['pred_x','pred_y','pred_xy','pred_x_D','pred_y_D','pred_xy_D'])
             #stats = pd.DataFrame([maes, r2_scores], columns=['mae_x','mae_y','mae_xy','r2_x','r2_y','r2_xy'])
             results = pd.concat([df[['exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']],predictions], axis=1)
-            results.to_csv('outputs/9-elem-50-plastic_sbvf/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',',float_format='%.12f')
+            results.to_csv('outputs/9-elem-50-elastic_sbvf_abs/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',',float_format='%.12f')
             
 
         

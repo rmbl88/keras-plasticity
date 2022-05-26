@@ -18,6 +18,7 @@ from functions import (
     param_deltas,
     global_dof)
 from functions import (
+    weightConstraint,
     EarlyStopping,
     NeuralNetwork,
     Element)
@@ -173,6 +174,14 @@ def train_loop(dataloader, model, loss_fn, optimizer):
     '''
     global w_virt
 
+    
+    s = np.sqrt(dataloader.scaler_x.var_)
+    D = np.array([[230769.231,69230.769,0],[69230.769,230769.231,0],[0,0,80769.231]])
+    w = D*s
+    b = -w@(-dataloader.scaler_x.mean_/s)
+    model.layers[0].weight = torch.nn.Parameter(torch.from_numpy(w))
+    model.layers[0].bias = torch.nn.Parameter(torch.from_numpy(b))
+
     mdl = copy.deepcopy(model)
     param_dicts = param_deltas(mdl)
     n_vfs = len(param_dicts)
@@ -184,6 +193,7 @@ def train_loop(dataloader, model, loss_fn, optimizer):
     n_elems = batch_size // t_pts
 
     model.train()
+    #model.eval()
     for batch in range(num_batches):
 
         # Extracting variables for training
@@ -241,17 +251,18 @@ def train_loop(dataloader, model, loss_fn, optimizer):
         ext_work = torch.sum(torch.reshape(f,[t_pts,1,2])*v_disp,-1)
 
         # Computing losses        
-        loss = loss_fn(int_work,ext_work)
-        cost = loss_fn(int_work_real, ext_work)
+        # loss = loss_fn(int_work,ext_work)
+        # cost = loss_fn(int_work_real, ext_work)
 
         # Backpropagation and weight's update
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
+        # optimizer.zero_grad(set_to_none=True)
+        # loss.backward()
+        # optimizer.step()
+        # model.apply(constraints)
         
         # Saving loss values
-        losses[batch] = loss
-        v_work_real[batch] = cost
+        # losses[batch] = loss
+        # v_work_real[batch] = cost
 
         tags = tag[::n_elems].values.tolist()
         incs = inc[::n_elems].values.tolist()
@@ -463,11 +474,13 @@ else:
 
     partition['train'] = list(itertools.chain.from_iterable([batches[i].tolist() for i in train_batch_idxs]))
     partition['test'] = list(itertools.chain.from_iterable([batches[i].tolist() for i in test_batch_idxs]))
-
+    
 # Selecting model features
 X, y, f, coord, info = select_features_multi(data)
 
 # Preparing data generators for mini-batch training
+
+partition['train'] = data[data['tag']=='m80_b80_x'].index.tolist()
 train_generator = DataGenerator(X, y, f, coord, info, partition["train"], batch_size, False, std=True, t_pts=T_PTS)
 test_generator = DataGenerator(X, y, f, coord, info, partition['test'], batch_size, False, std=False, t_pts=T_PTS)
 
@@ -475,26 +488,28 @@ test_generator = DataGenerator(X, y, f, coord, info, partition['test'], batch_si
 N_INPUTS = X.shape[1]
 N_OUTPUTS = y.shape[1]
 
-N_UNITS = 4
-H_LAYERS = 2
+N_UNITS = 3
+H_LAYERS = 0
 
 model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 
 model_1.apply(init_weights)
 
 # Training variables
-epochs = 4000
+epochs = 20000
 
 # Optimization variables
-learning_rate = 0.1
+learning_rate = 0.2
 loss_fn = sbvf_loss
 f_loss = torch.nn.MSELoss()
 
 optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
-#scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, factor=0.2, threshold=1e-3, min_lr=1e-5)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,T_0=20, T_mult=1, eta_min=0.001)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=20, factor=0.2, threshold=1e-3, min_lr=1e-5)
+#scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,T_0=20, T_mult=1, eta_min=0.001)
 
 #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,0.99)
+
+constraints=weightConstraint()
 
 # Container variables for history purposes
 train_loss = []
@@ -502,7 +517,7 @@ v_work = []
 val_loss = []
 epochs_ = []
 # Initializing the early_stopping object
-early_stopping = EarlyStopping(patience=75, delta=1e-7, path='temp/checkpoint.pt', verbose=True)
+early_stopping = EarlyStopping(patience=700, path='temp/checkpoint.pt', verbose=True)
 
 #wandb.watch(model_1)
 VFs = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['u','e']} for key in set(info['tag'])}
@@ -531,7 +546,7 @@ for t in range(epochs):
     
     #Apply learning rate scheduling if defined
     try:
-        scheduler.step()
+        scheduler.step(train_loss[t])
         #scheduler.step()
         print('. t_loss: %.3e -> lr: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], scheduler._last_lr[0], v_work[t], end_train - start_train))
     except:
@@ -580,12 +595,12 @@ history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), 
 
 task = r'[%i-%ix%i-%i]-%s-%i-VFs' % (N_INPUTS, N_UNITS, H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], v_strain.shape[0])
 
-output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf'
-output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/loss/'
-output_stats = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/stats/'
-output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/models/'
-output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/val/'
-output_logs = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf/logs/'
+output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs'
+output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/loss/'
+output_stats = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/stats/'
+output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/models/'
+output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/val/'
+output_logs = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/logs/'
 
 directories = [output_task, output_loss, output_stats, output_models, output_val, output_logs]
 

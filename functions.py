@@ -22,6 +22,19 @@ from torch.nn.utils import (
 # -------------------------------
 #        Class definitions
 # -------------------------------
+class weightConstraint(object):
+    def __init__(self):
+        pass
+    
+    def __call__(self,module):
+        if hasattr(module,'weight'):
+            #print("Entered")
+            w=module.weight.data
+            w=w.clamp(0.0)
+            w[:2,-1]=w[:2,-1].clamp(0.0,0.0)
+            w[-1,:2]=w[:2,-1].clamp(0.0,0.0)
+            module.weight.data=w
+
 class soft_exponential(nn.Module):
     '''
     Implementation of soft exponential activation.
@@ -124,7 +137,7 @@ class SoftplusLayer(nn.Module):
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return F.linear(input, F.softplus(self.weight), self.bias)
+        return F.linear(input, self.weight.abs(), self.bias)
 
     def extra_repr(self) -> str:
         return 'in_features={}, out_features={}, bias={}'.format(
@@ -142,7 +155,7 @@ class NeuralNetwork(nn.Module):
         self.layers = nn.ModuleList()
 
         if self.n_hidden_layers == 0:
-            self.layers.append(SoftplusLayer(self.input_size,self.output_size,bias=True))
+            self.layers.append(torch.nn.Linear(self.input_size,self.output_size,bias=True))
             #self.activation = torch.nn.PReLU()
         else:   
             for i in range(self.n_hidden_layers):
