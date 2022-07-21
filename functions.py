@@ -10,7 +10,7 @@ import copy
 from constants import FORMAT_PBAR, LOOK_BACK
 import torch
 from tqdm import tqdm
-from torch import nn
+from torch import mode, nn
 from io import StringIO
 import math
 import torch.nn.functional as F
@@ -18,22 +18,116 @@ from torch.nn.utils import (
   parameters_to_vector as Params2Vec,
   vector_to_parameters as Vec2Params
 )
+from torch.autograd import Function
 
 # -------------------------------
 #        Class definitions
 # -------------------------------
 class weightConstraint(object):
-    def __init__(self):
-        pass
+    def __init__(self, cond='plastic'):
+        self.cond = cond
     
-    def __call__(self,module):
+    def __call__(self, module):
+
         if hasattr(module,'weight'):
-            #print("Entered")
-            w=module.weight.data
-            w=w.clamp(0.0)
-            w[:2,-1]=w[:2,-1].clamp(0.0,0.0)
-            w[-1,:2]=w[:2,-1].clamp(0.0,0.0)
-            module.weight.data=w
+            if (self.cond == 'plastic'):
+               
+                w=module.weight.data
+                w=w.clamp(0.0)
+                module.weight.data=w 
+
+            else:
+                w=module.weight.data
+                w=w.clamp(0.0)
+                w[:2,-1]=w[:2,-1].clamp(0.0,0.0)
+                w[-1,:2]=w[:2,-1].clamp(0.0,0.0)
+                module.weight.data=w 
+
+           
+        # if self.cond == 'elastic':
+        #     if hasattr(module,'weight'):
+        #         #print("Entered")
+        #         w=module.weight.data
+        #         w=w.clamp(0.0)
+        #         w[:2,-1]=w[:2,-1].clamp(0.0,0.0)
+        #         w[-1,:2]=w[:2,-1].clamp(0.0,0.0)
+        #         module.weight.data=w
+        # elif self.cond == 'plastic':
+        #     if hasattr(module,'weight'):
+        #         w=module.weight.data
+        #         w=w.clamp(0.0)
+        #         module.weight.data=w
+class brelu(Function):
+    '''
+    Implementation of BReLU activation function.
+    Shape:
+        - Input: (N, *) where * means, any number of additional
+          dimensions
+        - Output: (N, *), same shape as the input
+    References:
+        - See BReLU paper:
+        https://arxiv.org/pdf/1709.04054.pdf
+    Examples:
+        >>> brelu_activation = brelu.apply
+        >>> t = torch.randn((5,5), dtype=torch.float, requires_grad = True)
+        >>> t = brelu_activation(t)
+    '''
+    #both forward and backward are @staticmethods
+    @staticmethod
+    def forward(ctx, input):
+        """
+        In the forward pass we receive a Tensor containing the input and return
+        a Tensor containing the output. ctx is a context object that can be used
+        to stash information for backward computation. You can cache arbitrary
+        objects for use in the backward pass using the ctx.save_for_backward method.
+        """
+        ctx.save_for_backward(input) # save input for backward pass
+
+        # get lists of odd and even indices
+        input_shape = input.shape[0]
+        even_indices = [i for i in range(0, input_shape, 2)]
+        odd_indices = [i for i in range(1, input_shape, 2)]
+
+        # clone the input tensor
+        output = input.clone()
+
+        # apply ReLU to elements where i mod 2 == 0
+        output[even_indices] = output[even_indices].clamp(min=0)
+
+        # apply inversed ReLU to inversed elements where i mod 2 != 0
+        output[odd_indices] = 0 - output[odd_indices] # reverse elements with odd indices
+        output[odd_indices] = - output[odd_indices].clamp(min = 0) # apply reversed ReLU
+
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        In the backward pass we receive a Tensor containing the gradient of the loss
+        with respect to the output, and we need to compute the gradient of the loss
+        with respect to the input.
+        """
+        grad_input = None # set output to None
+
+        input, = ctx.saved_tensors # restore input from context
+
+        # check that input requires grad
+        # if not requires grad we will return None to speed up computation
+        if ctx.needs_input_grad[0]:
+            grad_input = grad_output.clone()
+
+            # get lists of odd and even indices
+            input_shape = input.shape[0]
+            even_indices = [i for i in range(0, input_shape, 2)]
+            odd_indices = [i for i in range(1, input_shape, 2)]
+
+            # set grad_input for even_indices
+            grad_input[even_indices] = (input[even_indices] >= 0).float() * grad_input[even_indices]
+
+            # set grad_input for odd_indices
+            grad_input[odd_indices] = (input[odd_indices] < 0).float() * grad_input[odd_indices]
+
+        return grad_input
 
 class soft_exponential(nn.Module):
     '''
@@ -52,7 +146,7 @@ class soft_exponential(nn.Module):
         >>> x = torch.randn(256)
         >>> x = a1(x)
     '''
-    def __init__(self, alpha = None):
+    def __init__(self, in_features, alpha = None):
         '''
         Initialization.
         INPUT:
@@ -61,13 +155,14 @@ class soft_exponential(nn.Module):
             aplha is initialized with zero value by default
         '''
         super(soft_exponential,self).__init__()
-        
+        self.in_features = in_features
+
         # initialize alpha
         if alpha == None:
             self.alpha = nn.Parameter(torch.tensor(0.0)) # create a tensor out of alpha
         else:
             self.alpha = nn.Parameter(torch.tensor(alpha)) # create a tensor out of alpha
-            
+
         self.alpha.requiresGrad = True # set requiresGrad to true!
 
     def forward(self, x):
@@ -153,6 +248,9 @@ class NeuralNetwork(nn.Module):
         self.output_size = output_size
 
         self.layers = nn.ModuleList()
+        self.activations = nn.ModuleList()
+        self.b_norms = nn.ModuleList()
+        #self.drop = nn.Dropout(0.05)
 
         if self.n_hidden_layers == 0:
             self.layers.append(torch.nn.Linear(self.input_size,self.output_size,bias=True))
@@ -161,15 +259,16 @@ class NeuralNetwork(nn.Module):
             for i in range(self.n_hidden_layers):
                 if i == 0:
                     in_ = self.input_size
+                    out_ = self.hidden_size[i]
                 else:
-                    in_ = self.hidden_size
+                    in_ = self.hidden_size[i-1]
+                    out_= self.hidden_size[i]
 
-                self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
+                self.layers.append(torch.nn.Linear(in_, out_, bias=True))
+                self.b_norms.append(torch.nn.BatchNorm1d(out_))
+                self.activations.append(torch.nn.Softplus())
 
-            self.layers.append(torch.nn.Linear(self.hidden_size, self.output_size, bias=True))
-
-            self.activation_h = torch.nn.PReLU(self.hidden_size)
-            self.activation_o = torch.nn.PReLU(self.output_size)
+            self.layers.append(torch.nn.Linear(self.hidden_size[-1], self.output_size, bias=True))
 
     def forward(self, x):
 
@@ -178,49 +277,11 @@ class NeuralNetwork(nn.Module):
             return self.layers[0](x)
 
         else:
-            for layer in self.layers[:-1]:
+            for i,layer in enumerate(self.layers[:-1]):
                 
-                x = self.activation_h(layer(x))
-                
+                x = self.activations[i](self.b_norms[i](layer(x)))
+            
             return self.layers[-1](x)
-            #return self.activation_o(self.layers[-1](x))
-
-class ICNN(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
-        super(ICNN, self).__init__()
-        self.input_size = input_size
-        self.hidden_size  = hidden_size
-        self.n_hidden_layers = n_hidden_layers
-        self.output_size = output_size
-
-        self.layers = nn.ModuleList()
-        self.passthrough = nn.ModuleList()
-
-        for i in range(self.n_hidden_layers):
-            if i == 0:
-                in_ = self.input_size
-                self.layers.append(torch.nn.Linear(in_, self.hidden_size, bias=True))
-            else:
-                in_ = self.hidden_size
-                self.layers.append(SoftplusLayer(in_, self.hidden_size, bias=True))
-
-        self.layers.append(SoftplusLayer(self.hidden_size, self.output_size, bias=True))
-
-        for layer in self.layers[1:]:
-            self.passthrough.append(torch.nn.Linear(input_size,layer.out_features,bias=False))
-
-        self.activation = torch.nn.ReLU()
-
-    def forward(self, x):
-
-        xx = self.activation(self.layers[0](x))
-        
-        for i,layer in enumerate(self.layers[1:-1]):
-            
-            xx = self.activation(layer(xx)+self.passthrough[i](x))
-            
-        #return self.layers[-1](x)
-        return self.activation(self.layers[-1](xx)+self.passthrough[-1](x))
 
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:
@@ -313,45 +374,76 @@ class Element():
 #       Method definitions
 # ------------------------------
 
-# def get_dataset_batches(data_generator, varIndex=0):
+# def param_deltas(model):
     
-#     return [torch.stack(iter(data_generator).__next__()[varIndex]) for i in range(len(data_generator))]
+#     n_layers = len(model.layers)
+#     exceptions = [k for k,v in model.state_dict().items() if 'layers.%i' % (n_layers-1) in k or 'activations' in k or 'b_norms' in k]
+    
+#     with torch.no_grad():
+        
+#         model_dict = {key: value for key, value in model.state_dict().items() if key not in exceptions}
 
-# def param_vector(model):
+#         total_params = sum(p.numel() for _, p in model_dict.items())
+        
+#         eval_dicts = [model.state_dict() for p in range(total_params)]
 
-#     params = [param.data for name, param in model.named_parameters() if param.requires_grad and 'weight' in name and 'activation' not in name]
+#         k = 0
+#         for key, weight_matrix in model_dict.items():
+            
+#             matrix_len = weight_matrix.numel()
+#             matrix_shape = weight_matrix.shape
 
-#     return params
+#             for i in range(matrix_len):
+                
+#                 param_vector = copy.deepcopy(weight_matrix).flatten()
 
+#                 delta_dict = copy.deepcopy(model_dict)
+
+#                 param_vector[i] -= 0.10 * param_vector[i]
+
+#                 delta_dict[key] = param_vector.unflatten(0,matrix_shape)
+
+#                 eval_dicts[k].update(delta_dict)
+                
+#                 k += 1
+
+#     return eval_dicts
 def param_deltas(model):
     
-    model.eval()
-    with torch.no_grad():
+    n_layers = len(model.layers)
+    exceptions = [k for k, v in model.state_dict().items() if 'layers.%i' % (n_layers-1) in k or 'activations' in k or 'b_norms' in k]
+    
+    model_dict = {k: v.repeat([v.numel(),1,1]) for k, v in model.state_dict().items() if k not in exceptions}
+    delta_dict = {k: torch.ones_like(v) for k,v in model_dict.items()}
+
+    total_params = sum(p.numel() for _, p in model_dict.items())
+    
+    eval_dicts = [model.state_dict() for p in range(total_params)]
+
+    for k, v in model_dict.items():
+        a,b = torch.meshgrid(torch.arange(v.shape[1]),torch.arange(v.shape[2]))
+        idx = torch.stack([a.flatten(),b.flatten()],1)
+        delta_dict[k][torch.arange(v.size(0)).unsqueeze(1), idx] = -0.1
+
+    k = 0
+    for key, weight_matrix in model_dict.items():
         
-        model_dict = {key: value for key, value in model.state_dict().items()}
+        matrix_len = weight_matrix.numel()
+        matrix_shape = weight_matrix.shape
 
-        total_params = sum([len(value.flatten()) for key, value in model_dict.items()])
-        
-        eval_dicts = [model.state_dict() for param in range(total_params)]
-
-        k = 0
-        for key, weight_matrix in model_dict.items():
+        for i in range(matrix_len):
             
-            matrix_len = len(weight_matrix.flatten()) 
+            param_vector = copy.deepcopy(weight_matrix).flatten()
+
+            delta_dict = copy.deepcopy(model_dict)
+
+            param_vector[i] -= 0.10 * param_vector[i]
+
+            delta_dict[key] = param_vector.unflatten(0,matrix_shape)
+
+            eval_dicts[k].update(delta_dict)
             
-            for i in range(matrix_len):
-                
-                param_vector = copy.deepcopy(weight_matrix).flatten()
-                
-                delta_dict = copy.deepcopy(model_dict)
-
-                param_vector[i] -= 0.15 * param_vector[i]
-
-                delta_dict[key] = param_vector.unflatten(0,weight_matrix.shape)
-
-                eval_dicts[k].update(delta_dict)
-                
-                k += 1
+            k += 1
 
     return eval_dicts
 
@@ -368,6 +460,7 @@ def global_strain_disp(elements, total_dofs, bcs):
         b_glob[n_comps*i:n_comps*i + n_comps, element.global_dof-1] += element.b_el()
     
     b_bar = copy.deepcopy(b_glob)
+
     bc_fixed = []
     bc_slaves = []
     bc_masters = []
@@ -415,12 +508,12 @@ def global_strain_disp(elements, total_dofs, bcs):
         raise Exception('Incompatible BCs, adjacent boundary conditions cannot be both fixed/uniform').with_traceback()
 
     # Discarding redundant boundary conditions
-    b_bar = torch.index_select(b_bar, 1, torch.as_tensor(actDOFs))
+    b_bar = b_bar[:,actDOFs]
 
     # Computing pseudo-inverse strain-displacement matrix
     b_inv = torch.linalg.pinv(b_bar)
     
-    return b_glob, b_bar, b_inv, actDOFs
+    return b_glob, b_inv, actDOFs
 
 def prescribe_u(u, bcs):
     U = copy.deepcopy(u)
@@ -464,15 +557,17 @@ def prescribe_u(u, bcs):
 
 def sbvf_loss(int_work, ext_work):
        
-    ivw_sort = torch.sort(torch.abs(int_work.detach()).flatten(),descending=True).values
-    #ivw_sort = torch.sort(torch.abs(int_work.detach()),1,descending=True).values
+    vw = torch.sum(int_work.detach(),-1)
+    #ivw_sort = torch.sort(torch.abs(vw).flatten(),descending=True).values
+    ivw_sort = torch.sort(torch.abs(vw),-1,descending=True).values
 
-    numSteps = math.floor(0.3*len(ivw_sort))
-    alpha = torch.mean(ivw_sort[0:numSteps]) * torch.ones((int_work.shape[0],1))
-    #alpha = torch.mean(ivw_sort[:,0:numSteps,:],1)
+    #numSteps = math.floor(0.3*len(ivw_sort))
+    numSteps = math.floor(0.3*int_work.shape[1])
 
-    return torch.sum((1/alpha**2)*torch.sum(torch.square(int_work-ext_work),1))
-    #return torch.sum((1/alpha)*torch.sum(torch.abs(int_work-ext_work),1))
+    #alpha = (1/torch.mean(ivw_sort[0:numSteps])) * torch.ones((int_work.shape[0],1))
+    alpha = (1/torch.mean(ivw_sort[:,0:numSteps],1))
+
+    return torch.sum(torch.square(alpha)*torch.sum(torch.square(torch.sum(int_work,-1)-torch.squeeze(ext_work)),1))
 
 def custom_loss(int_work, ext_work):
     
@@ -574,9 +669,9 @@ def standardize_data(X, y, f, scaler_x = None, scaler_y = None, scaler_f = None)
 
 def select_features_multi(df):
 
-    #X = df[['exx_t-1dt', 'eyy_t-1dt', 'exy_t-1dt','exx_t', 'eyy_t', 'exy_t']]
-    #X = df[['exx_dt', 'eyy_dt', 'exy_dt', 'exx_t', 'eyy_t', 'exy_t']]
-    X = df[['exx_t', 'eyy_t', 'exy_t']]
+    X = df[['exx_t-1dt', 'eyy_t-1dt', 'exy_t-1dt','exx_t', 'eyy_t', 'exy_t']]
+    #X = df[['exx_dt', 'eyy_dt', 'exy_dt','exx_t', 'eyy_t', 'exy_t']]
+    #X = df[['exx_t', 'eyy_t', 'exy_t']]
     y = df[['sxx_t','syy_t','sxy_t']]
     f = df[['fxx_t', 'fyy_t', 'fxy_t']]
     coord = df[['dir','id', 'cent_x', 'cent_y','area']]
@@ -597,15 +692,20 @@ def add_past_step(var_list, lookback, df):
         for j, vars in enumerate(var_list):
             t = df[vars].values
             t_past = df[vars].values[:-(i+1)]
-            zeros = np.zeros((i+1,3))
+            zeros = np.zeros((i+1,len(vars)))
             t_past = np.vstack([zeros, t_past])
-            dt = (t-t_past)/0.02
+            dt = (t-t_past)
+            if 'exx_t' in vars:
+                dt = dt/np.reshape(np.linalg.norm(dt,axis=1),(t.shape[0],1))
+                dt[np.isnan(dt)] = 0.0
+                
             past_vars = [s.replace('_t','_t-'+str(i+1)+'dt') for s in vars]
             d_vars = [s.replace('_t','_dt') for s in vars]
             t_past = pd.DataFrame(t_past, columns=past_vars)
             dt = pd.DataFrame(dt, columns=d_vars)
 
             new_df = pd.concat([new_df, t_past, dt], axis=1)
+            #new_df = pd.concat([new_df, t_past], axis=1)
 
     return new_df
 

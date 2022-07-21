@@ -11,7 +11,6 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.gridspec import GridSpec
 import math
 
-from constants import DATA_SAMPLES
 
 def animate(i):
     
@@ -81,13 +80,18 @@ yc = np.linspace(0.5,2.5,3)
 
 XC, YC = np.meshgrid(xc,yc)
 
-vfs, w_virt = joblib.load('sbvfs_m80b80.pkl')
+#vfs, w_virt = joblib.load('sbvfs_m80b80.pkl')
 
-tags = [list(vfs.keys())[-2]]
+FOLDER = '9-elem-50-plastic_sbvf_abs/'
+
+vfs = np.load('outputs/' + FOLDER + 'logs/sbvfs.npy', allow_pickle=True).flat[0]
+w_virt = np.load('outputs/' + FOLDER + 'logs/w_virt.npy', allow_pickle=True).flat[0]
+
+tags = list(vfs.keys())
 
 cmap = plt.cm.get_cmap('jet')
 
-k=0
+# k=0
 # for tag in tags:
 #     v_u = torch.stack([torch.from_numpy(v) for k,v in vfs[tag]['u'].items() if v is not None],1)
 #     v_e = torch.stack([torch.from_numpy(v) for k,v in vfs[tag]['e'].items() if v is not None],1)
@@ -162,20 +166,21 @@ k=0
 #         plt.close(fig)
 #         k+=1
         
-
+tags = list(w_virt.keys())
 for i,tag in enumerate(tags):
     print('\rProcessing stats plot %i of %i' % (i+1,len(tags)), end='')
 
-    w_int = torch.stack([torch.from_numpy(v) if v is not None else torch.empty((30,1)) for k,v in w_virt[tag]['w_int'].items()],1)
-    w_int_real = torch.stack([torch.from_numpy(v) if v is not None else torch.empty((30,1)) for k,v in w_virt[tag]['w_int_real'].items()],1)
-    w_ext = torch.stack([torch.from_numpy(v) if v is not None else torch.empty((30,1)) for k,v in w_virt[tag]['w_ext'].items()],1)
-
+    w_int = np.array(list(w_virt[tag]['w_int'].values()))
+    w_int_real = np.array(list(w_virt[tag]['w_int_real'].values()))
+    w_ext = np.array(list(w_virt[tag]['w_ext'].values()))
+    w_int_real[0] = 1e-16
+    # w_int = np.sum(w_int,-1,keepdim=True)
+    # w_int_real = np.sum(w_int_real,-1,keepdim=True)
     # ivw_sort = torch.sort(torch.abs(w_int_real.detach()).flatten(),descending=True).values
     # numSteps = math.floor(0.3*len(ivw_sort))
     # alpha = torch.mean(ivw_sort[0:numSteps]) * torch.ones((w_int_real.shape[1],1))
-
-    w_int_err = (torch.abs(torch.sum(w_int,0)-torch.sum(w_int_real,0))*100/torch.sum(w_int_real,0)).flatten()
-    t_steps = torch.as_tensor(list(w_virt[tag]['w_int'].keys())).flatten()
+    w_int_err = np.abs(w_int-w_int_real)*100/w_int_real
+    t_steps = np.array(list(w_virt[tag]['w_int'].keys()))
 
     fig = plt.figure()
     fig.suptitle('%s' % (tag))
@@ -187,9 +192,9 @@ for i,tag in enumerate(tags):
     ax1 = fig.add_subplot(g_s[0,0:3])
     #ax.plot(torch.sum(w_int_real,0))
     #ax.plot(torch.sum(w_ext,0))
-    ax1.plot(torch.sum(w_int,0), label='W_int (ANN)')
-    ax1.plot(torch.sum(w_int_real,0), label='W_int (Abaqus)')
-    ax1.plot(torch.sum(w_ext,0), label='W_ext (Abaqus)')
+    ax1.plot(w_int, label='W_int (ANN)')
+    ax1.plot(w_int_real, label='W_int (Abaqus)')
+    ax1.plot(w_ext, label='W_ext (Abaqus)')
     
     ax1.set_ylabel('Virtual work [J]')
     ax1.set_xlabel('t_step')
@@ -197,7 +202,7 @@ for i,tag in enumerate(tags):
 
     ax2 = fig.add_subplot(g_s[0,3:])
     
-    ax2.bar(t_steps,w_int_err)
+    ax2.bar(t_steps[1:],w_int_err[1:])
     ax2.set_ylabel('W_int rel. error [%]')
     ax2.set_xlabel('t_step')
     
