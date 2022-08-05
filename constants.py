@@ -7,7 +7,7 @@ TRAIN_DIR = 'data/training/'
 TRAIN_MULTI_DIR = 'data/training_multi/9-elem-50-plastic/'
 
 # DATA_SAMPLES = 51
-LOOK_BACK = 1
+LOOK_BACK = 3
 TEST_SIZE = 0.3
 
 LENGTH = 3.0

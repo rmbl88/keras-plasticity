@@ -4,7 +4,7 @@ from sklearn.metrics import r2_score
 from tensorflow.python.keras.backend import dtype
 import constants
 import joblib
-from functions import (load_dataframes, select_features_multi,NeuralNetwork)
+from functions import (InputConvexNN, load_dataframes, select_features_multi,NeuralNetwork)
 import matplotlib.pyplot as plt
 import pandas as pd
 from cycler import cycler
@@ -102,18 +102,19 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #x_scaler = joblib.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs-scaler_x.pkl')
 #y_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-3x1-3]-9-elem-1000-elastic-scaler_y.pkl')
 
-x_scaler = joblib.load('outputs/9-elem-50-plastic_sbvf_abs/models/[6-6x4-3]-9-elem-50-plastic-246-VFs-scaler_x.pkl')
+x_scaler = joblib.load('outputs/9-elem-50-plastic_sbvf_abs/models/[9-18x2-3]-9-elem-50-plastic-507-VFs-scaler_x.pkl')
 
 
 # Loading ANN model
-model_1 = NeuralNetwork(6, 3, [6,9,6,3], 4)
+model_1 = NeuralNetwork(9, 3, [18,12], 2)
+#model_1 = InputConvexNN(6, 3, [9,9,9], 3)
 # model_2 = NeuralNetwork(3, 1, 8, 1)
 # model_3 = NeuralNetwork(3, 1, 8, 1)
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
 
 #model_1.load_state_dict(torch.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs.pt'))
-model_1.load_state_dict(torch.load('outputs/9-elem-50-plastic_sbvf_abs/models/[6-6x4-3]-9-elem-50-plastic-246-VFs.pt'))
+model_1.load_state_dict(torch.load('outputs/9-elem-50-plastic_sbvf_abs/models/[9-18x2-3]-9-elem-50-plastic-507-VFs.pt'))
 
 
 # model_2 = NeuralNetwork(3, 3, 0, 0)
