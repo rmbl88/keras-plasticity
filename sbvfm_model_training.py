@@ -1,7 +1,12 @@
 # ---------------------------------
 #    Library and function imports
 # ---------------------------------
-from audioop import mul
+from pyexpat import model
+from scipy.signal import savgol_filter
+from scipy.signal import find_peaks
+from scipy.signal import find_peaks_cwt
+from scipy.signal import argrelmax, argrelmin
+import matplotlib.pyplot as plt
 import cProfile, pstats
 import os
 import shutil
@@ -9,8 +14,10 @@ import joblib
 from sklearn import model_selection
 from constants import *
 from functions import (
-    InputConvexNN,
+    SBVFLoss,
+    layer_wise_lr,
     sbvf_loss,
+    draw_graph,
     load_dataframes,
     prescribe_u,
     select_features_multi,
@@ -27,7 +34,7 @@ from functions import (
     Element)
 from functools import partial
 import copy
-from torch import nn
+from torch import batch_norm, nn
 import tensorflow as tf
 import pandas as pd
 import random
@@ -49,6 +56,9 @@ import time
 import random
 from tkinter import *
 import geotorch
+from warmup_scheduler import GradualWarmupScheduler
+from ignite.handlers import create_lr_scheduler_with_warmup
+from ignite.engine import *
 
 # -----------------------------------------
 #   DEPRECATED IMPORTS
@@ -70,7 +80,8 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.f = force.iloc[list_IDs].reset_index(drop=True)
         self.coord = coord[['dir','id','cent_x','cent_y','area']].iloc[list_IDs].reset_index(drop=True)
         self.tag = info['tag'].iloc[list_IDs].reset_index(drop=True)
-        self.t = info['inc'].iloc[list_IDs].reset_index(drop=True)
+        #self.t = info[['inc','t','exx_p_dot','eyy_p_dot','exy_p_dot']].iloc[list_IDs].reset_index(drop=True)
+        self.t = info[['inc','t']].iloc[list_IDs].reset_index(drop=True)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.list_IDs = list_IDs
@@ -110,6 +121,9 @@ class DataGenerator(tf.keras.utils.Sequence):
     def standardize(self):
         'Standardizes neural network input data'
         idx = self.X.index
+        # if self.scaler_x != None:
+        #     self.X, _, _, _, _, _ = standardize_data(self.X, self.y, self.f, scaler_x=self.scaler_x)
+        #else:
         self.X, _, _, self.scaler_x, _, _ = standardize_data(self.X, self.y, self.f)
 
         self.X = pd.DataFrame(self.X, index=idx)
@@ -132,12 +146,14 @@ def plot():    #Function to create the base plot, make sure to make global the l
     def get_plot(ax,style):
         return ax.plot([], style, animated=True)[0]
 
-    global w_ext,w_int,w_int_real,t_loss,v_loss,s_loss,s_err,ax,ax_2,canvas
+    global w_ext,w_int,w_int_real,t_loss,v_loss,s_loss,s_err,ax,ax_2,ax_3,canvas
 
-    fig = matplotlib.figure.Figure(figsize=(15, 5))
+    fig = matplotlib.figure.Figure(figsize=(16, 5),tight_layout=True)
 
-    ax = fig.add_subplot(1,2,1)
-    ax_2 = fig.add_subplot(1,2,2)
+    ax = fig.add_subplot(1,3,1)
+    ax_2 = fig.add_subplot(1,3,2)
+    ax_3 = fig.add_subplot(1,3,3)
+    
     canvas = FigureCanvasTkAgg(fig, master=window)
     canvas.draw()
     canvas.get_tk_widget().pack(side=TOP, fill=BOTH, expand=1)
@@ -146,21 +162,33 @@ def plot():    #Function to create the base plot, make sure to make global the l
     w_ext, = ax.plot([],label='w_ext')
     w_int, = ax.plot([],label='w_int_ann')
     w_int_real, = ax.plot([],label='w_int')
-    t_loss, = ax_2.plot([],label='train_loss')
-    v_loss, = ax_2.plot([],label='test_loss')
-    s_loss, = ax_2.plot([],label='s(0)_loss')
-    s_err, = ax_2.plot([],label='mse_stress')
-    ax_2.set_yscale('log')
-    ax_2.set_xlim([0, 2])
-    ax_2.set_title('Loss curves')
-    ax_2.set_xlabel('Epochs')
-    ax_2.set_ylabel('Loss')
-    ax_2.xaxis.set_major_locator(MaxNLocator(integer=True))
+    ax.set_title(' ')
+    ax.set_xlabel('t_pts')
+    ax.ticklabel_format(axis='y',style='sci',scilimits=(0,0))
+    
     ax.legend(loc='best')
-    ax_2.legend(loc='best')
 
+    v_loss, = ax_2.plot([],label='test_loss')
+    t_loss, = ax_2.plot([],label='train_loss')
+    
+    s_err, = ax_3.plot([],label='mse_stress')
+    s_loss, = ax_3.plot([],label='s(0)_loss')
 
+    ax_2.set_title('Training curves')
+    ax_3.set_title('Constraints loss')
 
+    for i,ax_ in enumerate([ax,ax_2,ax_3]):
+        
+        ax_.legend(loc='best')
+        if i != 0:
+            ax_.set_yscale('log')
+            ax_.set_xlim([0, 2])
+            
+            ax_.set_xlabel('Epochs')
+            ax_.set_ylabel('Loss')
+            ax_.xaxis.set_major_locator(MaxNLocator(integer=True))
+        
+        
 def updateplot(q):
 
     try:       #Try to check if there is data in the queue
@@ -188,15 +216,26 @@ def updateplot(q):
                 s_err.set_xdata(epochs)
                 s_err.set_ydata(d4)
 
-                lower = min([min(a) for a in [d1,d2,d3,d4]])
-                upper = max([max(a) for a in [d1,d2,d3,d4]])
+                lower_2 = min([min(a) for a in [d1,d2]])
+                upper_2 = max([max(a) for a in [d1,d2]])
+
+                lower_3 = min([min(a) for a in [d3,d4]])
+                upper_3 = max([max(a) for a in [d3,d4]])
 
                 ax_2.set_xlim([0, max(epochs)+5])
-                ax_2.set_ylim([lower-0.5*abs(lower), upper+0.1*abs(upper)])
+                ax_2.set_ylim([lower_2-0.5*abs(lower_2), upper_2+0.1*abs(upper_2)])
+
+                ax_3.set_xlim([0, max(epochs)+5])
+                ax_3.set_ylim([lower_3-0.5*abs(lower_3), upper_3+0.1*abs(upper_3)])
 
                 ax_2.draw_artist(ax_2.patch)
                 ax_2.draw_artist(t_loss)
                 ax_2.draw_artist(v_loss)
+                
+                ax_3.draw_artist(ax_3.patch)
+                ax_3.draw_artist(s_loss)
+                ax_3.draw_artist(s_err)
+
                 canvas.update()
                 canvas.flush_events()
 
@@ -240,7 +279,7 @@ def updateplot(q):
 
 def batch_jacobian(f, x):
     f_sum = lambda x: torch.sum(f(x), axis=0)
-    return jacobian(f_sum, x,create_graph=True).permute(1,0,2)
+    return jacobian(f_sum, x, create_graph=True).permute(1,0,2)
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -320,53 +359,6 @@ def train(q):
         else:
             return d_sigma
 
-    # def sigma_deltas(model, X_train, pred, param_dicts, incs, idx=None):
-
-    #     delta_stress = torch.zeros((len(param_dicts), pred.shape[0], pred.shape[1]))
-    #     mdl = copy.deepcopy(model)
-    #     mdl.eval()
-    #     with torch.no_grad():
-    #         for i,param_dict in enumerate(param_dicts):
-    #             mdl.load_state_dict(param_dict)
-    #             pred_eval = mdl(X_train)
-    #             delta_stress[i,:,:] = (pred - pred_eval)
-
-    #     ##### INCREMENTAL DELTA STRESS #############
-    #     # n_vfs = delta_stress.shape[0]
-    #     # n_elems = delta_stress.shape[1] // T_PTS
-    #     # d_stress = torch.reshape(delta_stress,[n_vfs,T_PTS,n_elems,3])
-    #     # if idx != None:
-    #     #     d_stress = d_stress[:,idx]
-    #     # d_s = torch.zeros_like(d_stress)
-    #     # d_s[:,1:] = (d_stress[:,1:] - d_stress[:,:-1]) / 0.02
-
-    #     # return torch.reshape(d_s[:,incs],delta_stress.shape)
-    #     # # ##############################################
-    #     return delta_stress
-
-    # def sigma_deltas(model, x, s, param_dict):
-
-    #     delta_stress = torch.zeros_like(s)
-    #     model.eval()
-    #     with torch.no_grad():
-
-    #         model.load_state_dict(param_dict)
-    #         ds = model(x)
-    #         d_sigma = (s - ds)
-
-    #     ##### INCREMENTAL DELTA STRESS #############
-    #     # n_vfs = delta_stress.shape[0]
-    #     # n_elems = delta_stress.shape[1] // T_PTS
-    #     # d_stress = torch.reshape(delta_stress,[n_vfs,T_PTS,n_elems,3])
-    #     # if idx != None:
-    #     #     d_stress = d_stress[:,idx]
-    #     # d_s = torch.zeros_like(d_stress)
-    #     # d_s[:,1:] = (d_stress[:,1:] - d_stress[:,:-1]) / 0.02
-
-    #     # return torch.reshape(d_s[:,incs],delta_stress.shape)
-    #     # # ##############################################
-    #     return d_sigma
-
     def sbv_fields(d_sigma, b_glob, b_inv, n_elems, bcs, active_dof):
 
         n_dof = b_glob.shape[-1]
@@ -426,31 +418,43 @@ def train(q):
                 VFs_test[k]['u'] = v_u.numpy()
                 VFs_test[k]['v_u'] = v_disp.numpy()
                 VFs_test[k]['e'] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3]).numpy()
+    
+    def get_yield(e):
+        
+        window = 3
+        der2 = savgol_filter(e, window_length=window, polyorder=2, deriv=2)
+        peaks, _ = find_peaks(np.abs(der2),prominence=np.mean(np.abs(der2)))       
+        max_der2 = np.max(np.abs(der2[peaks]))
+        #max_der2 = np.max(np.abs(der2))
+        large = np.where(np.abs(der2) == max_der2)[0]
+        gaps = np.diff(large) > window
+        begins = np.insert(large[1:][gaps], 0, large[0])
+        ends = np.append(large[:-1][gaps], large[-1])
+        yield_pt = ((begins+ends)/2).astype(np.int)
+        plt.plot(der2)
+        plt.plot(peaks,der2[peaks],'og')
+        plt.show()
+        
+        return yield_pt
 
-    def get_sbvfs_batch(model, x, tag):
+    def strain_decomp(t, e):
 
-        mdl = copy.deepcopy(model)
-        # cProfile.runctx('param_deltas(mdl)',{'mdl':mdl,'param_deltas':param_deltas},{})
-        param_dicts = param_deltas(mdl)
+        yield_pt = get_yield(e[:,0])[0]
+        for i in range(e.shape[-1]):
+            pt = get_yield(e[:,i])
+            plt.plot(e[:,i])
+            plt.plot(pt, e[:,i][pt], 'ro')
+            plt.show()
 
-        n_vfs = len(param_dicts)
+        e_e = torch.zeros_like(e)
+        e_e[:yield_pt,:] = e[:yield_pt,:]
+        e_p = e - e_e
+        p = torch.cumsum(e_p,axis=0)
+        e_dot = torch.diff(e,axis=0)/torch.diff(t,axis=0).repeat(1,3)
+        p_dot = torch.diff(p,axis=0)/torch.diff(t,axis=0).repeat(1,3)
+        e_p_dot = torch.diff(e_p,axis=0)/torch.diff(t,axis=0).repeat(1,3)
 
-        n_elems = batch_size // T_PTS
-
-        model.eval()
-        with torch.no_grad():
-
-            s = torch.stack([model(x_).detach() for i,x_ in enumerate(list(x))])
-
-        ds = torch.stack(list(map(lambda p_dict: sigma_deltas(p_dict,model=mdl,x=torch.stack(list(x)),s=s), param_dicts))).permute(1,0,2,3)
-
-        for i in range(len(tag)):
-            v_u, v_disp, v_strain = sbv_fields(ds[i], b_glob, b_inv, n_elems, bcs, active_dof)
-
-            VFs_train[tag[i]]['u'] = v_u.numpy()
-            VFs_train[tag[i]]['v_u'] = v_disp.numpy()
-            VFs_train[tag[i]]['e'] = torch.reshape(v_strain,[n_vfs,T_PTS,n_elems,3]).numpy()
-
+        return e_dot, e_p, p, p_dot, e_p_dot, yield_pt
 
     def train_loop(dataloader, model, loss_fn, optimizer):
         '''
@@ -462,6 +466,7 @@ def train(q):
         losses = torch.zeros(num_batches)
         l_stress = torch.zeros(num_batches)
         err_stress = torch.zeros(num_batches)
+        err_h = torch.zeros(num_batches)
         v_work_real = torch.zeros(num_batches)
 
         g_norm = []
@@ -471,6 +476,7 @@ def train(q):
 
         l = 0
         model.train()
+
         #optimizer.zero_grad(set_to_none=True)
         for batch in range(num_batches):
 
@@ -478,13 +484,15 @@ def train(q):
             X_train, y_train, f_train, coord, tag, inc = dataloader[batch]
 
             # Converting to pytorch tensors
-            X_train = torch.reshape(torch.from_numpy(X_train),[t_pts,-1])
+            X_train = torch.from_numpy(X_train)
             y_train = torch.from_numpy(y_train)
             f_train = torch.from_numpy(f_train) + 0.0
             coord_torch = torch.from_numpy(coord)
 
             tags = tag[::n_elems].values.tolist()
-            incs = inc[::n_elems].values.tolist()
+            incs = inc['inc'][::n_elems].values.tolist()
+            t = torch.reshape(torch.from_numpy(inc['t'].values),[t_pts,n_elems])
+            #ep_dot = torch.from_numpy(inc[['exx_p_dot','eyy_p_dot','exy_p_dot']].values)
 
             # Extracting element area
             area = torch.reshape(coord_torch[:,4],[batch_size,1])
@@ -492,13 +500,28 @@ def train(q):
             # Computing model stress prediction
             pred=model(X_train)
 
+            #---------------------------------
+            # s_ = model_2(X_train).detach()
+            # f_ = torch.sum(torch.reshape(s_ * area * ELEM_THICK / LENGTH,[t_pts,n_elems,3]),1)[:,:2]
+            #-----------------------------------------------------------------------------------------
+
+            
+            # e = dataloader.scaler_x.inverse_transform(X_train)
+            # e = torch.reshape(torch.from_numpy(e)[:,::2],[t_pts,n_elems*3])
+            #e_dot, e_p, p, p_dot, e_p_dot, yield_pt = strain_decomp(t,e)
+
+            # e = torch.from_numpy(dataloader.scaler_x.inverse_transform(X_train))
+            # e = torch.reshape(e[:,::2],[t_pts,n_elems,3])
+            
+            # lp = torch.square(100*torch.sum(torch.nn.functional.relu(-torch.sum(pred * e_dot,-1))))
+
             #-----------------------------------------------------------------------------------------
             # Loading sensitivity-based virtual fields
             tag = tags[0]
-            v_disp = torch.from_numpy(VFs_train[tag]['v_u'])[sbvf_idx]
+            v_disp = torch.from_numpy(VFs_train[tag]['v_u'])
             v_disp = v_disp[:,incs]
             n_vfs = v_disp.shape[0]
-            v_strain = torch.from_numpy(VFs_train[tag]['e'])[sbvf_idx]
+            v_strain = torch.from_numpy(VFs_train[tag]['e'])
             v_strain = v_strain[:,incs]
             v_strain = torch.reshape(v_strain,(n_vfs,pred.shape[0],pred.shape[1]))
 
@@ -508,10 +531,10 @@ def train(q):
             #v_u, v_disp, v_strain = sbv_fields(d_sigma, b_glob, b_inv, n_elems, bcs, active_dof)
 
             # Computing predicted virtual work
-            int_work = torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1)
+            int_work = torch.sum(torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
 
             # Computing real virtual work
-            int_work_real = torch.sum(torch.reshape((y_train * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1)
+            int_work_real = torch.sum(torch.sum(torch.reshape((y_train * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
 
             f = f_train[:,:2][::n_elems,:]
 
@@ -528,49 +551,71 @@ def train(q):
             # # l1 = l1_weight * torch.abs(torch.cat(parameters)).sum()
             # l2 = l2_weight * torch.square(torch.cat(parameters)).sum()
 
-            # l_jac_weight = 0.5
-            #jac = batch_jacobian(model,X_train)[:,:,-3:][0]
-            #l_jac = torch.sum(torch.nn.functional.relu(-jac))
+            #Initial loss
+            idx_0 = np.where(np.array(incs)==0)[0][0]*n_elems
+            s_0 = pred[idx_0:idx_0+n_elems,:] 
+            l_0 = mse(s_0,torch.zeros_like(s_0))
+            
 
-            # Applying initial condition for stress (S(t0)=0)
-            t_steps_idx = torch.sort(torch.tensor(incs)).indices
-            s = torch.reshape(pred,[T_PTS,n_elems,3])[t_steps_idx,:]
-            l_s = torch.mean(torch.sum(torch.square(s[0]),0))
+            # #Equilibrium
+            # i_f = torch.sum(torch.reshape(pred[:,:2] * area * ELEM_THICK / LENGTH,[T_PTS,n_elems,2]),1)
+            # l_f = mse(i_f,f)
+            # e = dataloader.scaler_x.inverse_transform(X_train)
+            # e = torch.reshape(torch.from_numpy(e[:,::2]),[t_pts,n_elems,3])
+            # de = torch.reshape(torch.diff(e,dim=0),[-1,3])
+            # ds = torch.reshape(torch.diff(torch.reshape(pred,[t_pts,n_elems,3]),dim=0),[-1,3])
 
-            # # Monotonic stress
-            # dw = torch.zeros_like(int_work)
-            # dw[:,1:] = torch.abs(dw[:,:-1]) - torch.abs(dw[:,1:])
-            # lw_2 = lambda_*torch.mean(torch.nn.functional.relu(dw))
+            # l_1 = torch.mean(torch.nn.functional.relu(-(ds[:,0]*de[:,0]))) + torch.mean(torch.nn.functional.relu(-(ds[:,1]*de[:,1]))) + torch.mean(torch.nn.functional.relu(-(ds[:,1]*de[:,1])))
+            # #Plastic power
+            
+            # wp = torch.sum(torch.reshape(pred * ep_dot,[t_pts,n_elems,3]) ,-1)
+            # l_wp = torch.sum(torch.nn.functional.relu(-wp))
+            # f_i = torch.sum(torch.reshape((pred * area * ELEM_THICK/LENGTH),[t_pts,n_elems,3]),1)
+            # f_g = f_train[:,:][::n_elems,:]
+
+            # h = batch_jacobian(model,X_train)
+            # h = torch.flatten(h,1,2)
+            # l_h = torch.sum(torch.square(torch.nn.functional.relu(-h)))
 
             # # Computing loss
-            loss = loss_fn(int_work,ext_work)
+            loss = loss_fn(int_work,ext_work) + l_0
+            #loss = mse(f_i,f_g) + l_0
             cost = loss_fn(int_work_real, ext_work)
-
+            
             # Backpropagation and weight's update
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             # # Gradient clipping - as in https://github.com/pseeth/autoclip
             # g_norm.append(get_grad_norm(model))
-            # clip_value = np.percentile(g_norm, 25)
-            # nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_value)
+            # clip_value = np.percentile(g_norm, 10)
+            #nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
 
             optimizer.step()
             #scheduler.step()
             #model.apply(constraints)
+            if tags[0]==train_trials[0]:
+                numSteps = math.floor(scale_par * int_work.shape[1])
+                if numSteps == 0:
+                    numSteps = 1
+                ivw_sort = torch.sort(torch.abs(int_work.detach()),1,descending=True).values
+            
+                alpha = (1/torch.mean(ivw_sort[:,0:numSteps],1))
 
             # Saving loss values
             losses[batch] = loss.detach().item()
-            l_stress[batch] = l_s.detach().item()
-            err_stress[batch] = torch.mean(torch.sum(torch.square(pred.detach()-y_train),1))
+            l_stress[batch] = l_0.detach().item()
+            err_stress[batch] = mse(pred.detach(),y_train)
+            err_h[batch] = 0
             v_work_real[batch] = cost.detach().item()
+            #v_work_real[batch] = 0
             g_norm.append(get_grad_norm(model))
             #l += loss
-            for i,(n,j) in enumerate(tuple(zip(tags,incs))):
-                #VFs[n]['u'][j] = v_u[:,i].detach().numpy()
-                #VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i].detach().numpy()
-                w_virt[n]['w_int'][j] = torch.sum(torch.sum(int_work[:,i].detach(),-1)).numpy()
-                w_virt[n]['w_int_real'][j] = torch.sum(torch.sum(int_work_real[:,i].detach()),-1).numpy()
-                w_virt[n]['w_ext'][j] = torch.sum(torch.sum(ext_work[:,i].detach(),-1)).numpy()
+            # for i,(n,j) in enumerate(tuple(zip(tags,incs))):
+            #     #VFs[n]['u'][j] = v_u[:,i].detach().numpy()
+            #     #VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i].detach().numpy()
+            #     w_virt[n]['w_int'][j] = torch.sum(int_work[:,i].detach()).numpy()
+            #     w_virt[n]['w_int_real'][j] = torch.sum(int_work_real[:,i].detach()).numpy()
+            #     w_virt[n]['w_ext'][j] = torch.sum(ext_work[:,i].detach()).numpy()
 
             print('\r>Train: %d/%d' % (batch + 1, num_batches), end='')
         #l.backward()
@@ -578,11 +623,10 @@ def train(q):
         #scheduler.step()
         
         
-
         # get_sbvfs(copy.deepcopy(model), sbvf_generator)
         # return losses, v_work_real, v_disp, v_strain, v_u
         #-----------------------------
-        return losses, l_stress, err_stress, v_work_real, np.mean(g_norm)
+        return losses, l_stress, err_stress, v_work_real, g_norm, alpha, err_h
 
     def test_loop(dataloader, model, loss_fn):
 
@@ -596,6 +640,7 @@ def train(q):
         #n_vfs = v_strain.shape[0]
 
         model.eval()
+        
         with torch.no_grad():
 
             for batch in range(num_batches):
@@ -604,7 +649,7 @@ def train(q):
                 X_test, y_test, f_test, coord, tag, inc = dataloader[batch]
 
                 # Converting to pytorch tensors
-                if dataloader.scaler_x is not None:
+                if dataloader.scaler_x != None:
                     X_test = torch.from_numpy(dataloader.scaler_x.transform(X_test))
                 else:
                     X_test = torch.tensor(X_test, dtype=torch.float64)
@@ -614,46 +659,56 @@ def train(q):
                 coord_torch = torch.from_numpy(coord)
 
                 tags = tag[::n_elems].values.tolist()
-                incs = inc[::n_elems].values.tolist()
+                incs = inc['inc'][::n_elems].values.tolist()
 
                 area = torch.reshape(coord_torch[:,4],[batch_size,1])
 
                 pred = model(X_test)
 
+                #--------------------------------------
+                # s_ = model_2(X_test).detach()
+                # f_ = torch.sum(torch.reshape(s_ * area * ELEM_THICK / LENGTH,[t_pts,n_elems,3]),1)[:,:2]
+                #---------------------------------------------------------------
+
                 #-----------------------------------------------------------------------------------------
                 # Loading sensitivity-based virtual fields
                 tag = tags[0]
-                v_disp = torch.from_numpy(VFs_test[tag]['v_u'])[sbvf_idx]
+                v_disp = torch.from_numpy(VFs_test[tag]['v_u'])
                 n_vfs = v_disp.shape[0]
-                v_strain = torch.from_numpy(VFs_test[tag]['e'])[sbvf_idx]
+                v_strain = torch.from_numpy(VFs_test[tag]['e'])
                 v_strain = torch.reshape(v_strain,(n_vfs,pred.shape[0],pred.shape[1]))
                 #-----------------------------------------------------------------------------------------
 
-                int_work = torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1)
+                int_work = torch.sum(torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
 
-                int_work_real = torch.sum(torch.reshape((y_test * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1)
+                int_work_real = torch.sum(torch.sum(torch.reshape((y_test * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
 
                 f = f_test[:,:2][::n_elems,:]
 
                 ext_work = torch.sum(torch.reshape(f,[t_pts,1,2])*v_disp,-1)
 
+
+                #f_i = torch.sum(torch.reshape((pred * area * ELEM_THICK/LENGTH),[t_pts,n_elems,3]),1)
+                #f_g = f_test[:,:][::n_elems,:]
                 # Computing losses
                 test_loss = loss_fn(int_work, ext_work)
+                #test_loss=mse(f_i,f_g)
+                
                 test_losses[batch] = test_loss
 
-                for i,(n,j) in enumerate(tuple(zip(tags,incs))):
-                    #VFs[n]['u'][j] = v_u[:,i].detach().numpy()
-                    #VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i].detach().numpy()
-                    w_virt[n]['w_int'][j] = torch.sum(torch.sum(int_work[:,i].detach(),-1)).numpy()
-                    w_virt[n]['w_int_real'][j] = torch.sum(torch.sum(int_work_real[:,i].detach(),1)).numpy()
-                    w_virt[n]['w_ext'][j] = torch.sum(torch.sum(ext_work[:,i].detach(),-1)).numpy()
+                # for i,(n,j) in enumerate(tuple(zip(tags,incs))):
+                #     #VFs[n]['u'][j] = v_u[:,i].detach().numpy()
+                #     #VFs[n]['e'][j] = torch.reshape(v_strain,[n_vfs,t_pts,n_elems,3])[:,i].detach().numpy()
+                #     w_virt[n]['w_int'][j] = torch.sum(int_work[:,i].detach()).numpy()
+                #     w_virt[n]['w_int_real'][j] = torch.sum(int_work_real[:,i].detach()).numpy()
+                #     w_virt[n]['w_ext'][j] = torch.sum(ext_work[:,i].detach()).numpy()
 
                 print('\r>Test: %d/%d' % (batch + 1, num_batches), end='')
 
         #get_sbvfs(copy.deepcopy(model), dataloader, isTrain=False)
         return test_losses
 #----------------------------------------------------
-
+    
     # Default floating point precision for pytorch
     torch.set_default_dtype(torch.float64)
 
@@ -734,75 +789,60 @@ def train(q):
 
     # Selecting model features
     X, y, f, coord, info = select_features_multi(data)
-
-
+    
     # Preparing data generators for mini-batch training
-
-    #partition['train'] = data[data['tag']=='m80_b80_x'].index.tolist()
+    #scaler_x = joblib.load('outputs/9-elem-50-plastic_sbvf_abs_direct/models/[6-20x3-3]-9-elem-50-plastic-1163-VFs-scaler_x_all_const.pkl')
     train_generator = DataGenerator(X, y, f, coord, info, partition["train"], batch_size, shuffle=False, std=True, t_pts=T_PTS)
     sbvf_generator = DataGenerator(X, y, f, coord, info, partition["train"], batch_size, shuffle=False, std=True, t_pts=T_PTS)
 
     test_generator = DataGenerator(X, y, f, coord, info, partition['test'], batch_size, shuffle=False, std=False, t_pts=T_PTS, scaler=train_generator.scaler_x)
+   
 
     # Model variables
     N_INPUTS = X.shape[1]
     N_OUTPUTS = y.shape[1]
-
-    N_UNITS = [18,12]
+   
+    N_UNITS = [6,6]
     H_LAYERS = len(N_UNITS)
 
     INCREMENTAL_VFS = False
+    WANDB_LOG = True
 
-    model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
+    model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS, b_norm=False)
     #model_1 = InputConvexNN(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 
+    #model_2 = NeuralNetwork(6, 3, [20,20,20], 3)
+    #model_2.load_state_dict(torch.load('outputs/9-elem-50-plastic_sbvf_abs_direct/models/[6-20x3-3]-9-elem-50-plastic-1163-VFs_all_const.pt'))
+    #model_1.load_state_dict(torch.load('outputs/9-elem-50-plastic_sbvf_abs_direct/models/[6-20x3-3]-9-elem-50-plastic-1163-VFs_all_const.pt'))
     model_1.apply(init_weights)
-
+    # for p in model_1.parameters():
+    #     p.register_hook(lambda grad: torch.clamp(grad, -1.0, 1.0))
     # geotorch.symmetric(model_1.layers[-1], "weight")
 
     # Training variables
-    epochs = 5000
+    epochs=10000
 
     # Optimization variables
-    learning_rate = 0.1
-    lr_mult = 0.5
-    loss_fn = sbvf_loss
+    learning_rate = 0.05
+    lr_mult = 0.9
+
+    params = layer_wise_lr(model_1, lr_mult=lr_mult, learning_rate=learning_rate)
+
+    scale_par=0.5
+    loss_fn = SBVFLoss(scale_par=scale_par,res_scale=False)
+    
     mse = torch.nn.MSELoss()
 
-    # layer_names = []
-    # for n,p in model_1.named_parameters():
-    #     layer_names.append(n)
-
-    # layer_names.reverse()
-
-    # parameters = []
-    # prev_group_name = '.'.join(layer_names[0].split('.')[:2])
-
-    # # store params & learning rates
-    # for idx, name in enumerate(layer_names):
-
-    #     # parameter group name
-    #     cur_group_name = '.'.join(name.split('.')[:2])
-
-    #     # update learning rate
-    #     if cur_group_name != prev_group_name:
-    #         learning_rate *= lr_mult
-    #     prev_group_name = cur_group_name
-
-    #     # display info
-    #     print(f'{idx}: lr = {learning_rate:.6f}, {name}')
-
-    #     # append layer parameters
-    #     parameters += [{'params': [p for n, p in model_1.named_parameters() if n == name and p.requires_grad],
-    #                     'lr':learning_rate}]
-
-    optimizer = torch.optim.Adam(params=model_1.parameters(),lr=learning_rate)
+    weight_decay = 0.001
+    optimizer = torch.optim.AdamW(params=params,lr=learning_rate, weight_decay=weight_decay)
 
     # lr_lambda = lambda x: math.exp(x * math.log(1e-7 / 1.0) / (epochs * len(train_generator)))
     #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, cooldown=20, factor=0.95, min_lr=1e-5)
-    #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=5e-3,max_lr=0.1,mode='exp_range',gamma=0.99994,cycle_momentum=False)
-    constraints=weightConstraint(cond='plastic')
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, cooldown=15, factor=0.95, min_lr=1e-5)
+    
+    #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=1e-3,max_lr=1e-1,mode='exp_range',gamma=0.99994,cycle_momentum=False)
+    
+    #constraints=weightConstraint(cond='plastic')
 
     # Container variables for history purposes
     train_loss = []
@@ -811,6 +851,7 @@ def train(q):
     v_work = []
     val_loss = []
     epochs_ = []
+    err_h_ = []
     # Initializing the early_stopping object
     #early_stopping = EarlyStopping(patience=1000, path='temp/checkpoint.pt', verbose=True)
 
@@ -821,6 +862,22 @@ def train(q):
     w_virt = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['w_int','w_int_real','w_ext']} for key in set(info['tag'])}
 
     k_opt = 0
+
+    PROJECT = 'indirect_training_tests'
+    if WANDB_LOG:
+        config = {
+            "inputs": N_INPUTS,
+            "outputs": N_OUTPUTS,
+            "hidden_layers": H_LAYERS,
+            "hidden_units": "/".join(str(x) for x in N_UNITS),
+            "incremental_vfs": INCREMENTAL_VFS,
+            "epochs": epochs,
+            "lr": learning_rate,
+            "l2_reg": weight_decay,
+            "scale_par": scale_par
+        }
+        wandb.init(project=f'{PROJECT}', entity="rmbl",config=config)
+        wandb.watch(model_1,log='all')
 
     for t in range(epochs):
 
@@ -838,16 +895,14 @@ def train(q):
             print('Computing virtual fields...')
             get_sbvfs(copy.deepcopy(model_1), sbvf_generator)
             get_sbvfs(copy.deepcopy(model_1), test_generator, isTrain=False)
-            vfs =  VFs_train[train_trials[0]]['e'].shape[0]
-            sbvf_idx = random.sample(range(0, vfs), 20)
-            sbvf_idx.sort()
+            
         #--------------------------------------------------------------
 
         # Train loop
         start_train = time.time()
 
         #--------------------------------------------------------------
-        batch_losses, l_stress, err_stress, batch_v_work, grad_norm = train_loop(train_generator, model_1, loss_fn, optimizer)
+        batch_losses, l_stress, err_stress, batch_v_work, grad_norm, alpha, err_h = train_loop(train_generator, model_1, loss_fn, optimizer)
         #--------------------------------------------------------------
 
         q.put((w_virt[train_trials[0]],train_trials[0]))
@@ -856,13 +911,15 @@ def train(q):
         l_stresses.append(torch.mean(l_stress))
         err_stresses.append(torch.mean(err_stress))
         v_work.append(torch.mean(batch_v_work))
+        err_h_.append(torch.mean(err_h))
 
         end_train = time.time()
 
         #Apply learning rate scheduling if defined
         try:
+            pass
             scheduler.step(train_loss[t])
-            print('. t_loss: %.6e -> lr: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], scheduler._last_lr[0], v_work[t], end_train - start_train))
+            print('. t_loss: %.6e -> lr: %.3e // [s_mse] - > %.3e | [v_work] -> %.3e -- %.3fs' % (train_loss[t], scheduler._last_lr[0], err_stresses[t], v_work[t], end_train - start_train))
         except:
             print('. t_loss: %.6e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], v_work[t], end_train - start_train))
 
@@ -889,9 +946,9 @@ def train(q):
 
         if t!= 0:
             tol_updt = (train_loss[0]/1.1**(k_opt))
-            #tol_updt = (1e-1/1.5**k_opt)
+            #tol_updt = (1/1.1**k_opt)
             delta_loss = abs(train_loss[t]-train_loss[t-1])
-            print('\n[%i] -- grad_norm (mean): %.6e | delta_loss: %.6e | tol_updt: %.6e' % (k_opt, grad_norm, delta_loss, tol_updt))
+            print('\n[%i] -- grad_norm (mean): %.6e | delta_loss: %.6e | tol_updt: %.6e' % (k_opt, np.mean(grad_norm), delta_loss, tol_updt))
 
             if (delta_loss < tol_updt):
             #if (t%99==0):
@@ -908,6 +965,25 @@ def train(q):
         # if (t!= 0 and delta_loss < 1e-9) or early_stopping.early_stop:
         #     print("Early stopping")
         #     break
+        vfs = alpha.shape[0]
+        
+        if WANDB_LOG:
+            wandb.log({
+                'epoch': t,
+                'l_rate': scheduler._last_lr[0],
+                'train_loss': train_loss[t],
+                'test_loss': val_loss[t],
+                'mse_stress': err_stresses[t],
+                's(0)_error': l_stresses[t],
+                #'h_error': err_h_[t],
+                'vf_update': k_opt,
+                'alpha_0': alpha[0],
+                'alpha_%i' % (math.floor(vfs/4)): alpha[math.floor(vfs/4)],
+                'alpha_%i' % (math.floor(vfs/2)): alpha[math.floor(vfs/2)],
+                'alpha_%i' % (math.floor(vfs*3/4)): alpha[math.floor(vfs*3/4)],
+                'alpha_%i' % (vfs): alpha[-1]
+            })
+        
 
     q.put('Q')
     print("Done!")
@@ -919,7 +995,10 @@ def train(q):
     train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
     val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
 
-    history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
+    try:
+        history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
+    except:
+        pass
 
 
     task = r'[%i-%ix%i-%i]-%s-%i-VFs' % (N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))

@@ -95,80 +95,80 @@ tags = list(vfs.keys())
 
 cmap = plt.cm.get_cmap('jet')
 
-k=0
-for tag in tags:
-    v_u = torch.from_numpy(vfs[tag]['u'])
-    v_e = torch.from_numpy(vfs[tag]['e'])
+# k=0
+# for tag in tags:
+#     v_u = torch.from_numpy(vfs[tag]['u'])
+#     v_e = torch.from_numpy(vfs[tag]['e'])
 
-    for vf in range(v_u.shape[0]):
-        print('\rProcessing animation %i of %i' % (k+1,len(tags)*len(range(v_u.shape[0]))), end='')
-        #fig, [ax1, ax2] = plt.subplots(1,2)
-        fig = plt.figure()
-        fig.suptitle(tag+'_VFu_'+str(vf))
-        fig.set_size_inches(18, 9, forward=True)
-        fig.subplots_adjust(wspace=0.4)
-        fig.tight_layout()
-        gs = GridSpec(2, 6, figure=fig)
+#     for vf in range(v_u.shape[0]):
+#         print('\rProcessing animation %i of %i' % (k+1,len(tags)*len(range(v_u.shape[0]))), end='')
+#         #fig, [ax1, ax2] = plt.subplots(1,2)
+#         fig = plt.figure()
+#         fig.suptitle(tag+'_VFu_'+str(vf))
+#         fig.set_size_inches(18, 9, forward=True)
+#         fig.subplots_adjust(wspace=0.4)
+#         fig.tight_layout()
+#         gs = GridSpec(2, 6, figure=fig)
 
-        ax1 = fig.add_subplot(gs[0,:3])
-        ax1.set_xlim(0,3)
-        ax1.set_ylim(0,3)
-        ax1.set_xlabel('u*_x')
+#         ax1 = fig.add_subplot(gs[0,:3])
+#         ax1.set_xlim(0,3)
+#         ax1.set_ylim(0,3)
+#         ax1.set_xlabel('u*_x')
 
-        ax2 = fig.add_subplot(gs[0,3:])
-        ax2.set_xlim(0,3)
-        ax2.set_ylim(0,3)
-        ax2.set_xlabel('u*_y')
+#         ax2 = fig.add_subplot(gs[0,3:])
+#         ax2.set_xlim(0,3)
+#         ax2.set_ylim(0,3)
+#         ax2.set_xlabel('u*_y')
 
-        ax4 = fig.add_subplot(gs[1,:2])
-        ax4.set_xlabel('e*_xx')
-        ax5 = fig.add_subplot(gs[1,2:4])
-        ax5.set_xlabel('e*_yy')
-        ax6 = fig.add_subplot(gs[1,4:])
-        ax6.set_xlabel('e*_xy')
+#         ax4 = fig.add_subplot(gs[1,:2])
+#         ax4.set_xlabel('e*_xx')
+#         ax5 = fig.add_subplot(gs[1,2:4])
+#         ax5.set_xlabel('e*_yy')
+#         ax6 = fig.add_subplot(gs[1,4:])
+#         ax6.set_xlabel('e*_xy')
 
-        #cont_x = ax1.contourf(X, Y, torch.reshape(v_u[vf][0][::2],X.shape), 21)
-        cont_x=ax1.imshow(np.zeros_like(X), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
-        # create an axes on the right side of ax. The width of cax will be 5%
-        # of ax and the padding between cax and ax will be fixed at 0.05 inch.
-        divider_x = make_axes_locatable(ax1)
-        cax_x = divider_x.append_axes("right", size="5%", pad=0.05)
-        bar_x = plt.colorbar(cont_x,cax=cax_x,format='%.3e') 
+#         #cont_x = ax1.contourf(X, Y, torch.reshape(v_u[vf][0][::2],X.shape), 21)
+#         cont_x=ax1.imshow(np.zeros_like(X), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
+#         # create an axes on the right side of ax. The width of cax will be 5%
+#         # of ax and the padding between cax and ax will be fixed at 0.05 inch.
+#         divider_x = make_axes_locatable(ax1)
+#         cax_x = divider_x.append_axes("right", size="5%", pad=0.05)
+#         bar_x = plt.colorbar(cont_x,cax=cax_x,format='%.3e') 
        
-        cont_y=ax2.imshow(np.zeros_like(X), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
-        # create an axes on the right side of ax. The width of cax will be 5%
-        # of ax and the padding between cax and ax will be fixed at 0.05 inch.
-        divider_y = make_axes_locatable(ax2)
-        cax_y = divider_y.append_axes("right", size="5%", pad=0.05)
-        bar_y = plt.colorbar(cont_y,cax=cax_y,format='%.3e')        
+#         cont_y=ax2.imshow(np.zeros_like(X), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
+#         # create an axes on the right side of ax. The width of cax will be 5%
+#         # of ax and the padding between cax and ax will be fixed at 0.05 inch.
+#         divider_y = make_axes_locatable(ax2)
+#         cax_y = divider_y.append_axes("right", size="5%", pad=0.05)
+#         bar_y = plt.colorbar(cont_y,cax=cax_y,format='%.3e')        
 
-        cont_exx=ax4.imshow(np.zeros_like(XC), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
-        # create an axes on the right side of ax. The width of cax will be 5%
-        # of ax and the padding between cax and ax will be fixed at 0.05 inch.
-        divider_exx = make_axes_locatable(ax4)
-        cax_exx = divider_exx.append_axes("right", size="5%", pad=0.05)
-        bar_exx = plt.colorbar(cont_exx,cax=cax_exx,format='%.3e')
+#         cont_exx=ax4.imshow(np.zeros_like(XC), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
+#         # create an axes on the right side of ax. The width of cax will be 5%
+#         # of ax and the padding between cax and ax will be fixed at 0.05 inch.
+#         divider_exx = make_axes_locatable(ax4)
+#         cax_exx = divider_exx.append_axes("right", size="5%", pad=0.05)
+#         bar_exx = plt.colorbar(cont_exx,cax=cax_exx,format='%.3e')
 
-        cont_eyy=ax5.imshow(np.zeros_like(XC), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
-        # create an axes on the right side of ax. The width of cax will be 5%
-        # of ax and the padding between cax and ax will be fixed at 0.05 inch.
-        divider_eyy = make_axes_locatable(ax5)
-        cax_eyy = divider_eyy.append_axes("right", size="5%", pad=0.05)
-        bar_eyy = plt.colorbar(cont_eyy,cax=cax_eyy,format='%.3e')
+#         cont_eyy=ax5.imshow(np.zeros_like(XC), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
+#         # create an axes on the right side of ax. The width of cax will be 5%
+#         # of ax and the padding between cax and ax will be fixed at 0.05 inch.
+#         divider_eyy = make_axes_locatable(ax5)
+#         cax_eyy = divider_eyy.append_axes("right", size="5%", pad=0.05)
+#         bar_eyy = plt.colorbar(cont_eyy,cax=cax_eyy,format='%.3e')
 
-        cont_exy=ax6.imshow(np.zeros_like(XC), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
-        # create an axes on the right side of ax. The width of cax will be 5%
-        # of ax and the padding between cax and ax will be fixed at 0.05 inch.
-        divider_exy = make_axes_locatable(ax6)
-        cax_exy = divider_exy.append_axes("right", size="5%", pad=0.05)
-        bar_exy = plt.colorbar(cont_exy,cax=cax_exy,format='%.3e')
+#         cont_exy=ax6.imshow(np.zeros_like(XC), origin='lower', interpolation='bicubic', aspect='equal',extent=[0, 3, 0, 3], cmap=cmap)
+#         # create an axes on the right side of ax. The width of cax will be 5%
+#         # of ax and the padding between cax and ax will be fixed at 0.05 inch.
+#         divider_exy = make_axes_locatable(ax6)
+#         cax_exy = divider_exy.append_axes("right", size="5%", pad=0.05)
+#         bar_exy = plt.colorbar(cont_exy,cax=cax_exy,format='%.3e')
         
-        contours = [cont_x, cont_y, cont_exx, cont_eyy, cont_exy]
+#         contours = [cont_x, cont_y, cont_exx, cont_eyy, cont_exy]
 
-        anim = animation.FuncAnimation(fig, animate,frames=v_u.shape[1], repeat=False)
-        anim.save('anim_%s_vf_%i.gif'%(tag,vf), writer=animation.PillowWriter(fps=1))
-        plt.close(fig)
-        k+=1
+#         anim = animation.FuncAnimation(fig, animate,frames=v_u.shape[1], repeat=False)
+#         anim.save('anim_%s_vf_%i.gif'%(tag,vf), writer=animation.PillowWriter(fps=1))
+#         plt.close(fig)
+#         k+=1
         
 tags = list(w_virt.keys())
 for i,tag in enumerate(tags):

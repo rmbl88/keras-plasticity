@@ -1,4 +1,6 @@
 from readline import parse_and_bind
+from scipy.signal import savgol_filter
+from scipy.signal import find_peaks
 from turtle import forward
 from sklearn import preprocessing
 import pandas as pd
@@ -21,10 +23,84 @@ from torch.nn.utils import (
 )
 from torch.autograd import Function
 import geotorch
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 # -------------------------------
 #        Class definitions
 # -------------------------------
+def draw_graph(start, watch=[]):
+    from graphviz import Digraph
+
+    node_attr = dict(style='filled',
+                     shape='box',
+                     align='left',
+                     fontsize='12',
+                     ranksep='0.1',
+                     height='0.2')
+    graph = Digraph(node_attr=node_attr, graph_attr=dict(size="12,12"))
+
+    assert(hasattr(start, "grad_fn"))
+    if start.grad_fn is not None:
+        _draw_graph(start.grad_fn, graph, watch=watch)
+
+    size_per_element = 0.15
+    min_size = 12
+
+    # Get the approximate number of nodes and edges
+    num_rows = len(graph.body)
+    content_size = num_rows * size_per_element
+    size = max(min_size, content_size)
+    size_str = str(size) + "," + str(size)
+    graph.graph_attr.update(size=size_str)
+    graph.render(filename='net_graph.jpg')
+
+
+def _draw_graph(var, graph, watch=[], seen=[], indent="", pobj=None):
+    ''' recursive function going through the hierarchical graph printing off
+    what we need to see what autograd is doing.'''
+    from rich import print
+    
+    if hasattr(var, "next_functions"):
+        for fun in var.next_functions:
+            joy = fun[0]
+            if joy is not None:
+                if joy not in seen:
+                    label = str(type(joy)).replace(
+                        "class", "").replace("'", "").replace(" ", "")
+                    label_graph = label
+                    colour_graph = ""
+                    seen.append(joy)
+
+                    if hasattr(joy, 'variable'):
+                        happy = joy.variable
+                        if happy.is_leaf:
+                            label += " \U0001F343"
+                            colour_graph = "green"
+
+                            for (name, obj) in watch:
+                                if obj is happy:
+                                    label += " \U000023E9 " + \
+                                        "[b][u][color=#FF00FF]" + name + \
+                                        "[/color][/u][/b]"
+                                    label_graph += name
+                                    
+                                    colour_graph = "blue"
+                                    break
+
+                            vv = [str(obj.shape[x])
+                                  for x in range(len(obj.shape))]
+                            label += " [["
+                            label += ', '.join(vv)
+                            label += "]]"
+                            label += " " + str(happy.var())
+
+                    graph.node(str(joy), label_graph, fillcolor=colour_graph)
+                    print(indent + label)
+                    _draw_graph(joy, graph, watch, seen, indent + ".", joy)
+                    if pobj is not None:
+                        graph.edge(str(pobj), str(joy))
+
 class weightConstraint(object):
     def __init__(self, cond='plastic'):
         self.cond = cond
@@ -35,7 +111,7 @@ class weightConstraint(object):
             if (self.cond == 'plastic'):
                
                 w=module.weight.data
-                w=w.clamp(0.0)
+                w=w.clamp(-5.0,5.0)
                 module.weight.data=w 
 
             else:
@@ -216,16 +292,19 @@ class InputConvexNN(nn.Module):
         return self.layers[-1](xx)
 
 class NeuralNetwork(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1):
+    def __init__(self, input_size, output_size, hidden_size, n_hidden_layers=1,b_norm=False):
         super(NeuralNetwork, self).__init__()
         self.input_size = input_size
         self.hidden_size  = hidden_size
         self.n_hidden_layers = n_hidden_layers
         self.output_size = output_size
 
+        self.b_norm = b_norm
+
         self.layers = nn.ModuleList()
         self.activations = nn.ModuleList()
-        self.b_norms = nn.ModuleList()
+        if self.b_norm:
+            self.b_norms = nn.ModuleList()
         #self.parametrizations = nn.ModuleList()
         #self.drop = nn.Dropout(0.05)
 
@@ -242,10 +321,12 @@ class NeuralNetwork(nn.Module):
                     in_ = self.hidden_size[i-1]
                     out_= self.hidden_size[i]
 
+                if self.b_norm:    
+                    self.b_norms.append(torch.nn.BatchNorm1d(out_,eps=0.1))
+                
                 self.layers.append(torch.nn.Linear(in_, out_, bias=True))
-                self.b_norms.append(torch.nn.BatchNorm1d(out_))
-                self.activations.append(torch.nn.Softplus())
-
+                self.activations.append(torch.nn.ELU())
+                
             self.layers.append(torch.nn.Linear(self.hidden_size[-1], self.output_size, bias=True))
 
     def forward(self, x):
@@ -257,8 +338,10 @@ class NeuralNetwork(nn.Module):
         else:
             for i,layer in enumerate(self.layers[:-1]):
                 
-                x = self.activations[i](self.b_norms[i](layer(x)))
-                #x = self.activations[i](layer(x))
+                if self.b_norm:
+                    x = self.activations[i](self.b_norms[i](layer(x)))
+                else:
+                    x = self.activations[i](layer(x)*1)
             
             return self.layers[-1](x)
 
@@ -347,18 +430,112 @@ class Element():
         b_el[2,y_dof] += dN_x_y[0,:]
 
         return b_el
+
+class SBVFLoss(nn.Module):
+
+    def __init__(self, scale_par=0.3, res_scale=False):
+        super(SBVFLoss, self).__init__()
+        self.scale_par = scale_par
+        self.res_scale = res_scale
+    
+    def forward(self, wi, we):
+
+        res = wi - we
+
+        if self.res_scale:
+            ivw_sort = torch.sort(torch.abs(res.detach()),1,descending=True).values
+            #ivw_sort = torch.max(torch.abs(res.detach()),1).values
+        else:
+            ivw_sort = torch.sort(torch.abs(wi.detach()),1,descending=True).values
+            #ivw_sort = torch.max(torch.abs(we.detach()),1).values
+        
+        numSteps = math.floor(self.scale_par * wi.shape[1])
+
+        if numSteps == 0:
+            numSteps = 1
+
+        alpha = (1/torch.mean(ivw_sort[:,0:numSteps],1))
+        #alpha = (1/ivw_sort)
+       
+        return torch.sum(torch.square(alpha)*torch.sum(torch.square(res),1))
+        #return torch.sum(0.5*torch.square(alpha)*torch.mean(torch.square(res),1))
         
 
 # -------------------------------
 #       Method definitions
 # ------------------------------
+def layer_wise_lr(model, lr_mult=0.99, learning_rate=0.1):
+    layer_names = []
+    for n,p in model.named_parameters():
+        if 'b_norms' not in n:
+            layer_names.append(n)
+
+    layer_names.reverse()
+
+    parameters = []
+    prev_group_name = '.'.join(layer_names[0].split('.')[:2])
+
+    # store params & learning rates
+    for idx, name in enumerate(layer_names):
+
+        # parameter group name
+        cur_group_name = '.'.join(name.split('.')[:2])
+
+        # update learning rate
+        if cur_group_name != prev_group_name:
+            learning_rate *= lr_mult
+        prev_group_name = cur_group_name
+
+        # display info
+        print(f'{idx}: lr = {learning_rate:.6f}, {name}')
+
+        # append layer parameters
+        parameters += [{'params': [p for n, p in model.named_parameters() if n == name and p.requires_grad],
+                        'lr':learning_rate}]
+    
+    return parameters
+
+
+@torch.no_grad()
+def plot_grad_flow(named_params, path):
+
+    avg_grads, max_grads, layers = [], [], []
+    plt.figure(figsize = ((10,20)))
+    
+    for n, p in named_params:
+        
+        if (p.requires_grad) and ('bias' not in n):
+            
+            layers.append(n)
+            avg_grads.append(p.grad.abs().mean())
+            max_grads.append(p.grad.abs().max())
+        
+    plt.bar(np.arange(len(max_grads)), max_grads, alpha = 0.1, lw = 1, color = 'c')
+    plt.bar(np.arange(len(max_grads)), avg_grads, alpha = 0.1, lw = 1, color = 'b')
+    plt.hlines(0, 0, len(avg_grads) + 1, lw = 2, color = 'k')
+    plt.xticks(range(0, len(avg_grads), 1), layers, rotation = 'vertical')
+    plt.xlim(left = 0, right = len(avg_grads))
+    plt.ylim(bottom = -0.001, top = 0.02) #Zoom into the lower gradient regions
+    plt.xlabel('Layers')
+    plt.ylabel('Average Gradients')
+    plt.title('Gradient Flow')
+    plt.grid(True)
+    plt.legend([
+        Line2D([0], [0], color = 'c', lw = 4),
+        Line2D([0], [0], color = 'b', lw = 4),
+        Line2D([0], [0], color = 'k', lw = 4),
+        ],
+        ['max-gradient', 'mean-gradient','zero-gradient'])
+    
+    plt.savefig(path)
+    plt.close()
 
 def param_deltas(model):
     
     #n_layers = len(model.layers)
     
     #exceptions = [k for k, v in model.state_dict().items() if ('layers.%i' % (n_layers-1) in k and n_layers > 2) or 'activations' in k or 'b_norms' in k]
-    exceptions = [k for k, v in model.state_dict().items() if 'activations' in k or 'b_norms' in k or 'parametrizations'in k or 'passthrough' in k]
+    exceptions = [k for k, v in model.state_dict().items() if 'activations' in k or 'b_norms' in k or 'parametrizations'in k or 'passthrough' in k or 'bias' in k]
     
     total_params = sum(p.numel() for k, p in model.state_dict().items() if k not in exceptions)
     
@@ -490,10 +667,10 @@ def prescribe_u(u, bcs):
 
 def sbvf_loss(int_work, ext_work):
 
-    vw = torch.sum(int_work.detach(),-1)
+    vw = torch.abs(int_work.detach())
    
     #ivw_sort = torch.sort(torch.abs(vw.flatten()),descending=True).values
-    ivw_sort = torch.sort(torch.abs(vw),-1,descending=True).values
+    ivw_sort = torch.sort(vw,1,descending=True).values
     
     #numSteps = math.floor(0.3*len(vw.flatten()))
     numSteps = math.floor(0.3*int_work.shape[1])
@@ -501,7 +678,7 @@ def sbvf_loss(int_work, ext_work):
     alpha = (1/torch.mean(ivw_sort[:,0:numSteps],1))
     #alpha = (1/torch.mean(ivw_sort[0:numSteps])) * torch.ones(int_work.shape[0])
 
-    return torch.sum(torch.square(alpha)*torch.sum(torch.square(torch.sum(int_work,-1)-torch.squeeze(ext_work)),1))
+    return torch.sum(torch.square(alpha)*torch.sum(torch.square(int_work-ext_work),1))
     
 def custom_loss(int_work, ext_work):
     
@@ -604,16 +781,17 @@ def standardize_data(X, y, f, scaler_x = None, scaler_y = None, scaler_f = None)
 def select_features_multi(df):
 
     #X = df[sum([['exx_t%i'% (i),'eyy_t%i'% (i),'exy_t%i'% (i)] for i in range(LOOK_BACK,0,-1)],[])]
-    X = df[['exx_t', 'exx_t1', 'exx_t2', 'eyy_t', 'eyy_t1', 'eyy_t2', 'exy_t', 'exy_t1', 'exy_t2']]
+    #X = df[['exx_t', 'exx_t1', 'eyy_t', 'eyy_t1', 'exy_t', 'exy_t1']]
     #X = df[['exx_dt', 'eyy_dt', 'exy_dt','exx_t', 'eyy_t', 'exy_t']]
-    #X = df[['exx_t', 'eyy_t', 'exy_t']]
+    X = df[['exx_t', 'eyy_t', 'exy_t']]
     y = df[['sxx_t','syy_t','sxy_t']]
     f = df[['fxx_t','fyy_t','fxy_t']]
     #y = df[['sxx_t','syy_t','sxy_t']]
     #f = df[['fxx_t', 'fyy_t', 'fxy_t']]
     
     coord = df[['dir','id', 'cent_x', 'cent_y','area']]
-    info = df[['tag','inc']]
+    #info = df[['tag','inc','t','exx_p_dot','eyy_p_dot','exy_p_dot']]
+    info = df[['tag','inc','t']]
     return X, y, f, coord, info
 
 def drop_features(df, drop_list):
@@ -632,18 +810,65 @@ def add_past_step(var_list, lookback, df):
             t_past = df[vars].values[:-(i+1)]
             zeros = np.zeros((i+1,len(vars)))
             t_past = np.vstack([zeros, t_past])
-            dt = (t-t_past)
-            # if 'exx_t' in vars:
-            #     dt = dt/np.reshape(np.linalg.norm(dt,axis=1),(t.shape[0],1))
-            #     dt[np.isnan(dt)] = 0.0
                 
             past_vars = [s.replace('_t','_t'+str(i+1)) for s in vars]
-            d_vars = [s.replace('_t','_dt') for s in vars]
             t_past = pd.DataFrame(t_past, columns=past_vars)
-            dt = pd.DataFrame(dt, columns=d_vars)
 
-            new_df = pd.concat([new_df, t_past, dt], axis=1)
-            #new_df = pd.concat([new_df, t_past], axis=1)
+            new_df = pd.concat([new_df, t_past], axis=1)
+
+    return new_df
+
+def get_yield(e):
+        
+    window = 7
+    der2 = savgol_filter(e, window_length=window, polyorder=4, deriv=4)
+    peaks, _ = find_peaks(np.abs(der2),prominence=np.percentile(np.abs(der2),50))       
+    max_der2 = np.max(np.abs(der2[peaks]))
+    #max_der2 = np.max(np.abs(der2))
+    large = np.where(np.abs(der2) == max_der2)[0]
+    gaps = np.diff(large) > window
+    begins = np.insert(large[1:][gaps], 0, large[0])
+    ends = np.append(large[:-1][gaps], large[-1])
+    yield_pt = ((begins+ends)/2).astype(np.int)
+    # plt.plot(der2)
+    # plt.plot(peaks,der2[peaks],'og')
+    # plt.show()
+    
+    return yield_pt
+
+def add_strain_decomp(var_list, df):
+
+    new_df = copy.deepcopy(df)
+    eps_vars = ['exx_e','eyy_e','exy_e','exx_p','eyy_p','exy_p','pxx','pyy','pxy','exx_dot','eyy_dot','exy_dot','pxx_dot','pyy_dot','pxy_dot','exx_p_dot','eyy_p_dot','exy_p_dot']
+
+    e = df[var_list[0]].values
+    t = np.reshape(df['t'].values,(len(df),1))
+
+    yield_pt = get_yield(e[:,0])[0]
+    # plt.plot(e[:,0],df['sxx_t'])
+    # plt.plot(e[:,0][yield_pt],df['sxx_t'][yield_pt],'or')
+    # plt.title(list(set(df['tag'])))
+    # plt.show()
+    # for i in range(e.shape[-1]):
+    #     pt = get_yield(e[:,i])
+    #     plt.plot(e[:,i])
+    #     plt.plot(pt, e[:,i][pt], 'ro')
+    #     plt.show()
+
+    e_e = np.zeros_like(e)
+    e_e[:yield_pt,:] = e[:yield_pt,:]
+    e_p = e - e_e
+    p = np.cumsum(e_p,axis=0)
+    e_dot = np.diff(e,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
+    p_dot = np.diff(p,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
+    e_p_dot = np.diff(e_p,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
+
+    e_dot = np.vstack((np.array([0,0,0]),e_dot))
+    p_dot = np.vstack((np.array([0,0,0]),p_dot))
+    e_p_dot = np.vstack((np.array([0,0,0]),e_p_dot))
+
+    eps = pd.DataFrame(np.concatenate([e_e,e_p,p,e_dot,p_dot,e_p_dot],1),columns=eps_vars)
+    new_df = pd.concat([new_df,eps],axis=1)
 
     return new_df
 
@@ -677,7 +902,8 @@ def to_sequences(dataset, vars, seq_size=1):
 
 def pre_process(df_list):
 
-    var_list = [['sxx_t','syy_t','sxy_t'],['exx_t','eyy_t','exy_t'],['fxx_t','fyy_t','fxy_t']]
+    var_list = [['exx_t','eyy_t','exy_t']]
+    #var_list = [['sxx_t','syy_t','sxy_t'],['exx_t','eyy_t','exy_t'],['fxx_t','fyy_t','fxy_t']]
     #lookback = 1
     
     new_dfs = []
@@ -693,6 +919,7 @@ def pre_process(df_list):
         for i, df in enumerate(tqdm(new_dfs, desc='Loading and processing data',bar_format=FORMAT_PBAR)):
 
             new_dfs[i] = add_past_step(var_list, LOOK_BACK, df)
+            #new_dfs[i] = add_strain_decomp(var_list, new_dfs[i])
             #new_dfs[i] = to_sequences(df, var_list, LOOK_BACK)
 
     return new_dfs
