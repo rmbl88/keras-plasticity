@@ -12,6 +12,7 @@ from sklearn import model_selection
 from constants import *
 from functions import (
     InputConvexNN,
+    layer_wise_lr,
     sbvf_loss,
     load_dataframes,
     prescribe_u,
@@ -74,7 +75,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.f = force.iloc[list_IDs].reset_index(drop=True)
         self.coord = coord[['dir','id','cent_x','cent_y','area']].iloc[list_IDs].reset_index(drop=True)
         self.tag = info['tag'].iloc[list_IDs].reset_index(drop=True)
-        self.t = info['inc'].iloc[list_IDs].reset_index(drop=True)
+        self.t = info[['inc','t','d_exx','d_eyy','d_exy']].iloc[list_IDs].reset_index(drop=True)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.list_IDs = list_IDs
@@ -117,6 +118,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.X, _, _, self.scaler_x, _, _ = standardize_data(self.X, self.y, self.f)
 
         self.X = pd.DataFrame(self.X, index=idx)
+        #self.y = pd.DataFrame(self.y, index=idx)
 
     def __data_generation(self, list_IDs_temp):
         'Generates data containing batch_size samples'
@@ -306,7 +308,8 @@ def train(q):
 
         l0_loss = torch.zeros_like(losses) 
         l1_loss = torch.zeros_like(losses)
-        lw_loss = torch.zeros_like(losses) 
+        wp_loss = torch.zeros_like(losses)
+        ch_loss = torch.zeros_like(losses)
 
         t_pts = dataloader.t_pts
         n_elems = batch_size // t_pts
@@ -316,55 +319,75 @@ def train(q):
         for batch in range(num_batches):
 
             # Extracting variables for training
-            X_train, y_train, _, _, _, _ = dataloader[batch]
+            X_train, y_train, _, _, _, inc = dataloader[batch]
 
             # Converting to pytorch tensors
             X_train = torch.from_numpy(X_train)
             y_train = torch.from_numpy(y_train)
+            d_e = torch.reshape(torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values),[t_pts,n_elems,3,1])
+
+            #d_e = torch.reshape(torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values),[t_pts,n_elems,3,1])
             
             # Computing model stress prediction
             pred=model(X_train)
+
+            l = torch.reshape(pred,[t_pts,n_elems,6])
+
+            # Cholesky decomposition
+            L = torch.zeros([t_pts, n_elems, 3, 3])
+            tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+            L[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
+            # Tangent matrix
+            H = L @torch.transpose(L,2,3)
+
+            # Stress increment
+            d_s = (H @ d_e).squeeze()
+            s = torch.cumsum(d_s,0).reshape([-1,3])
+
+            # s_ = copy.deepcopy(s.detach())
+            # # Equivalent stress
+            # mises = torch.sqrt(torch.square(s_[:,0]) - s_[:,0]*s_[:,1] + torch.square(s_[:,1]) + 3 * torch.square(s_[:,-1]))
+            # # Yield transition
+            # yield_transition = torch.sigmoid((torch.square(mises)-160**2))
             
-            s_0 = pred[:9,:]
+            # yield_pt = torch.nonzero(yield_transition)
+
+            # if yield_pt.shape[0] != 0:
+            #     yield_pt = yield_pt[0]
+            
+            #     d_e_p = torch.zeros_like(s)
+            #     d_e_p[yield_pt:,:] = d_e.squeeze().reshape([-1,3])[yield_pt:,:]
+            
+            #     # Plastic power
+            #     w_p = torch.sum(s * d_e_p,-1)
+            
+            # else:
+            #     w_p = torch.tensor(0.0)
+
+            # l_wp = torch.mean(torch.nn.functional.relu(-w_p))
+
+            
+            # Stress at t=0
+            s_0 = s[:9,:]
             l_0 = torch.mean(torch.square(s_0))
-
             
-            # # Specify L1 and L2 weights
-            # l1_weight = 0.5
-            # l2_weight = 0.5
-            # parameters = []
-            # for parameter in model.named_parameters():
-            #     if 'weight' in parameter[0]:
-            #         parameters.append(parameter[1].view(-1))
-            # # l1 = l1_weight * torch.abs(torch.cat(parameters)).sum()
-            # l2 = l2_weight * torch.square(torch.cat(parameters)).sum()
+            l_1 = torch.mean(torch.nn.functional.relu(-(d_e.transpose(2,3) @ H @ d_e)))
 
-            # l_jac_weight = 0.5
-            #jac = batch_jacobian(model,X_train)[:,:,-3:][0]
-            #l_jac = torch.sum(torch.nn.functional.relu(-jac))
+            l_cholesky = torch.mean(nn.functional.relu(-torch.diagonal(L, offset=0, dim1=2, dim2=3)))
 
-            # # Monotonic stress
-            # dw = torch.zeros_like(int_work)
-            # dw[:,1:] = torch.abs(dw[:,:-1]) - torch.abs(dw[:,1:])
-            # lw_2 = lambda_*torch.mean(torch.nn.functional.relu(dw))
-            e = dataloader.scaler_x.inverse_transform(X_train)
-            e = torch.reshape(torch.from_numpy(e[:,::2]),[t_pts,n_elems,3])
-            de = torch.reshape(torch.diff(e,dim=0),[-1,3])
-            ds = torch.reshape(torch.diff(torch.reshape(pred,[t_pts,n_elems,3]),dim=0),[-1,3])
-
-            l_1 = torch.mean(torch.nn.functional.relu(-(ds[:,0]*de[:,0]))) + torch.mean(torch.nn.functional.relu(-(ds[:,1]*de[:,1]))) + torch.mean(torch.nn.functional.relu(-(ds[:,1]*de[:,1])))
-
-            e_p = copy.deepcopy(e)
-            e_p[:,:,0:2] -= ((1/3)*torch.sum(e[:,:,0:2],-1,keepdim=True))
-            d_ep_dt = torch.cat([torch.zeros(1,n_elems,3),torch.diff(e_p,dim=0)/0.02])
+            # e_p = copy.deepcopy(e)
+            # e_p[:,:,0:2] -= ((1/3)*torch.sum(e[:,:,0:2],-1,keepdim=True))
+            # d_ep_dt = torch.cat([torch.zeros(1,n_elems,3),torch.diff(e_p,dim=0)/0.02])
             
-            w_ep = torch.sum(torch.reshape(pred,[t_pts,n_elems,3]) * d_ep_dt,-1)
+            # w_ep = torch.sum(torch.reshape(pred,[t_pts,n_elems,3]) * d_ep_dt,-1)
 
-            l_w = torch.mean(torch.nn.functional.relu(-w_ep))
+            # l_w = torch.mean(torch.nn.functional.relu(-w_ep))
             m = torch.max(torch.abs(pred.detach()),dim=0).values
             m_= torch.max(torch.abs(y_train),dim=0).values
             # # Computing loss
-            loss = 0.85*(loss_fn(pred[:,0], y_train[:,0]) + loss_fn(pred[:,1], y_train[:,1]) + loss_fn(pred[:,2], y_train[:,2])) + 0.01*l_0 + 0.05*l_1 + 0.09*l_w
+            
+            
+            loss = (loss_fn(s[:,0], y_train[:,0]) + loss_fn(s[:,1], y_train[:,1]) + loss_fn(s[:,2], y_train[:,2])) + l_1 + 500*l_cholesky
            
 
             # Backpropagation and weight's update
@@ -373,17 +396,19 @@ def train(q):
             # # Gradient clipping - as in https://github.com/pseeth/autoclip
             # g_norm.append(get_grad_norm(model))
             # clip_value = np.percentile(g_norm, 25)
-            # nn.utils.clip_grad_norm_(model.parameters(), max_norm=clip_value)
+            #nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
 
             optimizer.step()
-            #scheduler.step()
+            scheduler.step()
             #model.apply(constraints)
 
             # Saving loss values
             losses[batch] = loss.detach().item()
             l0_loss[batch] = l_0.detach().item()
             l1_loss[batch] = l_1.detach().item()
-            lw_loss[batch] = l_w.detach().item()
+            ch_loss[batch] = l_cholesky.detach().item()
+            wp_loss[batch] = 0
+            
 
             g_norm.append(get_grad_norm(model))
             #l += loss
@@ -397,7 +422,7 @@ def train(q):
         # get_sbvfs(copy.deepcopy(model), sbvf_generator)
         # return losses, v_work_real, v_disp, v_strain, v_u
         #-----------------------------
-        return losses, np.mean(g_norm), l0_loss, l1_loss, lw_loss
+        return losses, np.mean(g_norm), l0_loss, l1_loss, ch_loss, wp_loss
 
     def test_loop(dataloader, model, loss_fn):
 
@@ -407,14 +432,15 @@ def train(q):
         test_losses = torch.zeros(num_batches)
 
         #n_vfs = v_strain.shape[0]
-
+        t_pts = dataloader.t_pts
+        n_elems = batch_size // t_pts
         model.eval()
         with torch.no_grad():
 
             for batch in range(num_batches):
 
                 # Extracting variables for testing
-                X_test, y_test, _, _, _, _ = dataloader[batch]
+                X_test, y_test, _, _, _, inc = dataloader[batch]
 
                 # Converting to pytorch tensors
                 if dataloader.scaler_x is not None:
@@ -424,12 +450,23 @@ def train(q):
 
                 y_test = torch.from_numpy(y_test)
 
-                pred = model(X_test)
+                d_e = torch.reshape(torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values),[t_pts,n_elems,3,1])
 
-                m = torch.max(torch.abs(pred.detach()),dim=0).values
-                m_= torch.max(torch.abs(y_test),dim=0).values
+                pred = model(X_test)
+                
+                l = torch.reshape(pred,[t_pts,n_elems,6])
+
+                L = torch.zeros([t_pts, n_elems, 3, 3])
+                tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+                L[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
+                H = L @torch.transpose(L,2,3)
+
+                d_s = (H @ d_e).squeeze()
+                s = torch.cumsum(d_s,0).reshape([-1,3])
+
                 # Computing losses
-                test_loss = loss_fn(pred[:,0], y_test[:,0]) + loss_fn(pred[:,1], y_test[:,1]) + loss_fn(pred[:,2], y_test[:,2])
+                test_loss = loss_fn(s[:,0], y_test[:,0]) + loss_fn(s[:,1], y_test[:,1]) + loss_fn(s[:,2], y_test[:,2])
+                
                 test_losses[batch] = test_loss
                
 
@@ -492,57 +529,42 @@ def train(q):
 
     # Model variables
     N_INPUTS = X.shape[1]
-    N_OUTPUTS = y.shape[1]
+    N_OUTPUTS = y.shape[1] + 3
 
-    N_UNITS = [20,20,20]
+    N_UNITS = [12,12,12]
     H_LAYERS = len(N_UNITS)
+
+    WANDB_LOG = True
 
     model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 
     model_1.apply(init_weights)
 
+    # clip_value = 100
+    # for p in model_1.parameters():
+    #     p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))
+
     # Training variables
-    epochs = 5000
+    epochs = 10000
 
     # Optimization variables
-    learning_rate = 0.01
-    lr_mult = 0.5
+    # Optimization variables
+    learning_rate = 0.002
+    lr_mult = 1.0
+
+    params = layer_wise_lr(model_1, lr_mult=lr_mult, learning_rate=learning_rate)
+
     loss_fn = torch.nn.MSELoss()
 
-    # layer_names = []
-    # for n,p in model_1.named_parameters():
-    #     layer_names.append(n)
+    
+    weight_decay=0.002
 
-    # layer_names.reverse()
-
-    # parameters = []
-    # prev_group_name = '.'.join(layer_names[0].split('.')[:2])
-
-    # # store params & learning rates
-    # for idx, name in enumerate(layer_names):
-
-    #     # parameter group name
-    #     cur_group_name = '.'.join(name.split('.')[:2])
-
-    #     # update learning rate
-    #     if cur_group_name != prev_group_name:
-    #         learning_rate *= lr_mult
-    #     prev_group_name = cur_group_name
-
-    #     # display info
-    #     print(f'{idx}: lr = {learning_rate:.6f}, {name}')
-
-    #     # append layer parameters
-    #     parameters += [{'params': [p for n, p in model_1.named_parameters() if n == name and p.requires_grad],
-    #                     'lr':learning_rate}]
-    weight_decay=0.01
-    optimizer = torch.optim.AdamW(params=model_1.parameters(),lr=learning_rate, weight_decay=weight_decay)
-
-    # lr_lambda = lambda x: math.exp(x * math.log(1e-7 / 1.0) / (epochs * len(train_generator)))
-    #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10, cooldown=8, factor=0.85, min_lr=1e-5)
-    #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=5e-3,max_lr=0.1,mode='exp_range',gamma=0.99994,cycle_momentum=False)
+    optimizer = torch.optim.AdamW(params=params, weight_decay=weight_decay)
+    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=15, factor=0.65, min_lr=[params[i]['lr']*0.002 for i in range(len(params))])
+    #[params[i]['lr']*0.025 for i in range(len(params))]
+    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=0.002, max_lr=0.007, mode='exp_range',gamma=0.99994,cycle_momentum=False,step_size_up=len(train_generator)*20,step_size_down=len(train_generator)*200)
     #constraints=weightConstraint(cond='plastic')
+
 
     # Container variables for history purposes
     train_loss = []
@@ -552,22 +574,25 @@ def train(q):
 
     l0_loss = []
     l1_loss = []
-    lw_loss = []
+    ch_loss = []
+    wp_loss = []
+    # j2_loss = []
 
     # Initializing the early_stopping object
     early_stopping = EarlyStopping(patience=500, path='temp/checkpoint.pt', verbose=True)
 
-    config = {
-        "inputs": N_INPUTS,
-        "outputs": N_OUTPUTS,
-        "hidden_layers": H_LAYERS,
-        "hidden_units": "/".join(str(x) for x in N_UNITS),        
-        "epochs": epochs,
-        "lr": learning_rate,
-        "l2_reg": weight_decay
-    }
-    wandb.init(project="direct_training", entity="rmbl",config=config)
-    wandb.watch(model_1,log='all')
+    if WANDB_LOG:
+        config = {
+            "inputs": N_INPUTS,
+            "outputs": N_OUTPUTS,
+            "hidden_layers": H_LAYERS,
+            "hidden_units": "/".join(str(x) for x in N_UNITS),        
+            "epochs": epochs,
+            "lr": learning_rate,
+            "l2_reg": weight_decay
+        }
+        run=wandb.init(project="direct_training", entity="rmbl",config=config)
+        wandb.watch(model_1,log='all')
 
     for t in range(epochs):
 
@@ -583,20 +608,22 @@ def train(q):
         start_train = time.time()
 
         #--------------------------------------------------------------
-        batch_losses, grad_norm, l_0, l_1, l_w = train_loop(train_generator, model_1, loss_fn, optimizer)
+        batch_losses, grad_norm, l_0, l_1, l_ch, l_wp = train_loop(train_generator, model_1, loss_fn, optimizer)
         #--------------------------------------------------------------
 
         train_loss.append(torch.mean(batch_losses))
         l0_loss.append(torch.mean(l_0))
         l1_loss.append(torch.mean(l_1))
-        lw_loss.append(torch.mean(l_w))
+        ch_loss.append(torch.mean(l_ch))
+        wp_loss.append(torch.mean(l_wp))
+        
         
         end_train = time.time()
 
         #Apply learning rate scheduling if defined
         try:
-            scheduler.step(train_loss[t])
-            print('. t_loss: %.6e -> lr: %.4e | l0: %.4e | l1: %.4f | lw: %.4f -- %.3fs' % (train_loss[t], scheduler._last_lr[0], l0_loss[t], l1_loss[t], lw_loss[t], end_train - start_train))
+            #scheduler.step(train_loss[t])
+            print('. t_loss: %.6e -> lr: %.4e | l0: %.4e | l1: %.4f | lw: %.4f -- %.3fs' % (train_loss[t], scheduler._last_lr[0], l0_loss[t], l1_loss[t], ch_loss[t], end_train - start_train))
         except:
             print('. t_loss: %.6e -- %.3fs' % (train_loss[t], v_work[t], end_train - start_train))
 
@@ -620,15 +647,18 @@ def train(q):
             
             early_stopping(val_loss[t], model_1)
 
-        wandb.log({
-            'epoch': t,
-            'l_rate': scheduler._last_lr[0],
-            'train_loss': train_loss[t],
-            'test_loss': val_loss[t],
-            's(0)_error': l0_loss[t],
-            'drucker_error': l1_loss[t],
-            'plastic_power_error': lw_loss[t]
-        })
+        if WANDB_LOG:
+            wandb.log({
+                'epoch': t,
+                'l_rate': scheduler._last_lr[0],
+                'train_loss': train_loss[t],
+                'test_loss': val_loss[t],
+                's(0)_error': l0_loss[t],
+                'drucker_error': l1_loss[t],
+                'cholesky_error': ch_loss[t],
+                'plastic_power': wp_loss[t],
+                #'j2_error': j2_loss[t]
+            })
 
 
         if  early_stopping.early_stop:
@@ -649,7 +679,7 @@ def train(q):
     history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
 
 
-    task = r'[%i-%ix%i-%i]-%s-%i-VFs' % (N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
+    task = r'%s-[%i-%ix%i-%i]-%s-%i-VFs' % (run.name,N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
 
     output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct'
     output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct/loss/'
@@ -676,6 +706,21 @@ def train(q):
     #joblib.dump([VFs, W_virt], 'sbvfs.pkl')
     if train_generator.std == True:
         joblib.dump(train_generator.scaler_x, output_models + task + '-scaler_x.pkl')
+
+    if WANDB_LOG:
+        # 3️⃣ At the end of training, save the model artifact
+        # Name this artifact after the current run
+        task_ = r'__%i-%ix%i-%i__%s-direct' % (N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2])
+        model_artifact_name = run.id + '_' + run.name + task_
+        # Create a new artifact, which is a sample dataset
+        model = wandb.Artifact(model_artifact_name, type='model')
+        # Add files to the artifact, in this case a simple text file
+        model.add_file(local_path=output_models + task + '.pt')
+        model.add_file(output_models + task + '-scaler_x.pkl')
+        # Log the model to W&B
+        run.log_artifact(model)
+        # Call finish if you're in a notebook, to mark the run as done
+        run.finish()
 
 # -------------------------------
 #           Main script

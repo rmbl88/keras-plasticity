@@ -81,7 +81,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.coord = coord[['dir','id','cent_x','cent_y','area']].iloc[list_IDs].reset_index(drop=True)
         self.tag = info['tag'].iloc[list_IDs].reset_index(drop=True)
         #self.t = info[['inc','t','exx_p_dot','eyy_p_dot','exy_p_dot']].iloc[list_IDs].reset_index(drop=True)
-        self.t = info[['inc','t']].iloc[list_IDs].reset_index(drop=True)
+        self.t = info[['inc','t','d_exx','d_eyy','d_exy']].iloc[list_IDs].reset_index(drop=True)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.list_IDs = list_IDs
@@ -337,13 +337,14 @@ def train(q):
     # Defined at top-level because nested functions are not importable in multiprcessing.pool
     # Refer to: https://stackoverflow.com/questions/52265120/python-multiprocessing-pool-attributeerror
     def sigma_deltas(param_dict, model, x, s):
-
+    
         s_=s.reshape((-1,)+s.shape[2:])
         x_=x.reshape((-1,)+x.shape[2:])
+
         with torch.no_grad():
             model.load_state_dict(param_dict)
             d_sigma = (s_ - model(x_).detach())
-
+           
         d_sigma = torch.reshape(d_sigma,s.shape)
 
         if INCREMENTAL_VFS:
@@ -464,7 +465,8 @@ def train(q):
 
         num_batches = len(dataloader)
         losses = torch.zeros(num_batches)
-        l_stress = torch.zeros(num_batches)
+        l0_error = torch.zeros(num_batches)
+        l_hill_error = torch.zeros(num_batches)
         err_stress = torch.zeros(num_batches)
         err_h = torch.zeros(num_batches)
         v_work_real = torch.zeros(num_batches)
@@ -491,15 +493,28 @@ def train(q):
 
             tags = tag[::n_elems].values.tolist()
             incs = inc['inc'][::n_elems].values.tolist()
-            t = torch.reshape(torch.from_numpy(inc['t'].values),[t_pts,n_elems])
-            #ep_dot = torch.from_numpy(inc[['exx_p_dot','eyy_p_dot','exy_p_dot']].values)
+            t_ = torch.reshape(torch.from_numpy(inc['t'].values),[t_pts,n_elems])
+            d_e = torch.reshape(torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values),[t_pts,n_elems,3,1])
+
 
             # Extracting element area
             area = torch.reshape(coord_torch[:,4],[batch_size,1])
 
             # Computing model stress prediction
             pred=model(X_train)
+            
+            # l = torch.reshape(pred,[t_pts,n_elems,6])
 
+            # m = torch.zeros([t_pts, n_elems, 3, 3])
+            # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+            # m[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
+            # H = m@torch.transpose(m,2,3)
+
+            # d_s = torch.reshape((H @ d_e),[t_pts,-1])
+            # s = torch.cumsum(torch.reshape(d_s,[t_pts,n_elems,3]),1)
+            
+            #delta_pred = torch.unsqueeze(torch.cat([torch.zeros([1,n_elems,3]),torch.diff(torch.reshape(pred,[t_pts,n_elems,3]),dim=0)],0),-1)
+        
             #---------------------------------
             # s_ = model_2(X_train).detach()
             # f_ = torch.sum(torch.reshape(s_ * area * ELEM_THICK / LENGTH,[t_pts,n_elems,3]),1)[:,:2]
@@ -554,7 +569,10 @@ def train(q):
             #Initial loss
             idx_0 = np.where(np.array(incs)==0)[0][0]*n_elems
             s_0 = pred[idx_0:idx_0+n_elems,:] 
+            
             l_0 = mse(s_0,torch.zeros_like(s_0))
+
+            #l_hill = torch.mean(torch.nn.functional.relu(-torch.sum(torch.sum((pred_dot * torch.reshape(e_dot,pred_dot.shape)),-1),-1)))
             
 
             # #Equilibrium
@@ -586,9 +604,10 @@ def train(q):
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             # # Gradient clipping - as in https://github.com/pseeth/autoclip
-            # g_norm.append(get_grad_norm(model))
-            # clip_value = np.percentile(g_norm, 10)
-            #nn.utils.clip_grad_norm_(model.parameters(), max_norm=10)
+            g_norm.append(get_grad_norm(model))
+            #clip_value = np.percentile(g_norm, 10)
+            #nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
+            #nn.utils.clip_grad_value_(model.parameters(),10.0)
 
             optimizer.step()
             #scheduler.step()
@@ -603,12 +622,13 @@ def train(q):
 
             # Saving loss values
             losses[batch] = loss.detach().item()
-            l_stress[batch] = l_0.detach().item()
+            l0_error[batch] = l_0.detach().item()
+            l_hill_error[batch] = 0
             err_stress[batch] = mse(pred.detach(),y_train)
             err_h[batch] = 0
             v_work_real[batch] = cost.detach().item()
             #v_work_real[batch] = 0
-            g_norm.append(get_grad_norm(model))
+            #g_norm.append(get_grad_norm(model))
             #l += loss
             # for i,(n,j) in enumerate(tuple(zip(tags,incs))):
             #     #VFs[n]['u'][j] = v_u[:,i].detach().numpy()
@@ -626,7 +646,7 @@ def train(q):
         # get_sbvfs(copy.deepcopy(model), sbvf_generator)
         # return losses, v_work_real, v_disp, v_strain, v_u
         #-----------------------------
-        return losses, l_stress, err_stress, v_work_real, g_norm, alpha, err_h
+        return losses, l0_error, err_stress, v_work_real, g_norm, alpha, l_hill_error
 
     def test_loop(dataloader, model, loss_fn):
 
@@ -664,7 +684,7 @@ def train(q):
                 area = torch.reshape(coord_torch[:,4],[batch_size,1])
 
                 pred = model(X_test)
-
+                
                 #--------------------------------------
                 # s_ = model_2(X_test).detach()
                 # f_ = torch.sum(torch.reshape(s_ * area * ELEM_THICK / LENGTH,[t_pts,n_elems,3]),1)[:,:2]
@@ -802,7 +822,7 @@ def train(q):
     N_INPUTS = X.shape[1]
     N_OUTPUTS = y.shape[1]
    
-    N_UNITS = [6,6]
+    N_UNITS = [20,10]
     H_LAYERS = len(N_UNITS)
 
     INCREMENTAL_VFS = False
@@ -819,26 +839,30 @@ def train(q):
     #     p.register_hook(lambda grad: torch.clamp(grad, -1.0, 1.0))
     # geotorch.symmetric(model_1.layers[-1], "weight")
 
+    clip_value = 250
+    for p in model_1.parameters():
+        p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))
+
     # Training variables
     epochs=10000
 
     # Optimization variables
     learning_rate = 0.05
-    lr_mult = 0.9
+    lr_mult = 0.85
 
     params = layer_wise_lr(model_1, lr_mult=lr_mult, learning_rate=learning_rate)
 
-    scale_par=0.5
+    scale_par=0.3
     loss_fn = SBVFLoss(scale_par=scale_par,res_scale=False)
     
     mse = torch.nn.MSELoss()
 
     weight_decay = 0.001
-    optimizer = torch.optim.AdamW(params=params,lr=learning_rate, weight_decay=weight_decay)
+    optimizer = torch.optim.AdamW(params=params, weight_decay=weight_decay)
 
     # lr_lambda = lambda x: math.exp(x * math.log(1e-7 / 1.0) / (epochs * len(train_generator)))
     #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, cooldown=15, factor=0.95, min_lr=1e-5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, cooldown=15, factor=0.88, min_lr=[params[i]['lr']*0.05 for i in range(len(params))])
     
     #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=1e-3,max_lr=1e-1,mode='exp_range',gamma=0.99994,cycle_momentum=False)
     
@@ -851,7 +875,7 @@ def train(q):
     v_work = []
     val_loss = []
     epochs_ = []
-    err_h_ = []
+    err_hill = []
     # Initializing the early_stopping object
     #early_stopping = EarlyStopping(patience=1000, path='temp/checkpoint.pt', verbose=True)
 
@@ -862,6 +886,7 @@ def train(q):
     w_virt = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['w_int','w_int_real','w_ext']} for key in set(info['tag'])}
 
     k_opt = 0
+    l_opt = 0
 
     PROJECT = 'indirect_training_tests'
     if WANDB_LOG:
@@ -876,8 +901,10 @@ def train(q):
             "l2_reg": weight_decay,
             "scale_par": scale_par
         }
-        wandb.init(project=f'{PROJECT}', entity="rmbl",config=config)
-        wandb.watch(model_1,log='all')
+        
+        run = wandb.init(project=f'{PROJECT}', entity="rmbl",config=config)
+        run.watch(model_1,log='all')
+        #wandb.watch(model_1,log='all')
 
     for t in range(epochs):
 
@@ -902,7 +929,7 @@ def train(q):
         start_train = time.time()
 
         #--------------------------------------------------------------
-        batch_losses, l_stress, err_stress, batch_v_work, grad_norm, alpha, err_h = train_loop(train_generator, model_1, loss_fn, optimizer)
+        batch_losses, l_stress, err_stress, batch_v_work, grad_norm, alpha, l_hill = train_loop(train_generator, model_1, loss_fn, optimizer)
         #--------------------------------------------------------------
 
         q.put((w_virt[train_trials[0]],train_trials[0]))
@@ -911,7 +938,7 @@ def train(q):
         l_stresses.append(torch.mean(l_stress))
         err_stresses.append(torch.mean(err_stress))
         v_work.append(torch.mean(batch_v_work))
-        err_h_.append(torch.mean(err_h))
+        err_hill.append(torch.mean(l_hill))
 
         end_train = time.time()
 
@@ -946,11 +973,17 @@ def train(q):
 
         if t!= 0:
             tol_updt = (train_loss[0]/1.1**(k_opt))
-            #tol_updt = (1/1.1**k_opt)
-            delta_loss = abs(train_loss[t]-train_loss[t-1])
-            print('\n[%i] -- grad_norm (mean): %.6e | delta_loss: %.6e | tol_updt: %.6e' % (k_opt, np.mean(grad_norm), delta_loss, tol_updt))
+            #tol_updt = (10/1.5**k_opt)
+            delta_loss = train_loss[t]-train_loss[t-1]
+            
+            if delta_loss > 0:
+                l_opt +=1
+            else:
+                l_opt = 0
 
-            if (delta_loss < tol_updt):
+            print('\n[k_opt: %i | l_opt: %i] -- grad_norm (mean): %.6e | delta_loss: %.6e | tol_updt: %.6e' % (k_opt, l_opt, np.mean(grad_norm), delta_loss, tol_updt))
+
+            if (abs(delta_loss) < tol_updt):
             #if (t%99==0):
 
                 print('\nUpdating virtual fields [%i]' % (k_opt))
@@ -961,6 +994,7 @@ def train(q):
 
                 #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, cooldown=25, factor=0.2, min_lr=1e-5)
                 k_opt += 1
+                l_opt = 0
 
         # if (t!= 0 and delta_loss < 1e-9) or early_stopping.early_stop:
         #     print("Early stopping")
@@ -975,6 +1009,7 @@ def train(q):
                 'test_loss': val_loss[t],
                 'mse_stress': err_stresses[t],
                 's(0)_error': l_stresses[t],
+                #'hill_error': err_hill[t],
                 #'h_error': err_h_[t],
                 'vf_update': k_opt,
                 'alpha_0': alpha[0],
@@ -1029,6 +1064,22 @@ def train(q):
     #joblib.dump([VFs, W_virt], 'sbvfs.pkl')
     if train_generator.std == True:
         joblib.dump(train_generator.scaler_x, output_models + task + '-scaler_x.pkl')
+        time.sleep(1)
+
+    if WANDB_LOG:
+        # 3️⃣ At the end of training, save the model artifact
+        # Name this artifact after the current run
+        task_ = r'__%i-%ix%i-%i__%s-%i-VFs' % (N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
+        model_artifact_name = run.id + '_' + run.name + task_
+        # Create a new artifact, which is a sample dataset
+        model = wandb.Artifact(model_artifact_name, type='model')
+        # Add files to the artifact, in this case a simple text file
+        model.add_file(local_path=output_models + task + '.pt')
+        model.add_file(output_models + task + '-scaler_x.pkl')
+        # Log the model to W&B
+        run.log_artifact(model)
+        # Call finish if you're in a notebook, to mark the run as done
+        run.finish()
 
 # -------------------------------
 #           Main script

@@ -58,7 +58,7 @@ def set_size(width, fraction=1, subplots=(1, 1)):
 file_list = []
 df_list = []
 
-DIR = "outputs/9-elem-50-plastic_sbvf_abs/val/"
+DIR = "outputs/9-elem-50-plastic_sbvf_abs_direct/val/"
 
 for r, d, f in os.walk(DIR):
     for file in sorted(f):

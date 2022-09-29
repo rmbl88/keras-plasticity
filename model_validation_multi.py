@@ -1,10 +1,7 @@
-from copy import copy
-from distutils.log import error
-from sklearn.metrics import r2_score
-from tensorflow.python.keras.backend import dtype
+
 import constants
 import joblib
-from functions import (InputConvexNN, load_dataframes, select_features_multi,NeuralNetwork)
+from functions import (load_dataframes, select_features_multi, NeuralNetwork)
 import matplotlib.pyplot as plt
 import pandas as pd
 from cycler import cycler
@@ -17,8 +14,6 @@ import numpy as np
 import math
 from torch.autograd import Variable
 from matplotlib.gridspec import GridSpec
-from mpl_toolkits.axes_grid1 import make_axes_locatable
-import copy
 import wandb
 
 def get_elastic_matrix(mean,var):
@@ -103,19 +98,25 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #x_scaler = joblib.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs-scaler_x.pkl')
 #y_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-3x1-3]-9-elem-1000-elastic-scaler_y.pkl')
 
-x_scaler = joblib.load('outputs/9-elem-50-plastic_sbvf_abs/models/[3-6x2-3]-9-elem-50-plastic-87-VFs-scaler_x.pkl')
 
+INPUTS = 9
+OUTPUTS = 6
+N_UNITS = [12,12,12]
+H_LAYERS = len(N_UNITS)
 
 # Loading ANN model
-model_1 = NeuralNetwork(3, 3, [6,6], 2)
+model_1 = NeuralNetwork(INPUTS, OUTPUTS, N_UNITS, len(N_UNITS))
 #model_1 = InputConvexNN(6, 3, [9,9,9], 3)
 # model_2 = NeuralNetwork(3, 1, 8, 1)
 # model_3 = NeuralNetwork(3, 1, 8, 1)
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
 
+run = 'hardy-snowflake-418'
+
+x_scaler = joblib.load(f'outputs/9-elem-50-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-9-elem-50-plastic-510-VFs-scaler_x.pkl')
 #model_1.load_state_dict(torch.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs.pt'))
-model_1.load_state_dict(torch.load('outputs/9-elem-50-plastic_sbvf_abs/models/[3-6x2-3]-9-elem-50-plastic-87-VFs.pt'))
+model_1.load_state_dict(torch.load(f'outputs/9-elem-50-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-9-elem-50-plastic-510-VFs.pt'))
 
 # model_2 = NeuralNetwork(3, 3, 0, 0)
 
@@ -140,17 +141,18 @@ r2_scores = []
 maes = []
 
 # entity = 'rmbl'
-# project='indirect_training_best_runs'
+# project='indirect_training_tests'
 
 # api = wandb.Api()
-# # # Start a W&B run to log data
-# run = api.runs(path=f'{entity}/{project}')[0]
+# # # # Start a W&B run to log data
+# DISPLAY_NAME = '2v5q79tx'
+# run = api.run(f'{entity}/{project}/{DISPLAY_NAME}')
 
-# run2=wandb.init(entity=entity, project=project, id=run.id, resume="must")
-# # wandb.artifactsp
-# #generate_run = wandb.init(entity=entity,project=project,job_type='generate_artifacts')
+# run_ = wandb.init(entity=entity, project=project, id=run.id, resume="must")
+# # # wandb.artifactsp
+# generate_run = wandb.init(entity=entity,project=project,job_type='generate_artifacts')
 
-# artifact = wandb.Artifact('results', type='dataset')
+# artifact = wandb.Artifact('results', type='image')
 
 print("--------------------------------------\n\tMean Absolute Error\n--------------------------------------")
 with torch.no_grad():
@@ -159,11 +161,20 @@ with torch.no_grad():
         if df['id'][0] == 1:
             print("\n%s\tSxx\tSyy\tSxy\tr2_x\tr2_y\tr2_xy\tr2_x_D\tr2_y_D\tr2_xy_D\n" %(df['tag'][0]))
         
-        X, y, _, _, _ = select_features_multi(df)
+        X, y, _, _, info = select_features_multi(df)
         X_scaled=x_scaler.transform(X)
         
-        y_pred_inv = model_1(torch.tensor(X_scaled)).detach().numpy()
+        y_pred_inv = model_1(torch.tensor(X_scaled))
         #y_pred_inv_2 = model_2(torch.tensor(X_scaled)).detach().numpy()
+
+        L = torch.zeros([51, 3, 3])
+        tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+        L[:, tril_indices[0], tril_indices[1]] = y_pred_inv[:]
+        H = L @torch.transpose(L,1,2)
+
+        d_e= torch.from_numpy(info[['d_exx','d_eyy','d_exy']].values).reshape([51,3,1])
+        d_s = (H @ d_e).squeeze()
+        y_pred_inv = torch.cumsum(d_s,0).detach().numpy()
     
         ex_var_abaqus = df['exx_t']
         ey_var_abaqus = df['eyy_t']
@@ -242,13 +253,13 @@ with torch.no_grad():
             predictions = pd.DataFrame(y_pred_inv, columns=['pred_x','pred_y','pred_xy'])
             #stats = pd.DataFrame([maes, r2_scores], columns=['mae_x','mae_y','mae_xy','r2_x','r2_y','r2_xy'])
             results = pd.concat([df[['exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']],predictions], axis=1)
-            results.to_csv('outputs/9-elem-50-plastic_sbvf_abs/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',',float_format='%.12f')
+            results.to_csv('outputs/9-elem-50-plastic_sbvf_abs_direct/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',',float_format='%.12f')
             
             # # Convert the DataFrame into a W&B Table
             # # NOTE: Tables will have a row limit of 10000 but...
             #artifact = wandb.Artifact(df['tag'][0]+'_'+str(df['id'][0]), type='run-table')
             
-            table = wandb.Table(dataframe=results)
+            #table = wandb.Table(dataframe=results)
             
 #             artifact.add(table,df['tag'][0]+'_'+str(df['id'][0]))            
 
@@ -257,18 +268,18 @@ with torch.no_grad():
 #             #run.log_artifact(artifact)
 #             #run.update()
 # run2.finish(0)
-# # We will also log the raw csv file within an artifact to preserve our data
-# artifact.add_dir('outputs/9-elem-50-plastic_sbvf_abs/val/','data')
-# # Log as an Artifact to increase the available row limit!
+# # # We will also log the raw csv file within an artifact to preserve our data
+# artifact.add_dir('outputs/9-elem-50-plastic_sbvf_abs/val/','plots')
+# # # Log as an Artifact to increase the available row limit!
 # generate_run.log_artifact(artifact, aliases='validation')
 # generate_run.finish(0)
 
-# # Link the artifact to the training run using the API
-# api = wandb.Api()
-# run = api.runs(f'{entity}/{project}')[0]
+# # # Link the artifact to the training run using the API
+# # api = wandb.Api()
+# # run = api.runs(f'{entity}/{project}')[0]
 # artifact_ = api.artifact(f'{entity}/{project}/results:validation')
-# run.use_artifact(artifact_)
-# run.update()
+# run_.use_artifact(artifact_)
+# #run_.update()
 
 
 

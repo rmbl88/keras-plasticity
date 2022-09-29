@@ -341,7 +341,7 @@ class NeuralNetwork(nn.Module):
                 if self.b_norm:
                     x = self.activations[i](self.b_norms[i](layer(x)))
                 else:
-                    x = self.activations[i](layer(x)*1)
+                    x = self.activations[i](layer(x))
             
             return self.layers[-1](x)
 
@@ -783,7 +783,9 @@ def select_features_multi(df):
     #X = df[sum([['exx_t%i'% (i),'eyy_t%i'% (i),'exy_t%i'% (i)] for i in range(LOOK_BACK,0,-1)],[])]
     #X = df[['exx_t', 'exx_t1', 'eyy_t', 'eyy_t1', 'exy_t', 'exy_t1']]
     #X = df[['exx_dt', 'eyy_dt', 'exy_dt','exx_t', 'eyy_t', 'exy_t']]
-    X = df[['exx_t', 'eyy_t', 'exy_t']]
+    #X = df[['exx_t', 'eyy_t', 'exy_t']]
+    X = df[['exx_dot_dir','eyy_dot_dir','exy_dot_dir','exx_dot','eyy_dot','exy_dot','exx_t', 'eyy_t', 'exy_t']]
+    
     y = df[['sxx_t','syy_t','sxy_t']]
     f = df[['fxx_t','fyy_t','fxy_t']]
     #y = df[['sxx_t','syy_t','sxy_t']]
@@ -791,7 +793,7 @@ def select_features_multi(df):
     
     coord = df[['dir','id', 'cent_x', 'cent_y','area']]
     #info = df[['tag','inc','t','exx_p_dot','eyy_p_dot','exy_p_dot']]
-    info = df[['tag','inc','t']]
+    info = df[['tag','inc','t','exx_dot','eyy_dot','exy_dot','d_exx','d_eyy','d_exy']]
     return X, y, f, coord, info
 
 def drop_features(df, drop_list):
@@ -839,12 +841,12 @@ def get_yield(e):
 def add_strain_decomp(var_list, df):
 
     new_df = copy.deepcopy(df)
-    eps_vars = ['exx_e','eyy_e','exy_e','exx_p','eyy_p','exy_p','pxx','pyy','pxy','exx_dot','eyy_dot','exy_dot','pxx_dot','pyy_dot','pxy_dot','exx_p_dot','eyy_p_dot','exy_p_dot']
+    eps_vars = ['exx_dot_dir','eyy_dot_dir','exy_dot_dir','exx_dot','eyy_dot','exy_dot','d_exx','d_eyy','d_exy']
 
     e = df[var_list[0]].values
     t = np.reshape(df['t'].values,(len(df),1))
 
-    yield_pt = get_yield(e[:,0])[0]
+    #yield_pt = get_yield(e[:,0])[0]
     # plt.plot(e[:,0],df['sxx_t'])
     # plt.plot(e[:,0][yield_pt],df['sxx_t'][yield_pt],'or')
     # plt.title(list(set(df['tag'])))
@@ -855,19 +857,25 @@ def add_strain_decomp(var_list, df):
     #     plt.plot(pt, e[:,i][pt], 'ro')
     #     plt.show()
 
-    e_e = np.zeros_like(e)
-    e_e[:yield_pt,:] = e[:yield_pt,:]
-    e_p = e - e_e
-    p = np.cumsum(e_p,axis=0)
+    #e_e = np.zeros_like(e)
+    #e_e[:yield_pt,:] = e[:yield_pt,:]
+    #e_p = e - e_e
+    #p = np.cumsum(e_p,axis=0)
+
+    # Strain rate
     e_dot = np.diff(e,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
-    p_dot = np.diff(p,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
-    e_p_dot = np.diff(e_p,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
-
     e_dot = np.vstack((np.array([0,0,0]),e_dot))
-    p_dot = np.vstack((np.array([0,0,0]),p_dot))
-    e_p_dot = np.vstack((np.array([0,0,0]),e_p_dot))
+    # Strain rate direction
+    d_e= np.diff(e,axis=0)
+    e_dot_dir = d_e/np.reshape(np.linalg.norm(d_e,axis=1),(d_e.shape[0],1))
+    #p_dot = np.diff(p,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
+    #e_p_dot = np.diff(e_p,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
 
-    eps = pd.DataFrame(np.concatenate([e_e,e_p,p,e_dot,p_dot,e_p_dot],1),columns=eps_vars)
+    e_dot_dir = np.vstack((np.array([0,0,0]),e_dot_dir))
+    #p_dot = np.vstack((np.array([0,0,0]),p_dot))
+    #e_p_dot = np.vstack((np.array([0,0,0]),e_p_dot))
+    d_e = np.vstack((np.array([0,0,0]),d_e))
+    eps = pd.DataFrame(np.concatenate([e_dot_dir,e_dot,d_e],1),columns=eps_vars)
     new_df = pd.concat([new_df,eps],axis=1)
 
     return new_df
@@ -919,7 +927,7 @@ def pre_process(df_list):
         for i, df in enumerate(tqdm(new_dfs, desc='Loading and processing data',bar_format=FORMAT_PBAR)):
 
             new_dfs[i] = add_past_step(var_list, LOOK_BACK, df)
-            #new_dfs[i] = add_strain_decomp(var_list, new_dfs[i])
+            new_dfs[i] = add_strain_decomp(var_list, new_dfs[i])
             #new_dfs[i] = to_sequences(df, var_list, LOOK_BACK)
 
     return new_dfs
