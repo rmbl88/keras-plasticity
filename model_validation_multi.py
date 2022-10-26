@@ -1,7 +1,7 @@
 
 import constants
 import joblib
-from functions import (load_dataframes, select_features_multi, NeuralNetwork)
+from functions import (load_dataframes, rotate_tensor, select_features_multi, NeuralNetwork)
 import matplotlib.pyplot as plt
 import pandas as pd
 from cycler import cycler
@@ -99,9 +99,9 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #y_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-3x1-3]-9-elem-1000-elastic-scaler_y.pkl')
 
 
-INPUTS = 9
-OUTPUTS = 6
-N_UNITS = [12,12,12]
+INPUTS = 4
+OUTPUTS = 2
+N_UNITS = [20,15,10]
 H_LAYERS = len(N_UNITS)
 
 # Loading ANN model
@@ -112,11 +112,11 @@ model_1 = NeuralNetwork(INPUTS, OUTPUTS, N_UNITS, len(N_UNITS))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
 
-run = 'hardy-snowflake-418'
+run = 'super-dew-82'
 
-x_scaler = joblib.load(f'outputs/9-elem-50-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-9-elem-50-plastic-510-VFs-scaler_x.pkl')
+x_scaler = joblib.load(f'outputs/9-elem-50-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-9-elem-50-plastic-597-VFs-scaler_x.pkl')
 #model_1.load_state_dict(torch.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs.pt'))
-model_1.load_state_dict(torch.load(f'outputs/9-elem-50-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-9-elem-50-plastic-510-VFs.pt'))
+model_1.load_state_dict(torch.load(f'outputs/9-elem-50-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-9-elem-50-plastic-597-VFs.pt'))
 
 # model_2 = NeuralNetwork(3, 3, 0, 0)
 
@@ -162,19 +162,51 @@ with torch.no_grad():
             print("\n%s\tSxx\tSyy\tSxy\tr2_x\tr2_y\tr2_xy\tr2_x_D\tr2_y_D\tr2_xy_D\n" %(df['tag'][0]))
         
         X, y, _, _, info = select_features_multi(df)
-        X_scaled=x_scaler.transform(X)
+        X_scaled=torch.from_numpy(x_scaler.transform(X))
+        # X_scaled = X_scaled[~torch.any(X_scaled.isnan(),dim=1)]
+        theta_p = torch.from_numpy(info[['theta_p']].values)
         
-        y_pred_inv = model_1(torch.tensor(X_scaled))
+        
+        y_pred_inv = model_1(X_scaled).numpy()
+
+        y_mat = np.zeros((y_pred_inv.shape[0],2,2))
+        y_mat[:,0,0] = y_pred_inv[:,0]
+        y_mat[:,1,1] = y_pred_inv[:,1]
+
+        y = rotate_tensor(y_mat,theta_p.reshape(-1),is_reverse=True)
+
+
+        # #ds_princ = y_pred_inv * dt.unsqueeze(-1).repeat(1,2)
+        # s_princ = torch.cumsum(y_pred_inv,0)
+        # s_mat = s_princ[:,0].reshape(s_princ.shape[0],1,1)*torch.einsum('bi,bj->bij', (eigen_vec[:,:,0], eigen_vec[:,:,0]))+s_princ[:,1].reshape(s_princ.shape[0],1,1)*torch.einsum('bi,bj->bij', (eigen_vec[:,:,1], eigen_vec[:,:,1]))
+        # s_mat = torch.cat([torch.zeros((1,2,2)),s_mat],0)
+
+
+        #s = y_pred_inv[:,:2]
+        #vec = y_pred_inv[:,2:].reshape(y_pred_inv.shape[0],2,2)
         #y_pred_inv_2 = model_2(torch.tensor(X_scaled)).detach().numpy()
 
-        L = torch.zeros([51, 3, 3])
-        tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-        L[:, tril_indices[0], tril_indices[1]] = y_pred_inv[:]
-        H = L @torch.transpose(L,1,2)
+        # L = torch.zeros([51, 3, 3])
+        # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+        # L[:, tril_indices[0], tril_indices[1]] = y_pred_inv[:]
+        # H = L @torch.transpose(L,1,2)
 
-        d_e= torch.from_numpy(info[['d_exx','d_eyy','d_exy']].values).reshape([51,3,1])
-        d_s = (H @ d_e).squeeze()
-        y_pred_inv = torch.cumsum(d_s,0).detach().numpy()
+        # d_e= torch.from_numpy(info[['d_exx','d_eyy','d_exy']].values).reshape([51,3,1])
+        # d_s = (H @ d_e).squeeze()
+        # y_pred_inv = torch.cumsum(d_s,0).detach().numpy()
+
+        #s_mat = s[:,0].reshape(s.shape[0],1,1)*torch.einsum('bi,bj->bij', (vec[:,:,0], vec[:,:,0]))+s[:,1].reshape(s.shape[0],1,1)*torch.einsum('bi,bj->bij', (vec[:,:,1], vec[:,:,1]))
+
+        #angles = torch.from_numpy(info['theta_p'].values)
+        # rot_mat = torch.zeros_like(s_princ_mat)
+        # rot_mat[:,0,0] = torch.cos(angles[:])
+        # rot_mat[:,0,1] = torch.sin(angles[:])
+        # rot_mat[:,1,0] = -torch.sin(angles[:])
+        # rot_mat[:,1,1] = torch.cos(angles[:])
+
+        #s = torch.transpose(rot_mat,1,2) @ s_princ_mat @ rot_mat
+        y_pred_inv = y[:,[0,1,1],[0,1,0]]
+        #y_pred_inv = s.numpy()
     
         ex_var_abaqus = df['exx_t']
         ey_var_abaqus = df['eyy_t']

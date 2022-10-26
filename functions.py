@@ -25,6 +25,8 @@ from torch.autograd import Function
 import geotorch
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from scipy.ndimage import gaussian_filter
+from statsmodels.nonparametric.kernel_regression import KernelReg
 
 # -------------------------------
 #        Class definitions
@@ -104,15 +106,17 @@ def _draw_graph(var, graph, watch=[], seen=[], indent="", pobj=None):
 class weightConstraint(object):
     def __init__(self, cond='plastic'):
         self.cond = cond
-    
+        self.count = 0
     def __call__(self, module):
 
         if hasattr(module,'weight'):
+
             if (self.cond == 'plastic'):
-               
+            
                 w=module.weight.data
-                w=w.clamp(-5.0,5.0)
+                w=w.clamp(0.0)
                 module.weight.data=w 
+                self.count += 1
 
             else:
                 w=module.weight.data
@@ -120,75 +124,95 @@ class weightConstraint(object):
                 w[:2,-1]=w[:2,-1].clamp(0.0,0.0)
                 w[-1,:2]=w[:2,-1].clamp(0.0,0.0)
                 module.weight.data=w 
+# class LinearExponential(nn.Module):
+#     def __init__(self,beta=2.0):
+#         super(LinearExponential,self).__init__()
+#         self.beta = torch.nn.Parameter(torch.tensor(beta))
 
-           
-        # if self.cond == 'elastic':
-        #     if hasattr(module,'weight'):
-        #         #print("Entered")
-        #         w=module.weight.data
-        #         w=w.clamp(0.0)
-        #         w[:2,-1]=w[:2,-1].clamp(0.0,0.0)
-        #         w[-1,:2]=w[:2,-1].clamp(0.0,0.0)
-        #         module.weight.data=w
-        # elif self.cond == 'plastic':
-        #     if hasattr(module,'weight'):
-        #         w=module.weight.data
-        #         w=w.clamp(0.0)
-        #         module.weight.data=w
-class SoftPlusSquared(nn.Module):
-    def __init__(self,beta=2.0):
-        super(SoftPlusSquared,self).__init__()
-        self.beta = torch.nn.Parameter(torch.tensor(beta))
+#     def forward(self,x):
 
-    def forward(self,x):
+#         if self.beta == 0.0:
+#             return x
+#         else: 
+#             return (1/(2*torch.pow(self.beta,4)))*torch.square(torch.log10(1+torch.exp(torch.square(self.beta)*x)))
+class SoftplusSquared(nn.Module):
 
-        if self.beta == 0.0:
-            return x
-        else: 
-            return (1/(2*torch.pow(self.beta,4)))*torch.square(torch.log10(1+torch.exp(torch.square(self.beta)*x)))
+    def __init__(self, alpha: float = 0.5, device=None, dtype=None) -> None:
+       
+        super(SoftplusSquared, self).__init__()
+        #self.weight = nn.Parameter(torch.empty(1, **factory_kwargs).fill_(init))
+        self.alpha = torch.empty(1).fill_(alpha)
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        #if self.weight == 0.0:
+        return 1/(2*torch.pow(self.alpha,4)) * torch.square(torch.log10(1+torch.exp(torch.square(self.alpha)*input)))
+        # else:
+        #     return 1/(2*torch.pow(self.weight,4)) * torch.square(torch.log10(1+torch.exp(torch.square(self.weight)*input)))
 
-class soft_exponential(nn.Module):
-    '''
-    Implementation of soft exponential activation.
+class LinearExponential(nn.Module):
+    r"""Applies the element-wise function:
+    .. math::
+        \text{ELU}(x) = \max(0,x) + \min(0, \alpha * (\exp(x) - 1))
+    Args:
+        alpha: the :math:`\alpha` value for the ELU formulation. Default: 1.0
+        inplace: can optionally do the operation in-place. Default: ``False``
     Shape:
-        - Input: (N, *) where * means, any number of additional
+        - Input: :math:`(N, *)` where `*` means, any number of additional
           dimensions
-        - Output: (N, *), same shape as the input
-    Parameters:
-        - alpha - trainable parameter
-    References:
-        - See related paper:
-        https://arxiv.org/pdf/1602.01321.pdf
-    Examples:
-        >>> a1 = soft_exponential(256)
-        >>> x = torch.randn(256)
-        >>> x = a1(x)
-    '''
-    def __init__(self, init: float = 0.25):
-        '''
-        Initialization.
-        INPUT:
-            - in_features: shape of the input
-            - aplha: trainable parameter
-            aplha is initialized with zero value by default
-        '''
-        super(soft_exponential,self).__init__()
-        
-        self.alpha = nn.Parameter(torch.tensor(1.0).fill_(init))
+        - Output: :math:`(N, *)`, same shape as the input
+    .. image:: ../scripts/activation_images/ELU.png
+    Examples::
+        >>> m = nn.ELU()
+        >>> input = torch.randn(2)
+        >>> output = m(input)
+    """
+    __constants__ = ['alpha', 'inplace']
+    alpha: float
+    inplace: bool
 
-    def forward(self, x):
-        '''
-        Forward pass of the function.
-        Applies the function to the input elementwise.
-        '''
-        if (self.alpha == 0.0):
-            return x
+    def __init__(self, alpha: float = 0.1, inplace: bool = False) -> None:
+        super(LinearExponential, self).__init__()
+        self.alpha = alpha
+        self.inplace = inplace
 
-        if (self.alpha < 0.0):
-            return -torch.log(1 - self.alpha * (x + self.alpha)) / self.alpha
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return torch.exp(self.alpha * input) - 1
 
-        if (self.alpha > 0.0):
-            return (torch.exp(self.alpha * x) - 1)/ self.alpha + self.alpha
+    def extra_repr(self) -> str:
+        inplace_str = ', inplace=True' if self.inplace else ''
+        return 'alpha={}{}'.format(self.alpha, inplace_str)
+
+class QuadraticExponential(nn.Module):
+    r"""Applies the element-wise function:
+    .. math::
+        \text{ELU}(x) = \max(0,x) + \min(0, \alpha * (\exp(x) - 1))
+    Args:
+        alpha: the :math:`\alpha` value for the ELU formulation. Default: 1.0
+        inplace: can optionally do the operation in-place. Default: ``False``
+    Shape:
+        - Input: :math:`(N, *)` where `*` means, any number of additional
+          dimensions
+        - Output: :math:`(N, *)`, same shape as the input
+    .. image:: ../scripts/activation_images/ELU.png
+    Examples::
+        >>> m = nn.ELU()
+        >>> input = torch.randn(2)
+        >>> output = m(input)
+    """
+    __constants__ = ['alpha', 'inplace']
+    alpha: float
+    inplace: bool
+
+    def __init__(self, alpha: float = 0.05, inplace: bool = False) -> None:
+        super(QuadraticExponential, self).__init__()
+        self.alpha = alpha
+        self.inplace = inplace
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return torch.exp(self.alpha * torch.square(input)) - 1
+
+    def extra_repr(self) -> str:
+        inplace_str = ', inplace=True' if self.inplace else ''
+        return 'alpha={}{}'.format(self.alpha, inplace_str)
 
 class SoftplusLayer(nn.Module):
     r"""Applies a softplus transformation to the incoming data
@@ -303,6 +327,7 @@ class NeuralNetwork(nn.Module):
 
         self.layers = nn.ModuleList()
         self.activations = nn.ModuleList()
+        
         if self.b_norm:
             self.b_norms = nn.ModuleList()
         #self.parametrizations = nn.ModuleList()
@@ -325,6 +350,7 @@ class NeuralNetwork(nn.Module):
                     self.b_norms.append(torch.nn.BatchNorm1d(out_,eps=0.1))
                 
                 self.layers.append(torch.nn.Linear(in_, out_, bias=True))
+                
                 self.activations.append(torch.nn.ELU())
                 
             self.layers.append(torch.nn.Linear(self.hidden_size[-1], self.output_size, bias=True))
@@ -342,6 +368,7 @@ class NeuralNetwork(nn.Module):
                     x = self.activations[i](self.b_norms[i](layer(x)))
                 else:
                     x = self.activations[i](layer(x))
+                   
             
             return self.layers[-1](x)
 
@@ -464,6 +491,81 @@ class SBVFLoss(nn.Module):
 # -------------------------------
 #       Method definitions
 # ------------------------------
+def rotate_tensor(t,theta,is_reverse=False):
+    '''Applies a rotation transformation to a given tensor
+
+    Args:
+        t (float): The tensor, or batch of tensors, to be transformed
+        theta (float): The angle, or angles, of rotation
+        is_reverse (bool): Controls if forward or reverse transformation is applied (default is False)
+
+    Returns:
+        t_: the rotated tensor
+    '''
+    r = np.zeros_like(t)
+    r[:,0,0] = np.cos(theta)
+    r[:,0,1] = np.sin(theta)
+    r[:,1,0] = -np.sin(theta)
+    r[:,1,1] = np.cos(theta)
+    
+    if is_reverse:
+        t_ = np.transpose(r,(0,2,1)) @ t @ r
+    else:
+        t_ = r @ t @ np.transpose(r,(0,2,1))
+    
+    return t_
+
+def get_principal_strain(eps):  
+    
+    # Getting principal angles
+    angles = 0.5 * np.arctan(eps[:,-1]/(eps[:,0]-eps[:,1]))
+    angles[np.isnan(angles)] = 0.0
+
+    # Constructing strain tensors
+    tril_indices = np.tril_indices(n=2)
+    eps_mat = np.zeros((eps.shape[0],2,2))
+
+    eps[:,[1,2]] = eps[:,[2,1]]
+
+    eps_mat[:,tril_indices[0],tril_indices[1]] = eps[:,:]
+    eps_mat[:,tril_indices[1],tril_indices[0]] = eps[:,:]
+
+    # Rotating strain tensor to the principal plane
+    eps_princ_mat = rotate_tensor(eps_mat,angles)
+    eps_princ_mat[abs(eps_princ_mat)<=1e-16] = 0.0
+    eps_princ = eps_princ_mat[:,tril_indices[0][:-1],np.array([0,1,0])[:-1]]
+    
+    
+    # eps_princ, eigen_vec = torch.linalg.eigh(torch.from_numpy(eps_mat), UPLO='L')
+    # eps_princ[:,[0,1]] = eps_princ[:,[1,0]]
+    # eigen_vec = eigen_vec[:, torch.tensor([1,0])]
+    
+    return eps_princ, angles.reshape((-1,1))
+
+def stress_from_cholesky(pred, d_e, t_pts, n_elems, n_tests=1, sbvf_gen=False):
+
+    l = torch.reshape(pred,[n_tests, t_pts, n_elems, pred.shape[-1]])
+    L = torch.zeros([n_tests, t_pts, n_elems, 3, 3])
+
+    tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+    L[: ,: , :, tril_indices[0], tril_indices[1]] = l[:,:]
+    H = L @ torch.transpose(L,3,4)
+
+    d_s = (H @ d_e.reshape([n_tests, t_pts , n_elems, d_e.shape[-1], 1])).squeeze(-1)
+    
+    if n_tests==1:
+        s = torch.cumsum(d_s.squeeze(),0).reshape([-1,3])
+        L = L.squeeze()
+        H = H.squeeze()
+  
+    else:
+        s = torch.cumsum(d_s,0).reshape([-1,3])
+
+    if sbvf_gen:
+        return s
+    else:
+        return s, L, H
+
 def layer_wise_lr(model, lr_mult=0.99, learning_rate=0.1):
     layer_names = []
     for n,p in model.named_parameters():
@@ -784,7 +886,10 @@ def select_features_multi(df):
     #X = df[['exx_t', 'exx_t1', 'eyy_t', 'eyy_t1', 'exy_t', 'exy_t1']]
     #X = df[['exx_dt', 'eyy_dt', 'exy_dt','exx_t', 'eyy_t', 'exy_t']]
     #X = df[['exx_t', 'eyy_t', 'exy_t']]
-    X = df[['exx_dot_dir','eyy_dot_dir','exy_dot_dir','exx_dot','eyy_dot','exy_dot','exx_t', 'eyy_t', 'exy_t']]
+
+    #X = df[['exx_dot_dir','eyy_dot_dir','exy_dot_dir','exx_t', 'eyy_t', 'exy_t']]
+    X = df[['ep_1_dir','ep_2_dir','ep_1','ep_2']]
+    #X = df[['ep_1','ep_2']]
     
     y = df[['sxx_t','syy_t','sxy_t']]
     f = df[['fxx_t','fyy_t','fxy_t']]
@@ -793,7 +898,8 @@ def select_features_multi(df):
     
     coord = df[['dir','id', 'cent_x', 'cent_y','area']]
     #info = df[['tag','inc','t','exx_p_dot','eyy_p_dot','exy_p_dot']]
-    info = df[['tag','inc','t','exx_dot','eyy_dot','exy_dot','d_exx','d_eyy','d_exy']]
+    #info = df[['tag','inc','t','exx_dot','eyy_dot','exy_dot','d_exx','d_eyy','d_exy']]
+    info = df[['tag','inc','t','theta_p','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']]
     return X, y, f, coord, info
 
 def drop_features(df, drop_list):
@@ -820,62 +926,75 @@ def add_past_step(var_list, lookback, df):
 
     return new_df
 
-def get_yield(e):
-        
-    window = 7
-    der2 = savgol_filter(e, window_length=window, polyorder=4, deriv=4)
-    peaks, _ = find_peaks(np.abs(der2),prominence=np.percentile(np.abs(der2),50))       
-    max_der2 = np.max(np.abs(der2[peaks]))
-    #max_der2 = np.max(np.abs(der2))
-    large = np.where(np.abs(der2) == max_der2)[0]
-    gaps = np.diff(large) > window
-    begins = np.insert(large[1:][gaps], 0, large[0])
-    ends = np.append(large[:-1][gaps], large[-1])
-    yield_pt = ((begins+ends)/2).astype(np.int)
-    # plt.plot(der2)
-    # plt.plot(peaks,der2[peaks],'og')
-    # plt.show()
+def smooth_data(df):
+
+    id = list(set(df['id']))[0]
     
-    return yield_pt
+    new_df = copy.deepcopy(df)
+
+    s_y = df['syy_t'].values 
+    e = df['eyy_t'].values
+
+    plt.plot(e,s_y, 'b', label = f'Original-elem {id}')
+
+    if (id == 2 or id == 5 or id==9):
+        f_sigma = 2.5
+    else:
+        f_sigma = 1.0
+        
+    y_smooth = gaussian_filter(s_y,sigma=f_sigma)
+    #plt.plot(e,y_smooth,'g',label='smoothing')
+    s_y[1:75] = y_smooth[1:75]
+    #plt.plot(e,s_y,'r',label='smooth+original')    
+        
+    # plt.legend()
+    # plt.show()
+    new_df['syy_t'] = s_y    
+        
+    return new_df
 
 def add_strain_decomp(var_list, df):
 
     new_df = copy.deepcopy(df)
-    eps_vars = ['exx_dot_dir','eyy_dot_dir','exy_dot_dir','exx_dot','eyy_dot','exy_dot','d_exx','d_eyy','d_exy']
+    # eps_vars = ['exx_dot_dir','eyy_dot_dir','exy_dot_dir',
+    #             'exx_dot','eyy_dot','exy_dot',
+    #             'd_exx','d_eyy','d_exy',
+    #             'ep_1','ep_2',
+    #             'ep_1_dir','ep_2_dir',
+    #             'dep_1','dep_2',
+    #             'ep_1_dot_dir','ep_2_dot_dir']
+    eps_vars = ['ep_1','ep_2',
+                'ep_1_dir','ep_2_dir', 
+                'theta_p']
 
+    # Strain and time vectors
     e = df[var_list[0]].values
     t = np.reshape(df['t'].values,(len(df),1))
-
-    #yield_pt = get_yield(e[:,0])[0]
-    # plt.plot(e[:,0],df['sxx_t'])
-    # plt.plot(e[:,0][yield_pt],df['sxx_t'][yield_pt],'or')
-    # plt.title(list(set(df['tag'])))
-    # plt.show()
-    # for i in range(e.shape[-1]):
-    #     pt = get_yield(e[:,i])
-    #     plt.plot(e[:,i])
-    #     plt.plot(pt, e[:,i][pt], 'ro')
-    #     plt.show()
-
-    #e_e = np.zeros_like(e)
-    #e_e[:yield_pt,:] = e[:yield_pt,:]
-    #e_p = e - e_e
-    #p = np.cumsum(e_p,axis=0)
+    
+    # Time increment
+    dt = np.diff(t,axis=0)
 
     # Strain rate
-    e_dot = np.diff(e,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
-    e_dot = np.vstack((np.array([0,0,0]),e_dot))
-    # Strain rate direction
     d_e= np.diff(e,axis=0)
-    e_dot_dir = d_e/np.reshape(np.linalg.norm(d_e,axis=1),(d_e.shape[0],1))
-    #p_dot = np.diff(p,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
-    #e_p_dot = np.diff(e_p,axis=0)/np.diff(t,axis=0).repeat(3, axis=1)
+    e_dot = d_e/dt.repeat(3, axis=1)
+    e_dot_dir = e_dot/np.reshape(np.linalg.norm(e_dot,axis=1),(e_dot.shape[0],1))
+    
+    #e_dot = np.vstack((np.array([0,0,0]),e_dot))
 
-    e_dot_dir = np.vstack((np.array([0,0,0]),e_dot_dir))
-    #p_dot = np.vstack((np.array([0,0,0]),p_dot))
-    #e_p_dot = np.vstack((np.array([0,0,0]),e_p_dot))
-    d_e = np.vstack((np.array([0,0,0]),d_e))
-    eps = pd.DataFrame(np.concatenate([e_dot_dir,e_dot,d_e],1),columns=eps_vars)
+    # Strain increment direction
+    
+    #e_dot_dir = d_e/np.reshape(np.linalg.norm(d_e,axis=1),(d_e.shape[0],1))
+    #e_dot_dir = np.vstack((np.array([0,0,0]),e_dot_dir))
+    #d_e = np.vstack((np.array([0,0,0]),d_e))
+
+    #Principal strains
+    eps_princ, princ_angles = get_principal_strain(e)
+    # Increment in principal strain
+    de_princ= np.diff(eps_princ,axis=0)
+    de_princ_dir = de_princ/(np.reshape(np.linalg.norm(de_princ,axis=1),(de_princ.shape[0],1)))
+    de_princ_dir = np.vstack((de_princ_dir[0,:],de_princ_dir))
+    
+    eps = pd.DataFrame(np.concatenate([eps_princ,de_princ_dir,princ_angles],1),columns=eps_vars)
     new_df = pd.concat([new_df,eps],axis=1)
 
     return new_df
@@ -922,10 +1041,11 @@ def pre_process(df_list):
         new_df = drop_features(df, ['ezz_t', 'szz_t', 'fzz_t'])
         new_dfs.append(new_df)
 
+
     if LOOK_BACK > 0:
         # Add past variables
         for i, df in enumerate(tqdm(new_dfs, desc='Loading and processing data',bar_format=FORMAT_PBAR)):
-
+            #new_dfs[i] = smooth_data(df)
             new_dfs[i] = add_past_step(var_list, LOOK_BACK, df)
             new_dfs[i] = add_strain_decomp(var_list, new_dfs[i])
             #new_dfs[i] = to_sequences(df, var_list, LOOK_BACK)
@@ -941,9 +1061,6 @@ def load_dataframes(directory):
         for file in f:
             if '.csv' in file:
                 file_list.append(directory + file)
-
-    #headers = ['tag','id','dir','x', 'y', 'area', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
-    #headers = ['tag','id','dir','x', 'y', 't', 'sxx_t', 'syy_t', 'szz_t', 'sxy_t', 'exx_t', 'eyy_t', 'ezz_t', 'exy_t', 'fxx_t', 'fyy_t', 'fzz_t', 'fxy_t']
 
     # Loading training datasets
     df_list = [pd.read_csv(file, sep=',', index_col=False, header=0) for file in file_list]

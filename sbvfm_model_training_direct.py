@@ -13,6 +13,7 @@ from constants import *
 from functions import (
     InputConvexNN,
     layer_wise_lr,
+    rotate_tensor,
     sbvf_loss,
     load_dataframes,
     prescribe_u,
@@ -42,7 +43,7 @@ import itertools
 import wandb
 from torch.autograd.functional import jacobian
 import time
-
+from sklearn import preprocessing
 import matplotlib
 matplotlib.use('TkAgg')
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -75,7 +76,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.f = force.iloc[list_IDs].reset_index(drop=True)
         self.coord = coord[['dir','id','cent_x','cent_y','area']].iloc[list_IDs].reset_index(drop=True)
         self.tag = info['tag'].iloc[list_IDs].reset_index(drop=True)
-        self.t = info[['inc','t','d_exx','d_eyy','d_exy']].iloc[list_IDs].reset_index(drop=True)
+        self.t = info[['inc','t','theta_p','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']].iloc[list_IDs].reset_index(drop=True)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.list_IDs = list_IDs
@@ -293,7 +294,7 @@ def train(q):
             #torch.nn.init.xavier_normal(m.weight)
             #torch.nn.init.zeros_(m.bias)
             #torch.nn.init.ones_(m.bias)
-            m.bias.data.fill_(0.01)
+            m.bias.data.fill_(0.0)
 
     def train_loop(dataloader, model, loss_fn, optimizer):
         '''
@@ -310,6 +311,7 @@ def train(q):
         l1_loss = torch.zeros_like(losses)
         wp_loss = torch.zeros_like(losses)
         ch_loss = torch.zeros_like(losses)
+        I1_loss = torch.zeros_like(losses)
 
         t_pts = dataloader.t_pts
         n_elems = batch_size // t_pts
@@ -320,29 +322,57 @@ def train(q):
 
             # Extracting variables for training
             X_train, y_train, _, _, _, inc = dataloader[batch]
-
+ 
             # Converting to pytorch tensors
             X_train = torch.from_numpy(X_train)
+            # X_train = X_train[~torch.any(X_train.isnan(),dim=1)]
             y_train = torch.from_numpy(y_train)
-            d_e = torch.reshape(torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values),[t_pts,n_elems,3,1])
-
-            #d_e = torch.reshape(torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values),[t_pts,n_elems,3,1])
+            #y_train = y_train[:-n_elems]
+            # Importing principal angles
+            theta_p = torch.from_numpy(inc[['theta_p']].values)
+            # theta_p = theta_p[~torch.any(theta_p.isnan(),dim=1)]
+            eps = torch.from_numpy(inc[['exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']].values)
             
             # Computing model stress prediction
             pred=model(X_train)
+        
+            tril_indices = np.tril_indices(n=2)
+            y_train_mat = np.zeros((y_train.shape[0],2,2))
+            y_train[:,[1,2]] = y_train[:,[2,1]]
 
-            l = torch.reshape(pred,[t_pts,n_elems,6])
+            y_train_mat[:,tril_indices[0],tril_indices[1]] = y_train[:,:]
+            y_train_mat[:,tril_indices[1],tril_indices[0]] = y_train[:,:]
 
-            # Cholesky decomposition
-            L = torch.zeros([t_pts, n_elems, 3, 3])
-            tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-            L[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
-            # Tangent matrix
-            H = L @torch.transpose(L,2,3)
+            y_princ_mat = rotate_tensor(y_train_mat,theta_p.reshape(-1))
+            y_princ = y_princ_mat[:,[0,1],[0,1]].reshape([-1,2])
+            
+            y_scaler = preprocessing.MinMaxScaler(feature_range=(-1, 1))
+            y_scaler.fit(y_princ)
+            y_princ = torch.from_numpy(y_scaler.scale_)*y_princ
+            s = torch.from_numpy(y_scaler.scale_)*pred
+            
+            # rot_mat = torch.zeros_like(s_princ_mat)
+            # rot_mat[:,:,0,0] = torch.cos(angles[:,:])
+            # rot_mat[:,:,0,1] = torch.sin(angles[:,:])
+            # rot_mat[:,:,1,0] = -torch.sin(angles[:,:])
+            # rot_mat[:,:,1,1] = torch.cos(angles[:,:])
 
-            # Stress increment
-            d_s = (H @ d_e).squeeze()
-            s = torch.cumsum(d_s,0).reshape([-1,3])
+            # s = torch.transpose(rot_mat,2,3) @ s_princ_mat @ rot_mat
+            # s_vec = s[:,:,[0,1,1],[0,1,0]].reshape([-1,3])
+            
+
+            # l = torch.reshape(pred,[t_pts,n_elems,6])
+
+            # # Cholesky decomposition
+            # L = torch.zeros([t_pts, n_elems, 3, 3])
+            # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+            # L[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
+            # # Tangent matrix
+            # H = L @torch.transpose(L,2,3)
+
+            # # Stress increment
+            # d_s = (H @ d_e).squeeze()
+            # s = torch.cumsum(d_s,0).reshape([-1,3])
 
             # s_ = copy.deepcopy(s.detach())
             # # Equivalent stress
@@ -371,9 +401,9 @@ def train(q):
             s_0 = s[:9,:]
             l_0 = torch.mean(torch.square(s_0))
             
-            l_1 = torch.mean(torch.nn.functional.relu(-(d_e.transpose(2,3) @ H @ d_e)))
+            # l_1 = torch.mean(torch.nn.functional.relu(-(d_e.transpose(2,3) @ H @ d_e)))
 
-            l_cholesky = torch.mean(nn.functional.relu(-torch.diagonal(L, offset=0, dim1=2, dim2=3)))
+            # l_cholesky = torch.mean(nn.functional.relu(-torch.diagonal(L, offset=0, dim1=2, dim2=3)))
 
             # e_p = copy.deepcopy(e)
             # e_p[:,:,0:2] -= ((1/3)*torch.sum(e[:,:,0:2],-1,keepdim=True))
@@ -382,14 +412,26 @@ def train(q):
             # w_ep = torch.sum(torch.reshape(pred,[t_pts,n_elems,3]) * d_ep_dt,-1)
 
             # l_w = torch.mean(torch.nn.functional.relu(-w_ep))
-            m = torch.max(torch.abs(pred.detach()),dim=0).values
-            m_= torch.max(torch.abs(y_train),dim=0).values
-            # # Computing loss
-            
-            
-            loss = (loss_fn(s[:,0], y_train[:,0]) + loss_fn(s[:,1], y_train[:,1]) + loss_fn(s[:,2], y_train[:,2])) + l_1 + 500*l_cholesky
-           
+            # v,m = torch.std_mean(torch.from_numpy(dataloader.y.values),0)
+            # w_x = 1/v[0]
+            # w_y = 1/v[1]
+            # w_xy = 1/v[2]
 
+            # y_scaler = preprocessing.MinMaxScaler(feature_range=(-1, 1))
+            # y_scaler.fit(y_train)
+            # y_train = torch.from_numpy(y_scaler.scale_)*y_train
+            # s_vec = torch.from_numpy(y_scaler.scale_)*s_vec
+            
+
+            # # Computing loss
+            #loss = loss_fn(s_vec[:,0], y_train[:,0]) + loss_fn(s_vec[:,1], y_train[:,1]) + loss_fn(s_vec[:,2], y_train[:,2]) + l_0
+            # loss = loss_fn(pred_princ[:,0],y_princ[:,0]) + loss_fn(pred_princ[:,1],y_princ[:,1]) + loss_fn(pred_eigen[:,0],y_eigen_vec[:,0]) + loss_fn(pred_eigen[:,1],y_eigen_vec[:,1]) + loss_fn(pred_eigen[:,2],y_eigen_vec[:,2]) + loss_fn(pred_eigen[:,3],y_eigen_vec[:,3]) + l_0
+            
+            loss = loss_fn(s[:,0],y_princ[:,0]) + loss_fn(s[:,1],y_princ[:,1]) + 3*l_0
+
+           # loss = (loss_fn(s[:,0], y_train[:,0]) + loss_fn(s[:,1], y_train[:,1]) + loss_fn(s[:,2], y_train[:,2])) + l_1 + 500*l_cholesky
+           
+            
             # Backpropagation and weight's update
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -399,30 +441,25 @@ def train(q):
             #nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
 
             optimizer.step()
-            scheduler.step()
+            #scheduler.step()
             #model.apply(constraints)
 
             # Saving loss values
             losses[batch] = loss.detach().item()
             l0_loss[batch] = l_0.detach().item()
-            l1_loss[batch] = l_1.detach().item()
-            ch_loss[batch] = l_cholesky.detach().item()
+            l1_loss[batch] = 0
+            ch_loss[batch] = 0
             wp_loss[batch] = 0
+            I1_loss[batch] = 0
             
 
             g_norm.append(get_grad_norm(model))
-            #l += loss
+        
 
             print('\r>Train: %d/%d' % (batch + 1, num_batches), end='')
-        #l.backward()
-        #optimizer.step()
-        #scheduler.step()
-                
-
-        # get_sbvfs(copy.deepcopy(model), sbvf_generator)
-        # return losses, v_work_real, v_disp, v_strain, v_u
+              
         #-----------------------------
-        return losses, np.mean(g_norm), l0_loss, l1_loss, ch_loss, wp_loss
+        return losses, np.mean(g_norm), l0_loss, l1_loss, ch_loss, wp_loss, I1_loss
 
     def test_loop(dataloader, model, loss_fn):
 
@@ -448,24 +485,70 @@ def train(q):
                 else:
                     X_test = torch.tensor(X_test, dtype=torch.float64)
 
+                # X_test = X_test[~torch.any(X_test.isnan(),dim=1)]
                 y_test = torch.from_numpy(y_test)
 
-                d_e = torch.reshape(torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values),[t_pts,n_elems,3,1])
+                theta_p = torch.from_numpy(inc[['theta_p']].values)
+                # theta_p = theta_p[~torch.any(theta_p.isnan(),dim=1)]
 
                 pred = model(X_test)
+
+                tril_indices = np.tril_indices(n=2)
+                y_train_mat = np.zeros((y_test.shape[0],2,2))
+                y_test[:,[1,2]] = y_test[:,[2,1]]
+
+                y_train_mat[:,tril_indices[0],tril_indices[1]] = y_test[:,:]
+                y_train_mat[:,tril_indices[1],tril_indices[0]] = y_test[:,:]
+
+                y_princ_mat = rotate_tensor(y_train_mat,theta_p.reshape(-1))
+                y_princ = y_princ_mat[:,[0,1],[0,1]].reshape([-1,2])
                 
-                l = torch.reshape(pred,[t_pts,n_elems,6])
+                y_scaler = preprocessing.MinMaxScaler(feature_range=(-1, 1))
+                y_scaler.fit(y_princ)
+                y_princ = torch.from_numpy(y_scaler.scale_)*y_princ
+                s = torch.from_numpy(y_scaler.scale_)*pred
+        
+                # s_princ = torch.reshape(pred,[t_pts,n_elems,2])
+                # s_princ_mat = torch.zeros([t_pts,n_elems,2,2])
+                
+                # s_princ_mat[:,:,0,0] = s_princ[:,:,0]
+                # s_princ_mat[:,:,1,1] = s_princ[:,:,1]
 
-                L = torch.zeros([t_pts, n_elems, 3, 3])
-                tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-                L[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
-                H = L @torch.transpose(L,2,3)
+                
+                # rot_mat = torch.zeros_like(s_princ_mat)
+                # rot_mat[:,:,0,0] = torch.cos(angles[:,:])
+                # rot_mat[:,:,0,1] = torch.sin(angles[:,:])
+                # rot_mat[:,:,1,0] = -torch.sin(angles[:,:])
+                # rot_mat[:,:,1,1] = torch.cos(angles[:,:])
 
-                d_s = (H @ d_e).squeeze()
-                s = torch.cumsum(d_s,0).reshape([-1,3])
+                # s = torch.transpose(rot_mat,2,3) @ s_princ_mat @ rot_mat
+                # s_vec = s[:,:,[0,1,1],[0,1,0]].reshape([-1,3])
+                
+                # l = torch.reshape(pred,[t_pts,n_elems,6])
 
+                # L = torch.zeros([t_pts, n_elems, 3, 3])
+                # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+                # L[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
+                # H = L @torch.transpose(L,2,3)
+
+                # d_s = (H @ d_e).squeeze()
+                # s = torch.cumsum(d_s,0).reshape([-1,3])
+
+                # v,m = torch.std_mean(torch.from_numpy(train_generator.y.values),0)
+                # w_x = 1/v[0]
+                # w_y = 1/v[1]
+                # w_xy = 1/v[2]
+
+                # y_scaler = preprocessing.MinMaxScaler(feature_range=(-1, 1))
+                # y_scaler.fit(y_test)
+                # y_test = torch.from_numpy(y_scaler.scale_)*y_test
+                # s_vec = torch.from_numpy(y_scaler.scale_)*s_vec
+               
                 # Computing losses
-                test_loss = loss_fn(s[:,0], y_test[:,0]) + loss_fn(s[:,1], y_test[:,1]) + loss_fn(s[:,2], y_test[:,2])
+                #test_loss = loss_fn(s_vec[:,0], y_test[:,0]) + loss_fn(s_vec[:,1], y_test[:,1]) + loss_fn(s_vec[:,2], y_test[:,2])
+                #test_loss = loss_fn(pred_princ[:,0],y_princ[:,0]) + loss_fn(pred_princ[:,1],y_princ[:,1]) + loss_fn(pred_eigen[:,0],y_eigen_vec[:,0]) + loss_fn(pred_eigen[:,1],y_eigen_vec[:,1]) + loss_fn(pred_eigen[:,2],y_eigen_vec[:,2]) + loss_fn(pred_eigen[:,3],y_eigen_vec[:,3])
+               
+                test_loss = loss_fn(s[:,0],y_princ[:,0]) + loss_fn(s[:,1],y_princ[:,1])
                 
                 test_losses[batch] = test_loss
                
@@ -489,7 +572,7 @@ def train(q):
     df_list, _ = load_dataframes(TRAIN_MULTI_DIR)
 
     # Merging training data
-    data = pd.concat(df_list, axis=0, ignore_index=True).dropna(axis=0)
+    data = pd.concat(df_list, axis=0, ignore_index=True)
 
     T_PTS = len(set(data['t']))
 
@@ -529,9 +612,9 @@ def train(q):
 
     # Model variables
     N_INPUTS = X.shape[1]
-    N_OUTPUTS = y.shape[1] + 3
+    N_OUTPUTS = 2
 
-    N_UNITS = [12,12,12]
+    N_UNITS = [20,15,10]
     H_LAYERS = len(N_UNITS)
 
     WANDB_LOG = True
@@ -545,11 +628,10 @@ def train(q):
     #     p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))
 
     # Training variables
-    epochs = 10000
-
+    epochs = 5000
     # Optimization variables
     # Optimization variables
-    learning_rate = 0.002
+    learning_rate = 0.008
     lr_mult = 1.0
 
     params = layer_wise_lr(model_1, lr_mult=lr_mult, learning_rate=learning_rate)
@@ -557,12 +639,12 @@ def train(q):
     loss_fn = torch.nn.MSELoss()
 
     
-    weight_decay=0.002
+    weight_decay=0.001
 
     optimizer = torch.optim.AdamW(params=params, weight_decay=weight_decay)
-    #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=15, factor=0.65, min_lr=[params[i]['lr']*0.002 for i in range(len(params))])
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10, cooldown=5, factor=0.88, min_lr=[params[i]['lr']*0.00005 for i in range(len(params))])
     #[params[i]['lr']*0.025 for i in range(len(params))]
-    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=0.002, max_lr=0.007, mode='exp_range',gamma=0.99994,cycle_momentum=False,step_size_up=len(train_generator)*20,step_size_down=len(train_generator)*200)
+    #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=0.002, max_lr=0.007, mode='exp_range',gamma=0.99994,cycle_momentum=False,step_size_up=len(train_generator)*20,step_size_down=len(train_generator)*200)
     #constraints=weightConstraint(cond='plastic')
 
 
@@ -576,6 +658,7 @@ def train(q):
     l1_loss = []
     ch_loss = []
     wp_loss = []
+    I1_loss = []
     # j2_loss = []
 
     # Initializing the early_stopping object
@@ -591,7 +674,7 @@ def train(q):
             "lr": learning_rate,
             "l2_reg": weight_decay
         }
-        run=wandb.init(project="direct_training", entity="rmbl",config=config)
+        run=wandb.init(project="direct_training_principal_incremental", entity="rmbl",config=config)
         wandb.watch(model_1,log='all')
 
     for t in range(epochs):
@@ -608,7 +691,7 @@ def train(q):
         start_train = time.time()
 
         #--------------------------------------------------------------
-        batch_losses, grad_norm, l_0, l_1, l_ch, l_wp = train_loop(train_generator, model_1, loss_fn, optimizer)
+        batch_losses, grad_norm, l_0, l_1, l_ch, l_wp, l_I1 = train_loop(train_generator, model_1, loss_fn, optimizer)
         #--------------------------------------------------------------
 
         train_loss.append(torch.mean(batch_losses))
@@ -616,16 +699,17 @@ def train(q):
         l1_loss.append(torch.mean(l_1))
         ch_loss.append(torch.mean(l_ch))
         wp_loss.append(torch.mean(l_wp))
+        I1_loss.append(torch.mean(l_I1))
         
         
         end_train = time.time()
 
         #Apply learning rate scheduling if defined
         try:
-            #scheduler.step(train_loss[t])
+            scheduler.step(train_loss[t])
             print('. t_loss: %.6e -> lr: %.4e | l0: %.4e | l1: %.4f | lw: %.4f -- %.3fs' % (train_loss[t], scheduler._last_lr[0], l0_loss[t], l1_loss[t], ch_loss[t], end_train - start_train))
         except:
-            print('. t_loss: %.6e -- %.3fs' % (train_loss[t], v_work[t], end_train - start_train))
+            print('. t_loss: %.6e -> | l0: %.4e | l1: %.4f | lw: %.4f -- %.3fs' % (train_loss[t], l0_loss[t], l1_loss[t], ch_loss[t],end_train - start_train))
 
         # Test loop
         start_test = time.time()
@@ -657,6 +741,7 @@ def train(q):
                 'drucker_error': l1_loss[t],
                 'cholesky_error': ch_loss[t],
                 'plastic_power': wp_loss[t],
+                'I1_error': I1_loss[t],
                 #'j2_error': j2_loss[t]
             })
 

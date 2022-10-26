@@ -2,6 +2,7 @@
 #    Library and function imports
 # ---------------------------------
 from pyexpat import model
+from re import L
 from scipy.signal import savgol_filter
 from scipy.signal import find_peaks
 from scipy.signal import find_peaks_cwt
@@ -26,7 +27,8 @@ from functions import (
     read_mesh,
     global_strain_disp,
     param_deltas,
-    global_dof)
+    global_dof,
+    stress_from_cholesky)
 from functions import (
     weightConstraint,
     EarlyStopping,
@@ -59,6 +61,7 @@ import geotorch
 from warmup_scheduler import GradualWarmupScheduler
 from ignite.handlers import create_lr_scheduler_with_warmup
 from ignite.engine import *
+from multiprocessing import Pool
 
 # -----------------------------------------
 #   DEPRECATED IMPORTS
@@ -282,7 +285,8 @@ def batch_jacobian(f, x):
     return jacobian(f_sum, x, create_graph=True).permute(1,0,2)
 
 def count_parameters(model):
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+    exceptions = [k for k, v in model.state_dict().items() if 'activations' in k or 'b_norms' in k or 'parametrizations'in k or 'passthrough' in k or 'bias' in k]
+    return sum(p.numel() for k, p in model.state_dict().items() if k not in exceptions)
 
 # # Defined at top-level because nested functions are not importable in multiprcessing.pool
 # # Refer to: https://stackoverflow.com/questions/52265120/python-multiprocessing-pool-attributeerror
@@ -310,13 +314,17 @@ def count_parameters(model):
 
 def train(q):
     def get_grad_norm(model):
-        total_norm = 0
+        total_norm = []
+        # for p in model.parameters():
+        #     if p.grad is not None:
+        #         param_norm = p.grad.data.norm(2)
+        #         total_norm += param_norm.item() ** 2
+        # total_norm = total_norm ** (1. / 2)
         for p in model.parameters():
             if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** (1. / 2)
-        return total_norm
+                param_norm = p.grad.data.norm(p=float("inf"))
+                total_norm.append(param_norm)
+        return torch.mean(torch.as_tensor(total_norm))
 
     def init_weights(m):
         '''
@@ -331,34 +339,39 @@ def train(q):
             torch.nn.init.kaiming_normal_(m.weight) #RELU
             #torch.nn.init.xavier_normal(m.weight)
             #torch.nn.init.zeros_(m.bias)
-            #torch.nn.init.ones_(m.bias)
-            m.bias.data.fill_(0.01)
+            torch.nn.init.ones_(m.bias)
+            #m.bias.data.fill_(0.01)
 
     # Defined at top-level because nested functions are not importable in multiprcessing.pool
     # Refer to: https://stackoverflow.com/questions/52265120/python-multiprocessing-pool-attributeerror
-    def sigma_deltas(param_dict, model, x, s):
+    def sigma_deltas(param_dict, model, x, d_e, s):
     
         s_=s.reshape((-1,)+s.shape[2:])
         x_=x.reshape((-1,)+x.shape[2:])
 
+        n_tests = s.shape[0]
+        n_elems = s.shape[1] // T_PTS
+
+        model.eval()
         with torch.no_grad():
             model.load_state_dict(param_dict)
-            d_sigma = (s_ - model(x_).detach())
+            pred = stress_from_cholesky(model(x_).detach(), d_e, T_PTS, n_elems, n_tests=n_tests, sbvf_gen=True)
+            d_sigma = (s_ - pred)
            
-        d_sigma = torch.reshape(d_sigma,s.shape)
+        #d_sigma = torch.reshape(d_sigma,s.shape)
 
         if INCREMENTAL_VFS:
             ##### INCREMENTAL DELTA STRESS #############
-            n_elems = s.shape[1] // T_PTS
+            #n_elems = s.shape[1] // T_PTS
             ds_ = torch.reshape(d_sigma,[d_sigma.shape[0],T_PTS,n_elems,3])
             
             dd_sigma = torch.zeros_like(ds_)
             dd_sigma[:,1:] = (ds_[:,1:] - ds_[:,:-1]) / 0.02
 
-            return torch.reshape(dd_sigma,d_sigma.shape)
+            return dd_sigma.reshape(s.shape)
             # # ##############################################
         else:
-            return d_sigma
+            return d_sigma.reshape(s.shape)
 
     def sbv_fields(d_sigma, b_glob, b_inv, n_elems, bcs, active_dof):
 
@@ -397,19 +410,24 @@ def train(q):
             iterator = iter(dataloader)
             data = [next(iterator) for i in range(num_batches)]
 
-            x = {list(set(data[i][-2]))[0]: torch.from_numpy(data[i][0]) for i in range(num_batches)}
+            x = {list(set(data[i][-2]))[0]: (torch.from_numpy(data[i][0]), torch.from_numpy(data[i][-1][['d_exx','d_eyy','d_exy']].values)) for i in range(num_batches)}
 
             if isTrain:
-                s = {k: model(v).detach() for k,v in x.items()}
+                s = {k: model(v[0]).detach() for k,v in x.items()}
             else:
-                s = {k: model(torch.from_numpy(dataloader.scaler_x.transform(v.numpy()))).detach() for k,v in x.items()}
+                s = {k: model(torch.from_numpy(dataloader.scaler_x.transform(v[0].numpy()))).detach() for k,v in x.items()}
 
-        eps = torch.stack(list(x.values()))
+        s = {k: stress_from_cholesky(v, x[k][1], t_pts, n_elems, sbvf_gen=True) for k,v in s.items()}
+        z = list(zip(*x.values()))
+        eps = torch.stack(z[0])
+        de = torch.stack(z[1])
         sigma = torch.stack(list(s.values()))
 
-        ds = torch.stack(list(map(lambda p_dict: sigma_deltas(p_dict,model=mdl,x=eps,s=sigma), param_dicts))).permute(1,0,2,3)
+        #cProfile.runctx('map(lambda p_dict: sigma_deltas(p_dict,model=mdl,x=eps,d_e=de,s=sigma), param_dicts)',{'sigma_deltas':sigma_deltas,'mdl':mdl,'eps':eps,'de':de,'sigma':sigma,'param_dicts':param_dicts},{})
+        ds = torch.stack(list(map(lambda p_dict: sigma_deltas(p_dict,model=mdl,x=eps,d_e=de,s=sigma), param_dicts))).permute(1,0,2,3)
 
         for i,(k,v) in enumerate(x.items()):
+            #Profile.runctx('sbv_fields(ds[i], b_glob, b_inv, n_elems, bcs, active_dof)',{'sbv_fields':sbv_fields,'ds':ds,'i':i,'b_glob':b_glob,'b_inv':b_inv,'n_elems':n_elems,'bcs':bcs,'active_dof':active_dof},{})
             v_u, v_disp, v_strain = sbv_fields(ds[i], b_glob, b_inv, n_elems, bcs, active_dof)
             if isTrain:
                 VFs_train[k]['u'] = v_u.numpy()
@@ -463,23 +481,24 @@ def train(q):
 
         '''
 
+        # Initializing container variables
         num_batches = len(dataloader)
         losses = torch.zeros(num_batches)
-        l0_error = torch.zeros(num_batches)
-        l_hill_error = torch.zeros(num_batches)
+        l0_loss = torch.zeros(num_batches)
+        l1_loss = torch.zeros(num_batches)
+        ch_loss = torch.zeros(num_batches)
         err_stress = torch.zeros(num_batches)
         err_h = torch.zeros(num_batches)
         v_work_real = torch.zeros(num_batches)
 
-        g_norm = []
+        g_norm = torch.zeros(num_batches)
 
+        # Initializing shape variables
         t_pts = dataloader.t_pts
         n_elems = batch_size // t_pts
 
-        l = 0
         model.train()
 
-        #optimizer.zero_grad(set_to_none=True)
         for batch in range(num_batches):
 
             # Extracting variables for training
@@ -494,7 +513,7 @@ def train(q):
             tags = tag[::n_elems].values.tolist()
             incs = inc['inc'][::n_elems].values.tolist()
             t_ = torch.reshape(torch.from_numpy(inc['t'].values),[t_pts,n_elems])
-            d_e = torch.reshape(torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values),[t_pts,n_elems,3,1])
+            d_e = torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values)
 
 
             # Extracting element area
@@ -502,34 +521,9 @@ def train(q):
 
             # Computing model stress prediction
             pred=model(X_train)
-            
-            # l = torch.reshape(pred,[t_pts,n_elems,6])
 
-            # m = torch.zeros([t_pts, n_elems, 3, 3])
-            # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-            # m[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
-            # H = m@torch.transpose(m,2,3)
-
-            # d_s = torch.reshape((H @ d_e),[t_pts,-1])
-            # s = torch.cumsum(torch.reshape(d_s,[t_pts,n_elems,3]),1)
-            
-            #delta_pred = torch.unsqueeze(torch.cat([torch.zeros([1,n_elems,3]),torch.diff(torch.reshape(pred,[t_pts,n_elems,3]),dim=0)],0),-1)
+            s, L, H = stress_from_cholesky(pred, d_e, t_pts, n_elems)
         
-            #---------------------------------
-            # s_ = model_2(X_train).detach()
-            # f_ = torch.sum(torch.reshape(s_ * area * ELEM_THICK / LENGTH,[t_pts,n_elems,3]),1)[:,:2]
-            #-----------------------------------------------------------------------------------------
-
-            
-            # e = dataloader.scaler_x.inverse_transform(X_train)
-            # e = torch.reshape(torch.from_numpy(e)[:,::2],[t_pts,n_elems*3])
-            #e_dot, e_p, p, p_dot, e_p_dot, yield_pt = strain_decomp(t,e)
-
-            # e = torch.from_numpy(dataloader.scaler_x.inverse_transform(X_train))
-            # e = torch.reshape(e[:,::2],[t_pts,n_elems,3])
-            
-            # lp = torch.square(100*torch.sum(torch.nn.functional.relu(-torch.sum(pred * e_dot,-1))))
-
             #-----------------------------------------------------------------------------------------
             # Loading sensitivity-based virtual fields
             tag = tags[0]
@@ -538,15 +532,12 @@ def train(q):
             n_vfs = v_disp.shape[0]
             v_strain = torch.from_numpy(VFs_train[tag]['e'])
             v_strain = v_strain[:,incs]
-            v_strain = torch.reshape(v_strain,(n_vfs,pred.shape[0],pred.shape[1]))
+            v_strain = torch.reshape(v_strain,(n_vfs,s.shape[0],s.shape[1]))
 
-            #-----------------------------------------------------------------------------------------
-
-            # Computing sensitivity-based virtual fields
-            #v_u, v_disp, v_strain = sbv_fields(d_sigma, b_glob, b_inv, n_elems, bcs, active_dof)
+            #----------------------------------------------------------------------------------------
 
             # Computing predicted virtual work
-            int_work = torch.sum(torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
+            int_work = torch.sum(torch.sum(torch.reshape((s * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
 
             # Computing real virtual work
             int_work_real = torch.sum(torch.sum(torch.reshape((y_train * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
@@ -568,13 +559,16 @@ def train(q):
 
             #Initial loss
             idx_0 = np.where(np.array(incs)==0)[0][0]*n_elems
-            s_0 = pred[idx_0:idx_0+n_elems,:] 
+            s_0 = s[idx_0:idx_0+n_elems,:] 
             
-            l_0 = mse(s_0,torch.zeros_like(s_0))
+            l_0 = torch.mean(torch.square(s_0))
 
-            #l_hill = torch.mean(torch.nn.functional.relu(-torch.sum(torch.sum((pred_dot * torch.reshape(e_dot,pred_dot.shape)),-1),-1)))
+            # Intrinsic dissipation
+            l_1 = torch.mean(torch.square(torch.nn.functional.relu(-(s * d_e/0.02))))
+
+            # Positive definiteness of H - positive diagonal of L
+            l_cholesky = torch.mean(torch.square(nn.functional.relu(-torch.diagonal(L, offset=0, dim1=2, dim2=3))))
             
-
             # #Equilibrium
             # i_f = torch.sum(torch.reshape(pred[:,:2] * area * ELEM_THICK / LENGTH,[T_PTS,n_elems,2]),1)
             # l_f = mse(i_f,f)
@@ -596,24 +590,28 @@ def train(q):
             # l_h = torch.sum(torch.square(torch.nn.functional.relu(-h)))
 
             # # Computing loss
-            loss = loss_fn(int_work,ext_work) + l_0
-            #loss = mse(f_i,f_g) + l_0
+            loss = loss_fn(int_work,ext_work) + 100*l_cholesky
+            #loss = mse(f_i,f_g) + l_00.001*l_1
             cost = loss_fn(int_work_real, ext_work)
             
             # Backpropagation and weight's update
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             # # Gradient clipping - as in https://github.com/pseeth/autoclip
-            g_norm.append(get_grad_norm(model))
+            g_norm[batch] = get_grad_norm(model)
             #clip_value = np.percentile(g_norm, 10)
             #nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
             #nn.utils.clip_grad_value_(model.parameters(),10.0)
 
             optimizer.step()
             #scheduler.step()
-            #model.apply(constraints)
+            # for i, layer in enumerate(model.layers):
+            #     if i != 0:
+            #         layer.apply(constraints)
+            
+
             if tags[0]==train_trials[0]:
-                numSteps = math.floor(scale_par * int_work.shape[1])
+                numSteps = math.floor(SCALE_PAR * int_work.shape[1])
                 if numSteps == 0:
                     numSteps = 1
                 ivw_sort = torch.sort(torch.abs(int_work.detach()),1,descending=True).values
@@ -622,10 +620,12 @@ def train(q):
 
             # Saving loss values
             losses[batch] = loss.detach().item()
-            l0_error[batch] = l_0.detach().item()
-            l_hill_error[batch] = 0
-            err_stress[batch] = mse(pred.detach(),y_train)
-            err_h[batch] = 0
+            l0_loss[batch] = l_0.detach().item()
+            l1_loss[batch] = l_1.detach().item()
+            ch_loss[batch] = l_cholesky.detach().item()
+
+            err_stress[batch] = mse(s.detach(),y_train)
+            
             v_work_real[batch] = cost.detach().item()
             #v_work_real[batch] = 0
             #g_norm.append(get_grad_norm(model))
@@ -646,7 +646,7 @@ def train(q):
         # get_sbvfs(copy.deepcopy(model), sbvf_generator)
         # return losses, v_work_real, v_disp, v_strain, v_u
         #-----------------------------
-        return losses, l0_error, err_stress, v_work_real, g_norm, alpha, l_hill_error
+        return losses, l0_loss, err_stress, v_work_real, g_norm, alpha, l1_loss, ch_loss
 
     def test_loop(dataloader, model, loss_fn):
 
@@ -683,8 +683,10 @@ def train(q):
 
                 area = torch.reshape(coord_torch[:,4],[batch_size,1])
 
+                d_e = torch.from_numpy(inc[['d_exx','d_eyy','d_exy']].values)
+
                 pred = model(X_test)
-                
+                s, _, _ = stress_from_cholesky(pred, d_e, t_pts, n_elems)
                 #--------------------------------------
                 # s_ = model_2(X_test).detach()
                 # f_ = torch.sum(torch.reshape(s_ * area * ELEM_THICK / LENGTH,[t_pts,n_elems,3]),1)[:,:2]
@@ -696,10 +698,10 @@ def train(q):
                 v_disp = torch.from_numpy(VFs_test[tag]['v_u'])
                 n_vfs = v_disp.shape[0]
                 v_strain = torch.from_numpy(VFs_test[tag]['e'])
-                v_strain = torch.reshape(v_strain,(n_vfs,pred.shape[0],pred.shape[1]))
+                v_strain = torch.reshape(v_strain,(n_vfs,s.shape[0],s.shape[1]))
                 #-----------------------------------------------------------------------------------------
 
-                int_work = torch.sum(torch.sum(torch.reshape((pred * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
+                int_work = torch.sum(torch.sum(torch.reshape((s * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
 
                 int_work_real = torch.sum(torch.sum(torch.reshape((y_test * v_strain * area * ELEM_THICK),[n_vfs,t_pts,n_elems,3]),-1),-1,keepdim=True)
 
@@ -820,13 +822,12 @@ def train(q):
 
     # Model variables
     N_INPUTS = X.shape[1]
-    N_OUTPUTS = y.shape[1]
+    N_OUTPUTS = y.shape[1] + 3
    
-    N_UNITS = [20,10]
+    N_UNITS = [12,12,12]
     H_LAYERS = len(N_UNITS)
 
     INCREMENTAL_VFS = False
-    WANDB_LOG = True
 
     model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS, b_norm=False)
     #model_1 = InputConvexNN(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
@@ -839,47 +840,60 @@ def train(q):
     #     p.register_hook(lambda grad: torch.clamp(grad, -1.0, 1.0))
     # geotorch.symmetric(model_1.layers[-1], "weight")
 
-    clip_value = 250
-    for p in model_1.parameters():
-        p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))
+    # clip_value = 250
+    # for p in model_1.parameters():
+    #     p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))
+    
 
     # Training variables
     epochs=10000
 
     # Optimization variables
-    learning_rate = 0.05
-    lr_mult = 0.85
+    L_RATE = 0.08
+    LR_MULT = 1.0
 
-    params = layer_wise_lr(model_1, lr_mult=lr_mult, learning_rate=learning_rate)
+    params = layer_wise_lr(model_1, lr_mult=LR_MULT, learning_rate=L_RATE)
 
-    scale_par=0.3
-    loss_fn = SBVFLoss(scale_par=scale_par,res_scale=False)
+    SCALE_PAR = 0.1
+    loss_fn = SBVFLoss(scale_par=SCALE_PAR,res_scale=False)
     
     mse = torch.nn.MSELoss()
 
-    weight_decay = 0.001
-    optimizer = torch.optim.AdamW(params=params, weight_decay=weight_decay)
+    WEIGH_DECAY = 0.001
+    optimizer = torch.optim.AdamW(params=params, weight_decay=WEIGH_DECAY)
+
+    
 
     # lr_lambda = lambda x: math.exp(x * math.log(1e-7 / 1.0) / (epochs * len(train_generator)))
     #scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=30, cooldown=15, factor=0.88, min_lr=[params[i]['lr']*0.05 for i in range(len(params))])
+    PATIENCE = 65
+    COOLDOWN = 20
+    FACTOR = 0.8
+    MIN_LR = 0.0001
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=PATIENCE, cooldown=COOLDOWN, factor=FACTOR, min_lr=[params[i]['lr']*MIN_LR for i in range(len(params))])
+
+    #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=1e-3, max_lr=0.08, mode='exp_range',gamma=0.99994,cycle_momentum=False,step_size_up=len(train_generator)*50,step_size_down=len(train_generator)*50)
+    #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=1e-3,max_lr=0.008,mode='exp_range',gamma=0.99994,cycle_momentum=False)
     
-    #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=1e-3,max_lr=1e-1,mode='exp_range',gamma=0.99994,cycle_momentum=False)
-    
-    #constraints=weightConstraint(cond='plastic')
+    constraints=weightConstraint(cond='plastic')
 
     # Container variables for history purposes
     train_loss = []
-    l_stresses = []
+    
     err_stresses = []
     v_work = []
     val_loss = []
     epochs_ = []
-    err_hill = []
+    
+    l0_loss = []
+    l1_loss = []
+    ch_loss = []
+
+    g_norms = []
     # Initializing the early_stopping object
     #early_stopping = EarlyStopping(patience=1000, path='temp/checkpoint.pt', verbose=True)
 
-    #wandb.watch(model_1)
+    
     VFs_train = {key: {k: None for k in ['u','e','v_u']} for key in train_trials}
     VFs_test = {key: {k: None for k in ['u','e','v_u']} for key in test_trials}
 
@@ -887,8 +901,16 @@ def train(q):
 
     k_opt = 0
     l_opt = 0
+  
 
-    PROJECT = 'indirect_training_tests'
+    ################################################################################
+    #                           WEIGHTS & BIASES LOGGING
+    ################################################################################
+
+    WANDB_LOG = True
+
+    PROJECT = 'indirect_training_cholesky'
+
     if WANDB_LOG:
         config = {
             "inputs": N_INPUTS,
@@ -897,14 +919,19 @@ def train(q):
             "hidden_units": "/".join(str(x) for x in N_UNITS),
             "incremental_vfs": INCREMENTAL_VFS,
             "epochs": epochs,
-            "lr": learning_rate,
-            "l2_reg": weight_decay,
-            "scale_par": scale_par
+            "lr": L_RATE,
+            "l2_reg": WEIGH_DECAY,
+            "scale_par": SCALE_PAR,
+            "sch_patience": PATIENCE,
+            "sch_cooldown": COOLDOWN,
+            "sch_factor": FACTOR,
+            "sch_min_lr": MIN_LR
         }
         
         run = wandb.init(project=f'{PROJECT}', entity="rmbl",config=config)
         run.watch(model_1,log='all')
-        #wandb.watch(model_1,log='all')
+
+    ################################################################################
 
     for t in range(epochs):
 
@@ -929,16 +956,18 @@ def train(q):
         start_train = time.time()
 
         #--------------------------------------------------------------
-        batch_losses, l_stress, err_stress, batch_v_work, grad_norm, alpha, l_hill = train_loop(train_generator, model_1, loss_fn, optimizer)
+        batch_losses, l_0, err_stress, batch_v_work, grad_norm, alpha, l_1, l_ch = train_loop(train_generator, model_1, loss_fn, optimizer)
         #--------------------------------------------------------------
 
         q.put((w_virt[train_trials[0]],train_trials[0]))
 
         train_loss.append(torch.mean(batch_losses))
-        l_stresses.append(torch.mean(l_stress))
+        l0_loss.append(torch.mean(l_0))
         err_stresses.append(torch.mean(err_stress))
         v_work.append(torch.mean(batch_v_work))
-        err_hill.append(torch.mean(l_hill))
+        l1_loss.append(torch.mean(l_1))
+        ch_loss.append(torch.mean(l_ch))
+        g_norms.append(torch.mean(grad_norm))
 
         end_train = time.time()
 
@@ -962,7 +991,7 @@ def train(q):
         end_test = time.time()
 
         print('. v_loss: %.6e -- %.3fs' % (val_loss[t], end_test - start_test))
-        q.put(([train_loss[t],val_loss[t],l_stresses[t],err_stresses[t]],'loss'))
+        q.put(([train_loss[t],val_loss[t],l0_loss[t],err_stresses[t]],'loss'))
 
         # if t > 200:
         #     if early_stopping.counter==0:
@@ -972,8 +1001,9 @@ def train(q):
         #     early_stopping(val_loss[t], model_1)
 
         if t!= 0:
-            tol_updt = (train_loss[0]/1.1**(k_opt))
-            #tol_updt = (10/1.5**k_opt)
+
+            #tol_updt = (train_loss[0]/2.3**(k_opt))
+            tol_updt = (1/2.3**k_opt)
             delta_loss = train_loss[t]-train_loss[t-1]
             
             if delta_loss > 0:
@@ -981,9 +1011,11 @@ def train(q):
             else:
                 l_opt = 0
 
-            print('\n[k_opt: %i | l_opt: %i] -- grad_norm (mean): %.6e | delta_loss: %.6e | tol_updt: %.6e' % (k_opt, l_opt, np.mean(grad_norm), delta_loss, tol_updt))
-
-            if (abs(delta_loss) < tol_updt):
+            print('\n[k_opt: %i | l_opt: %i] -- grad_norm (mean): %.6e | delta_loss: %.6e | tol_updt: %.6e' % (k_opt, l_opt, g_norms[t], delta_loss, tol_updt))
+            
+            #if t % 4999 == 0:
+            if g_norms[t] <= tol_updt:
+            #if (abs(delta_loss) < tol_updt):
             #if (t%99==0):
 
                 print('\nUpdating virtual fields [%i]' % (k_opt))
@@ -991,8 +1023,7 @@ def train(q):
                 get_sbvfs(copy.deepcopy(model_1), sbvf_generator)
 
                 get_sbvfs(copy.deepcopy(model_1), test_generator, isTrain=False)
-
-                #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, cooldown=25, factor=0.2, min_lr=1e-5)
+            
                 k_opt += 1
                 l_opt = 0
 
@@ -1005,12 +1036,13 @@ def train(q):
             wandb.log({
                 'epoch': t,
                 'l_rate': scheduler._last_lr[0],
+                'grad_norm': g_norms[t],
                 'train_loss': train_loss[t],
                 'test_loss': val_loss[t],
                 'mse_stress': err_stresses[t],
-                's(0)_error': l_stresses[t],
-                #'hill_error': err_hill[t],
-                #'h_error': err_h_[t],
+                's(0)_error': l0_loss[t],
+                'dissipation_error': l1_loss[t],
+                'cholesky_error': ch_loss[t],
                 'vf_update': k_opt,
                 'alpha_0': alpha[0],
                 'alpha_%i' % (math.floor(vfs/4)): alpha[math.floor(vfs/4)],
@@ -1036,14 +1068,14 @@ def train(q):
         pass
 
 
-    task = r'[%i-%ix%i-%i]-%s-%i-VFs' % (N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
+    task = r'%s-[%i-%ix%i-%i]-%s-%i-VFs' % (run.name,N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
 
-    output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs'
-    output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/loss/'
-    output_stats = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/stats/'
-    output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/models/'
-    output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/val/'
-    output_logs = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/logs/'
+    output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_cholesky'
+    output_loss = output_task + '/loss/'
+    output_stats = output_task + '/stats/'
+    output_models = output_task + '/models/'
+    output_val = output_task + '/val/'
+    output_logs = output_task + '/logs/'
 
     directories = [output_task, output_loss, output_stats, output_models, output_val, output_logs]
 
@@ -1112,243 +1144,6 @@ if __name__ == '__main__':
     updateplot(q)
 
     window.mainloop()
-
-    # # Reading mesh file
-    # mesh, connectivity, dof = read_mesh(TRAIN_MULTI_DIR)
-
-    # # Defining geometry limits
-    # x_min = min(mesh[:,1])
-    # x_max = max(mesh[:,1])
-    # y_min = min(mesh[:,-1])
-    # y_max = max(mesh[:,-1])
-
-    # # Total degrees of freedom
-    # total_dof = mesh.shape[0] * 2
-
-    # # Defining edge boundary conditions
-    # bcs = {
-    #     'left': {
-    #         'cond': [1,0],
-    #         'dof': global_dof(mesh[mesh[:,1]==x_min][:,0])},
-    #     'bottom': {
-    #         'cond': [0,1],
-    #         'dof': global_dof(mesh[mesh[:,-1]==y_min][:,0])},
-    #     'right': {
-    #         'cond': [2,0],
-    #         'dof': global_dof(mesh[mesh[:,1]==x_max][:,0])},
-    #     'top': {
-    #         'cond': [0,0],
-    #         'dof': global_dof(mesh[mesh[:,-1]==y_max][:,0])}
-    # }
-
-    # # Constructing element properties based on mesh info
-    # elements = [Element(connectivity[i,:],mesh[connectivity[i,1:]-1,1:],dof[i,:]) for i in tqdm(range(connectivity.shape[0]))]
-
-    # # Assembling global strain-displacement matrices
-    # b_glob, b_bar, b_inv, active_dof = global_strain_disp(elements, total_dof, bcs)
-
-    # # Loading data
-    # df_list, _ = load_dataframes(TRAIN_MULTI_DIR)
-
-    # # Merging training data
-    # data = pd.concat(df_list, axis=0, ignore_index=True)
-
-    # T_PTS = len(set(data['t']))
-
-    # # Performing test/train split
-    # partition = {"train": None, "test": None}
-
-    # # if T_PTS==DATA_SAMPLES:
-    # # Reorganizing dataset by tag, subsequent grouping by time increment
-    # data_by_tag = [df for _, df in data.groupby(['tag'])]
-    # random.shuffle(data_by_tag)
-    # data_by_t = [[df for _, df in group.groupby(['t'])] for group in data_by_tag]
-    # #random.shuffle(data_by_t)
-    # data_by_batches = list(itertools.chain(*data_by_t))
-    # #random.shuffle(data_by_batches)
-
-    # batch_size = len(data_by_batches[0]) * T_PTS
-
-    # data = pd.concat(data_by_batches).reset_index(drop=True)
-
-    # trials = list(set(data['tag'].values))
-    # test_trials = random.sample(trials, math.floor(len(trials)*TEST_SIZE))
-    # train_trials = list(set(trials).difference(test_trials))
-
-    # partition['train'] = data[data['tag'].isin(train_trials)].index.tolist()
-    # partition['test'] = data[data['tag'].isin(test_trials)].index.tolist()
-
-    # # Selecting model features
-    # X, y, f, coord, info = select_features_multi(data)
-
-    # # Preparing data generators for mini-batch training
-
-    # #partition['train'] = data[data['tag']=='m80_b80_x'].index.tolist()
-    # train_generator = DataGenerator(X, y, f, coord, info, partition["train"], batch_size, shuffle=False, std=True, t_pts=T_PTS)
-    # test_generator = DataGenerator(X, y, f, coord, info, partition['test'], batch_size, shuffle=False, std=False, t_pts=T_PTS)
-
-    # # Model variables
-    # N_INPUTS = X.shape[1]
-    # N_OUTPUTS = y.shape[1]
-
-    # N_UNITS = [12,6]
-    # H_LAYERS = len(N_UNITS)
-
-    # model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
-
-    # model_1.apply(init_weights)
-
-    # # Training variables
-    # epochs = 50000
-
-    # # Optimization variables
-    # learning_rate = 0.1
-    # loss_fn = sbvf_loss
-    # f_loss = torch.nn.MSELoss()
-
-    # optimizer = torch.optim.Adam(params=list(model_1.parameters()), lr=learning_rate)
-    # #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=50, factor=0.25, min_lr=1e-5)
-    # #scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,T_0=20, T_mult=1, eta_min=0.001)
-
-    # #scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer,0.99)
-
-    # #constraints=weightConstraint(cond='plastic')
-
-    # # Container variables for history purposes
-    # train_loss = []
-    # v_work = []
-    # val_loss = []
-    # epochs_ = []
-    # # Initializing the early_stopping object
-    # early_stopping = EarlyStopping(patience=2000, path='temp/checkpoint.pt', verbose=True)
-
-    # #wandb.watch(model_1)
-    # VFs_train = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['u','e','v_u']} for key in train_trials}
-    # VFs_test = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['u','e','v_u']} for key in test_trials}
-
-    # w_virt = {key: {k: dict.fromkeys(set(info['inc'])) for k in ['w_int','w_int_real','w_ext']} for key in set(info['tag'])}
-
-    # upd_tol = 1e-1
-    # upd_tol_tune = 3.1
-    # vf_updt = False
-    # corr_factor = 0
-    # isTraining = False
-
-    # for t in range(epochs):
-
-    #     print('\r--------------------\nEpoch [%d/%d]' % (t + 1, epochs))
-
-    #     epochs_.append(t+1)
-
-    #     #start_epoch = time.time()
-
-    #     #Shuffling batches
-    #     train_generator.on_epoch_end()
-    #     test_generator.on_epoch_end()
-
-    #     #--------------------------------------------------------------
-    #     #Calculating VFs
-    #     if t==0:
-    #         print('Computing virtual fields...')
-    #         get_sbvfs(model_1, train_generator)
-    #         get_sbvfs(model_1, test_generator, isTrain=False)
-
-    #     #--------------------------------------------------------------
-
-    #     # Train loop
-    #     start_train = time.time()
-
-    #     #--------------------------------------------------------------
-    #     batch_losses, batch_v_work = train_loop(train_generator, model_1, loss_fn, optimizer)
-    #     #--------------------------------------------------------------
-
-    #     #batch_losses, batch_v_work, v_disp, v_strain, v_u = train_loop(train_generator, model_1, loss_fn, optimizer)
-
-    #     train_loss.append(torch.mean(batch_losses).item())
-    #     v_work.append(torch.mean(batch_v_work).item())
-
-    #     end_train = time.time()
-
-    #     #Apply learning rate scheduling if defined
-    #     try:
-    #         scheduler.step(train_loss[t])
-    #         #scheduler.step()
-    #         print('. t_loss: %.6e -> lr: %.3e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], scheduler._last_lr[0], v_work[t], end_train - start_train))
-    #     except:
-    #         print('. t_loss: %.6e // [v_work] -> %.3e -- %.3fs' % (train_loss[t], v_work[t], end_train - start_train))
-
-    #     # Test loop
-    #     start_test = time.time()
-
-    #     # batch_val_losses = test_loop(test_generator, model_1, loss_fn, v_disp, v_strain)
-
-    #     #-----------------------------------------------------------------------------------
-    #     batch_val_losses = test_loop(test_generator, model_1, loss_fn)
-    #     #-----------------------------------------------------------------------------------
-
-    #     val_loss.append(torch.mean(batch_val_losses).item())
-
-    #     end_test = time.time()
-
-    #     print('. v_loss: %.6e -- %.3fs' % (val_loss[t], end_test - start_test))
-
-    #     # end_epoch = time.time()
-
-    #     if t > 100:
-    #         # Check validation loss for early stopping
-    #         early_stopping(val_loss[t], model_1)
-
-    #     optimality = abs(train_loss[t]-train_loss[t-1])
-    #     if t!= 0 and t % 10 == 0:
-    #         print('\nComputing new virtual fields -- optimality: %.6e' % (optimality))
-    #         get_sbvfs(model_1, train_generator)
-    #         get_sbvfs(model_1, test_generator,isTrain=False)
-    #     else:
-    #         print('\noptimality: %.6e' % (optimality))
-    #     if (t!= 0 and optimality < 1e-9) or early_stopping.early_stop:
-    #             print("Early stopping")
-    #             break
-
-    # print("Done!")
-
-    # # load the last checkpoint with the best model
-    # #model_1.load_state_dict(torch.load('temp/checkpoint.pt'))
-
-    # epochs_ = np.reshape(np.array(epochs_), (len(epochs_),1))
-    # train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
-    # val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
-
-    # history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
-
-
-    # task = r'[%i-%ix%i-%i]-%s-%i-VFs' % (N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
-
-    # output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs'
-    # output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/loss/'
-    # output_stats = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/stats/'
-    # output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/models/'
-    # output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/val/'
-    # output_logs = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs/logs/'
-
-    # directories = [output_task, output_loss, output_stats, output_models, output_val, output_logs]
-
-    # for dir in directories:
-    #     try:
-    #         os.makedirs(dir)
-
-    #     except FileExistsError:
-    #         pass
-
-    # history.to_csv(output_loss + task + '.csv', sep=',', encoding='utf-8', header='true')
-
-    # plot_history(history, output_loss, True, task)
-
-    # torch.save(model_1.state_dict(), output_models + task + '.pt')
-    # np.save(output_logs + 'sbvfs.npy', VFs_train)
-    # np.save(output_logs + 'w_virt.npy', w_virt)
-    # #joblib.dump([VFs, W_virt], 'sbvfs.pkl')
-    # if train_generator.std == True:
-    #     joblib.dump(train_generator.scaler_x, output_models + task + '-scaler_x.pkl')
 
     # Deleting temp folder
     try:

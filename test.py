@@ -80,8 +80,13 @@ r2 = torchmetrics.R2Score()
 for i,file in enumerate(file_list):
 
     str = file.split('/')[-1][:-4]
-    trial = str.split('_x_')[0]
-    elem = str.split('_x_')[-1]
+    if '_x_' in str:
+        expr = '_x_'
+    else:
+        expr = '_y_'
+    
+    trial = str.split(expr)[0]
+    elem = str.split(expr)[-1]
 
     ex_var_abaqus = df_list[i]['exx_t']
     ey_var_abaqus = df_list[i]['eyy_t']
@@ -162,6 +167,6 @@ for i,file in enumerate(file_list):
 
 
     #plt.show()
-    plt.savefig(DIR + trial + '_' + elem + ".png", format="png", dpi=300, bbox_inches='tight')
+    plt.savefig(DIR + trial + expr + elem + ".png", format="png", dpi=300, bbox_inches='tight')
     plt.close(fig)
     print('\rProcessing image %i of %i' % (i+1,len(file_list)), end='')
