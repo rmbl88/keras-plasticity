@@ -99,9 +99,9 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 #y_scaler = joblib.load('outputs/9-elem-1000-elastic_indirect/models/[3-3x1-3]-9-elem-1000-elastic-scaler_y.pkl')
 
 
-INPUTS = 4
+INPUTS = 6
 OUTPUTS = 2
-N_UNITS = [20,15,10]
+N_UNITS = [25,20,15]
 H_LAYERS = len(N_UNITS)
 
 # Loading ANN model
@@ -112,11 +112,11 @@ model_1 = NeuralNetwork(INPUTS, OUTPUTS, N_UNITS, len(N_UNITS))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
 
-run = 'super-dew-82'
+run = 'toasty-morning-2'
 
-x_scaler = joblib.load(f'outputs/9-elem-50-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-9-elem-50-plastic-597-VFs-scaler_x.pkl')
+x_scaler = joblib.load(f'outputs/crux-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-crux-plastic-1042-VFs-scaler_x.pkl')
 #model_1.load_state_dict(torch.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs.pt'))
-model_1.load_state_dict(torch.load(f'outputs/9-elem-50-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-9-elem-50-plastic-597-VFs.pt'))
+model_1.load_state_dict(torch.load(f'outputs/crux-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-crux-plastic-1042-VFs.pt'))
 
 # model_2 = NeuralNetwork(3, 3, 0, 0)
 
@@ -163,12 +163,22 @@ with torch.no_grad():
         
         X, y, _, _, info = select_features_multi(df)
         X_scaled=torch.from_numpy(x_scaler.transform(X))
-        # X_scaled = X_scaled[~torch.any(X_scaled.isnan(),dim=1)]
+        #X_scaled = X_scaled[~torch.any(X_scaled.isnan(),dim=1)]
         theta_p = torch.from_numpy(info[['theta_p']].values)
-        
-        
-        y_pred_inv = model_1(X_scaled).numpy()
+        # theta_p = theta_p[~torch.any(theta_p.isnan(),dim=1)]
+        # theta_p = torch.cat((torch.as_tensor([[0]]),theta_p),0)
+        t = torch.from_numpy(info['t'].values).reshape(-1,1)
+        #dt = torch.diff(t,dim=0)
 
+        y_pred_inv = model_1(X_scaled) # stress rate.
+        #y_pred_inv = torch.cat((torch.zeros(1,2),y_pred_inv),0)
+        #y_pred_inv = torch.cumulative_trapezoid(y_pred_inv,t,dim=0)
+        #y_pred_inv = torch.cat((torch.zeros(1,2),y_pred_inv),0)
+        # y_pred_inv = torch.cumsum(y_pred_inv,0)
+        y_pred_inv *= t.repeat(1,2)
+        # y_pred_inv = torch.cat((torch.zeros(1,2),y_pred_inv),0)
+        # y_pred_inv = torch.cumsum(y_pred_inv,0)
+        
         y_mat = np.zeros((y_pred_inv.shape[0],2,2))
         y_mat[:,0,0] = y_pred_inv[:,0]
         y_mat[:,1,1] = y_pred_inv[:,1]
@@ -223,10 +233,13 @@ with torch.no_grad():
         # sy_pred_var_2 = y_pred_inv_2[:,1]
         # sxy_pred_var_2 = y_pred_inv_2[:,2]
 
-        mse_x = err(torch.from_numpy(sx_pred_var), torch.from_numpy(sx_var_abaqus.values))
-        mse_y = err(torch.from_numpy(sy_pred_var), torch.from_numpy(sy_var_abaqus.values))
-        mse_xy = err(torch.from_numpy(sxy_pred_var), torch.from_numpy(sxy_var_abaqus.values))
+        # mse_x = err(torch.from_numpy(sx_pred_var), torch.from_numpy(sx_var_abaqus.values))
+        # mse_y = err(torch.from_numpy(sy_pred_var), torch.from_numpy(sy_var_abaqus.values))
+        # mse_xy = err(torch.from_numpy(sxy_pred_var), torch.from_numpy(sxy_var_abaqus.values))
 
+        mse_x = ((torch.from_numpy(sx_pred_var)-torch.from_numpy(sx_var_abaqus.values))/torch.from_numpy(sx_var_abaqus.values))[1:]
+        mse_y = ((torch.from_numpy(sy_pred_var)-torch.from_numpy(sy_var_abaqus.values))/torch.from_numpy(sy_var_abaqus.values))[1:]
+        mse_xy = ((torch.from_numpy(sxy_pred_var)-torch.from_numpy(sxy_var_abaqus.values))/torch.from_numpy(sxy_var_abaqus.values))[1:]
         # mse_x_2 = err(torch.from_numpy(sx_pred_var_2), torch.from_numpy(sx_var_abaqus.values))
         # mse_y_2 = err(torch.from_numpy(sy_pred_var_2), torch.from_numpy(sy_var_abaqus.values))
         # mse_xy_2 = err(torch.from_numpy(sxy_pred_var_2), torch.from_numpy(sxy_var_abaqus.values))
@@ -251,7 +264,7 @@ with torch.no_grad():
 
         #print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'][0], mse_x, mse_y, mse_xy, mse_x_2, mse_y_2, mse_xy_2, r2_x, r2_y, r2_xy, r2_x_2, r2_y_2, r2_xy_2))
 
-        print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'][0], mse_x, mse_y, mse_xy, r2_x, r2_y, r2_xy))
+        print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'][0], torch.mean(torch.abs(mse_x)), torch.mean(torch.abs(mse_y)), torch.mean(torch.abs(mse_xy)), r2_x, r2_y, r2_xy))
        
         # fig , (ax1, ax2, ax3) = plt.subplots(1,3)
         # fig.suptitle(r''+ df['tag'][0].replace('_','\_') + ': element \#' + str(df['id'][0]),fontsize=14)
@@ -285,7 +298,7 @@ with torch.no_grad():
             predictions = pd.DataFrame(y_pred_inv, columns=['pred_x','pred_y','pred_xy'])
             #stats = pd.DataFrame([maes, r2_scores], columns=['mae_x','mae_y','mae_xy','r2_x','r2_y','r2_xy'])
             results = pd.concat([df[['exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']],predictions], axis=1)
-            results.to_csv('outputs/9-elem-50-plastic_sbvf_abs_direct/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',',float_format='%.12f')
+            results.to_csv('outputs/crux-plastic_sbvf_abs_direct/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',',float_format='%.12f')
             
             # # Convert the DataFrame into a W&B Table
             # # NOTE: Tables will have a row limit of 10000 but...

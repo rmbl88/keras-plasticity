@@ -27,6 +27,9 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
 from statsmodels.nonparametric.kernel_regression import KernelReg
+import dask.dataframe as dd
+import gc
+
 
 # -------------------------------
 #        Class definitions
@@ -502,6 +505,7 @@ def rotate_tensor(t,theta,is_reverse=False):
     Returns:
         t_: the rotated tensor
     '''
+
     r = np.zeros_like(t)
     r[:,0,0] = np.cos(theta)
     r[:,0,1] = np.sin(theta)
@@ -517,8 +521,10 @@ def rotate_tensor(t,theta,is_reverse=False):
 
 def get_principal_strain(eps):  
     
+    eps[:,-1] *= 0.5
+
     # Getting principal angles
-    angles = 0.5 * np.arctan(eps[:,-1]/(eps[:,0]-eps[:,1]))
+    angles = 0.5 * np.arctan(2*eps[:,-1]/(eps[:,0]-eps[:,1]))
     angles[np.isnan(angles)] = 0.0
 
     # Constructing strain tensors
@@ -888,15 +894,15 @@ def select_features_multi(df):
     #X = df[['exx_t', 'eyy_t', 'exy_t']]
 
     #X = df[['exx_dot_dir','eyy_dot_dir','exy_dot_dir','exx_t', 'eyy_t', 'exy_t']]
-    X = df[['ep_1_dir','ep_2_dir','ep_1','ep_2']]
+    X = df[['ep_1_dir','ep_2_dir','dep_1','dep_2','ep_1','ep_2']]
     #X = df[['ep_1','ep_2']]
     
     y = df[['sxx_t','syy_t','sxy_t']]
-    f = df[['fxx_t','fyy_t','fxy_t']]
+    f = df[['fxx_t','fyy_t']]
     #y = df[['sxx_t','syy_t','sxy_t']]
     #f = df[['fxx_t', 'fyy_t', 'fxy_t']]
     
-    coord = df[['dir','id', 'cent_x', 'cent_y','area']]
+    coord = df[['id','area']]
     #info = df[['tag','inc','t','exx_p_dot','eyy_p_dot','exy_p_dot']]
     #info = df[['tag','inc','t','exx_dot','eyy_dot','exy_dot','d_exx','d_eyy','d_exy']]
     info = df[['tag','inc','t','theta_p','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']]
@@ -932,24 +938,47 @@ def smooth_data(df):
     
     new_df = copy.deepcopy(df)
 
-    s_y = df['syy_t'].values 
-    e = df['eyy_t'].values
-
-    plt.plot(e,s_y, 'b', label = f'Original-elem {id}')
-
-    if (id == 2 or id == 5 or id==9):
-        f_sigma = 2.5
-    else:
-        f_sigma = 1.0
+    for var in ['syy_t','sxy_t']:
+        e_var = var.replace('s','e')
+        s = df[var].values 
+        e = df[e_var].values
+    
+        f_sigma_el = 20.0 # Elastic smoothing
+        f_sigma_pl = 10.0  # Plastic smoothing
         
-    y_smooth = gaussian_filter(s_y,sigma=f_sigma)
-    #plt.plot(e,y_smooth,'g',label='smoothing')
-    s_y[1:75] = y_smooth[1:75]
-    #plt.plot(e,s_y,'r',label='smooth+original')    
+        y_smooth_el = gaussian_filter(s,sigma=f_sigma_el)
+        y_smooth_pl = gaussian_filter(s,sigma=f_sigma_pl)
+
+        if var=='sxy_t':
+            y_smooth = np.concatenate([y_smooth_el[:575],y_smooth_pl[575:]])
+        else:
+            y_smooth = y_smooth_pl
+
+        # fig, (ax1, ax2, ax3) = plt.subplots(1,3,figsize=(5*5, 6),)
+
+        # ax1.plot(e,s, 'b', label = f'Original-elem {id}')
+        # x0,x1 = ax1.get_xlim()
+        # y0,y1 = ax1.get_ylim()
+        # ax1.set_aspect((x1-x0)/(y1-y0))
+
+        # ax2.plot(e,y_smooth,'g',label='smoothing')
+        # x0,x1 = ax2.get_xlim()
+        # y0,y1 = ax2.get_ylim()
+        # ax2.set_aspect((x1-x0)/(y1-y0))
+    
+    
+        # ax3.plot(e,s,'r',label='smooth+original')
+        # ax3.plot(e,y_smooth,'g',label='smooth')
+        # x0,x1 = ax3.get_xlim()
+        # y0,y1 = ax3.get_ylim()
+        # ax3.set_aspect((x1-x0)/(y1-y0))
         
-    # plt.legend()
-    # plt.show()
-    new_df['syy_t'] = s_y    
+        # plt.title(var.replace('_','-'))
+        # plt.legend()
+        # plt.tight_layout()
+        # plt.show()
+        
+        new_df[var] = y_smooth    
         
     return new_df
 
@@ -964,6 +993,7 @@ def add_strain_decomp(var_list, df):
     #             'dep_1','dep_2',
     #             'ep_1_dot_dir','ep_2_dot_dir']
     eps_vars = ['ep_1','ep_2',
+                'dep_1','dep_2',
                 'ep_1_dir','ep_2_dir', 
                 'theta_p']
 
@@ -971,12 +1001,12 @@ def add_strain_decomp(var_list, df):
     e = df[var_list[0]].values
     t = np.reshape(df['t'].values,(len(df),1))
     
-    # Time increment
+    # Time step
     dt = np.diff(t,axis=0)
 
     # Strain rate
     d_e= np.diff(e,axis=0)
-    e_dot = d_e/dt.repeat(3, axis=1)
+    e_dot = d_e/dt.repeat(d_e.shape[-1], axis=1)
     e_dot_dir = e_dot/np.reshape(np.linalg.norm(e_dot,axis=1),(e_dot.shape[0],1))
     
     #e_dot = np.vstack((np.array([0,0,0]),e_dot))
@@ -990,11 +1020,14 @@ def add_strain_decomp(var_list, df):
     #Principal strains
     eps_princ, princ_angles = get_principal_strain(e)
     # Increment in principal strain
-    de_princ= np.diff(eps_princ,axis=0)
+    #de_princ = np.diff(eps_princ,axis=0)/dt.repeat(dt.shape[-1], axis=1)
+    de_princ = np.gradient(eps_princ,t.reshape(-1),axis=0,edge_order=2)
+    #de_princ = gaussian_filter(de_princ,sigma=2.0)
     de_princ_dir = de_princ/(np.reshape(np.linalg.norm(de_princ,axis=1),(de_princ.shape[0],1)))
-    de_princ_dir = np.vstack((de_princ_dir[0,:],de_princ_dir))
+    de_princ_dir[:,0] = gaussian_filter(de_princ_dir[:,0],sigma=1.75)
+    de_princ_dir[:,1] = gaussian_filter(de_princ_dir[:,1],sigma=1.75)
     
-    eps = pd.DataFrame(np.concatenate([eps_princ,de_princ_dir,princ_angles],1),columns=eps_vars)
+    eps = pd.DataFrame(np.concatenate([eps_princ,de_princ,de_princ_dir,princ_angles],1),columns=eps_vars)
     new_df = pd.concat([new_df,eps],axis=1)
 
     return new_df
@@ -1035,19 +1068,18 @@ def pre_process(df_list):
     
     new_dfs = []
 
-    # Drop vars in z-direction and add delta_t
-    for df in df_list:
+    # # Drop vars in z-direction and add delta_t
+    # for df in df_list:
         
-        new_df = drop_features(df, ['ezz_t', 'szz_t', 'fzz_t'])
-        new_dfs.append(new_df)
-
+    #     new_df = drop_features(df, ['ezz_t', 'szz_t', 'fzz_t'])
+    #     new_dfs.append(new_df)
 
     if LOOK_BACK > 0:
         # Add past variables
-        for i, df in enumerate(tqdm(new_dfs, desc='Loading and processing data',bar_format=FORMAT_PBAR)):
+        for i, df in enumerate(tqdm(df_list, desc='Pre-processing data',bar_format=FORMAT_PBAR)):
             #new_dfs[i] = smooth_data(df)
-            new_dfs[i] = add_past_step(var_list, LOOK_BACK, df)
-            new_dfs[i] = add_strain_decomp(var_list, new_dfs[i])
+            #new_dfs[i] = add_past_step(var_list, LOOK_BACK, df)
+            new_dfs.append(add_strain_decomp(var_list, df))
             #new_dfs[i] = to_sequences(df, var_list, LOOK_BACK)
 
     return new_dfs
@@ -1059,12 +1091,19 @@ def load_dataframes(directory):
 
     for r, d, f in os.walk(directory):
         for file in f:
-            if '.csv' in file:
+            if '.csv' or '.parquet' in file:
                 file_list.append(directory + file)
 
     # Loading training datasets
-    df_list = [pd.read_csv(file, sep=',', index_col=False, header=0) for file in file_list]
+    use_cols = ['tag','id','inc','t','area','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t','fxx_t','fyy_t']
+    
+    if 'crux' in directory:
+        df_list = [pd.read_parquet(file, columns=use_cols) for file in tqdm(file_list,desc='Reading .csv files',bar_format=FORMAT_PBAR)]
+    else:
+        df_list = [pd.read_csv(file, sep=',', index_col=False, header=0, engine='c') for file in tqdm(file_list,desc='Reading .csv files',bar_format=FORMAT_PBAR)]
 
-    df_list = pre_process(df_list)
+    gc.collect()
+
+    df_list = pre_process(df_list)    
 
     return df_list, file_list

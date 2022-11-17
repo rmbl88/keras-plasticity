@@ -58,7 +58,7 @@ def set_size(width, fraction=1, subplots=(1, 1)):
 file_list = []
 df_list = []
 
-DIR = "outputs/9-elem-50-plastic_sbvf_abs_direct/val/"
+DIR = "outputs/crux-plastic_sbvf_abs_direct/val/"
 
 for r, d, f in os.walk(DIR):
     for file in sorted(f):
@@ -82,6 +82,8 @@ for i,file in enumerate(file_list):
     str = file.split('/')[-1][:-4]
     if '_x_' in str:
         expr = '_x_'
+    elif '__' in str:
+        expr = '__'
     else:
         expr = '_y_'
     
