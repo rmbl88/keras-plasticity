@@ -76,7 +76,7 @@ class DataGenerator(tf.keras.utils.Sequence):
         self.f = force.iloc[list_IDs].reset_index(drop=True)
         self.coord = coord[['id','area']].iloc[list_IDs].reset_index(drop=True)
         self.tag = info['tag'].iloc[list_IDs].reset_index(drop=True)
-        self.t = info[['inc','t','theta_p','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']].iloc[list_IDs].reset_index(drop=True)
+        self.t = info[['inc','t','theta_ep','s1','s2','theta_sp']].iloc[list_IDs].reset_index(drop=True)
         self.batch_sizes = batch_sizes
         self.shuffle = shuffle
         self.list_IDs = list_IDs
@@ -181,6 +181,7 @@ def train():
         Custom loop for neural network training, using mini-batches
 
         '''
+        iters_to_accumulate = 3
 
         num_batches = len(dataloader)
         losses = torch.zeros(num_batches)
@@ -201,54 +202,37 @@ def train():
         
         for batch in range(num_batches):
 
-            with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=USE_AMP):
+            with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
 
                 # Extracting variables for training
-                X_train, y_train, _, _, _, inc = dataloader[batch]
+                X_train, y_train, _, _, _, _ = dataloader[batch]
                 
                 t_pts = dataloader.t_pts[dataloader.tags[batch]]
                 n_elems = dataloader.batch_sizes[dataloader.tags[batch]] // t_pts
 
                 # Converting to pytorch tensors
                 X_train = torch.from_numpy(X_train).to(device)
-                #X_train = X_train[~torch.any(X_train.isnan(),dim=1)]
+                X_train = X_train[~torch.any(X_train.isnan(),dim=1)]
                 y_train = torch.from_numpy(y_train).to(device)
+                y_train = y_train[~torch.any(y_train.isnan(),dim=1)]
                 #y_train = y_train[:-n_elems]
                 # Importing principal angles
-                theta_p = torch.from_numpy(inc[['theta_p']].values).reshape(-1).to(device)
+                #theta_ep = torch.from_numpy(inc[['theta_ep']].values).reshape(-1).to(device)
                 # theta_p = theta_p[~torch.any(theta_p.isnan(),dim=1)]
                 # theta_p = torch.cat((torch.zeros(n_elems,1),theta_p),0)
                 #eps = torch.from_numpy(inc[['exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']].values)
-                t = torch.from_numpy(inc['t'].values).reshape(-1,1).to(device)
+                #t = torch.from_numpy(inc['t'].values).reshape(-1,1).to(device)
                 #dt = torch.diff(t,dim=0).reshape(-1,1)
 
                 pred = model(X_train) # stress rate
                 #pred = torch.cat((torch.zeros(n_elems,pred.shape[-1]),pred),0)
                 #pred = torch.cumulative_trapezoid(pred.reshape(t_pts,n_elems,pred.shape[-1]),t.reshape(t_pts,n_elems,t.shape[-1]),dim=0).reshape(-1,pred.shape[-1])     # stress
-                pred *= t.repeat(1,pred.shape[-1])
+                #pred *= t.repeat(1,pred.shape[-1])
                 # pred = torch.cumsum(pred.reshape(t_pts-1,n_elems,pred.shape[-1]),0).reshape(-1,pred.shape[-1])
-        
-                tril_indices = torch.tril_indices(row=2, col=2, offset=0)
-                y_train_mat = torch.zeros((y_train.shape[0],2,2)).to(device)
-                y_train[:,[1,2]] = y_train[:,[2,1]]
-
-                y_train_mat[:,tril_indices[0],tril_indices[1]] = y_train[:,:]
-                y_train_mat[:,tril_indices[1],tril_indices[0]] = y_train[:,:]
-
-                r = torch.zeros_like(y_train_mat).to(device)
-                r[:,0,0] = torch.cos(theta_p)
-                r[:,0,1] = torch.sin(theta_p)
-                r[:,1,0] = -torch.sin(theta_p)
-                r[:,1,1] = torch.cos(theta_p)
-
-                y_princ_mat =  r @ y_train_mat @ torch.transpose(r,1,2)
-
-                #y_princ_mat = torch.from_numpy(rotate_tensor(y_train_mat.numpy(),theta_p.reshape(-1)))
-                y_princ = y_princ_mat[:,[0,1],[0,1]].reshape([-1,2])
                             
                 y_scaler = preprocessing.MinMaxScaler(feature_range=(0, 1))
-                y_scaler.fit(y_princ.cpu())
-                y_princ = torch.from_numpy(y_scaler.scale_).to(device)*y_princ
+                y_scaler.fit(y_train.cpu())
+                dot_y_princ = torch.from_numpy(y_scaler.scale_).to(device)*y_train
                 s = torch.from_numpy(y_scaler.scale_).to(device)*pred
                 
                 # rot_mat = torch.zeros_like(s_princ_mat)
@@ -298,8 +282,8 @@ def train():
 
                 
                 # Stress at t=0
-                s_0 = s[:9,:]
-                l_0 = torch.mean(torch.square(s_0))
+                # s_0 = s[:9,:]
+                # l_0 = torch.mean(torch.square(s_0))
                 
                 # l_1 = torch.mean(torch.nn.functional.relu(-(d_e.transpose(2,3) @ H @ d_e)))
 
@@ -327,15 +311,19 @@ def train():
                 #loss = loss_fn(s_vec[:,0], y_train[:,0]) + loss_fn(s_vec[:,1], y_train[:,1]) + loss_fn(s_vec[:,2], y_train[:,2]) + l_0
                 # loss = loss_fn(pred_princ[:,0],y_princ[:,0]) + loss_fn(pred_princ[:,1],y_princ[:,1]) + loss_fn(pred_eigen[:,0],y_eigen_vec[:,0]) + loss_fn(pred_eigen[:,1],y_eigen_vec[:,1]) + loss_fn(pred_eigen[:,2],y_eigen_vec[:,2]) + loss_fn(pred_eigen[:,3],y_eigen_vec[:,3]) + l_0
                 
-                loss = loss_fn(s[:,0],y_princ[:,0]) + loss_fn(s[:,1],y_princ[:,1])
+                loss = loss_fn(s[:,0], dot_y_princ[:,0]) + loss_fn(s[:,1], dot_y_princ[:,1])
+                loss = loss / iters_to_accumulate
 
             # loss = (loss_fn(s[:,0], y_train[:,0]) + loss_fn(s[:,1], y_train[:,1]) + loss_fn(s[:,2], y_train[:,2])) + l_1 + 500*l_cholesky
             
             scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()    
-            # Backpropagation and weight's update
-            optimizer.zero_grad(set_to_none=True)
+
+            if ((batch + 1) % iters_to_accumulate == 0) or (batch + 1 == len(dataloader)):    
+                scaler.step(optimizer)
+                scaler.update()    
+                # Backpropagation and weight's update
+                optimizer.zero_grad(set_to_none=True)
+            
             # loss.backward()
             # # Gradient clipping - as in https://github.com/pseeth/autoclip
             # g_norm.append(get_grad_norm(model))
@@ -379,7 +367,7 @@ def train():
             for batch in range(num_batches):
 
                 # Extracting variables for testing
-                X_test, y_test, _, _, _, inc = dataloader[batch]
+                X_test, y_test, _, _, _, _ = dataloader[batch]
 
                 t_pts = dataloader.t_pts[dataloader.tags[batch]]
                 n_elems = dataloader.batch_sizes[dataloader.tags[batch]] // t_pts
@@ -391,43 +379,26 @@ def train():
                 else:
                     X_test = torch.tensor(X_test, dtype=torch.float64).to(device)
 
-                #X_test = X_test[~torch.any(X_test.isnan(),dim=1)]
+                X_test = X_test[~torch.any(X_test.isnan(),dim=1)]
                 y_test = torch.from_numpy(y_test).to(device)
-
-                theta_p = torch.from_numpy(inc[['theta_p']].values).reshape(-1).to(device)
+                y_test = y_test[~torch.any(y_test.isnan(),dim=1)]
+                #theta_ep = torch.from_numpy(inc[['theta_ep']].values).reshape(-1).to(device)
                 # theta_p = theta_p[~torch.any(theta_p.isnan(),dim=1)]
                 # theta_p = torch.cat((torch.zeros(n_elems,1),theta_p),0)
                 
-                t = torch.from_numpy(inc['t'].values).reshape(-1,1).to(device)
+                #t = torch.from_numpy(inc['t'].values).reshape(-1,1).to(device)
                 #dt = torch.diff(t,dim=0).reshape(-1,1)
 
-                pred = model(X_test) # stress rate
+                with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
+                    pred = model(X_test) # stress rate
                 # pred = torch.cat((torch.zeros(n_elems,pred.shape[-1]),pred),0)
                 # pred = torch.cumulative_trapezoid(pred.reshape(t_pts,n_elems,pred.shape[-1]),t.reshape(t_pts,n_elems,t.shape[-1]),dim=0).reshape(-1,pred.shape[-1])     # stress
-                pred *= t.repeat(1,pred.shape[-1])
+                #pred *= t.repeat(1,pred.shape[-1])
                 # pred = torch.cumsum(pred.reshape(t_pts-1,n_elems,pred.shape[-1]),0).reshape(-1,pred.shape[-1])
-        
-                tril_indices = torch.tril_indices(row=2, col=2, offset=0)
-                y_train_mat = torch.zeros((y_test.shape[0],2,2)).to(device)
-                y_test[:,[1,2]] = y_test[:,[2,1]]
-
-                y_train_mat[:,tril_indices[0],tril_indices[1]] = y_test[:,:]
-                y_train_mat[:,tril_indices[1],tril_indices[0]] = y_test[:,:]
-
-                r = torch.zeros_like(y_train_mat).to(device)
-                r[:,0,0] = torch.cos(theta_p)
-                r[:,0,1] = torch.sin(theta_p)
-                r[:,1,0] = -torch.sin(theta_p)
-                r[:,1,1] = torch.cos(theta_p)
-
-                y_princ_mat =  r @ y_train_mat @ torch.transpose(r,1,2)
-
-                #y_princ_mat = torch.from_numpy(rotate_tensor(y_train_mat.numpy(),theta_p.reshape(-1)))
-                y_princ = y_princ_mat[:,[0,1],[0,1]].reshape([-1,2])
-                
+                            
                 y_scaler = preprocessing.MinMaxScaler(feature_range=(0, 1))
-                y_scaler.fit(y_princ.cpu())
-                y_princ = torch.from_numpy(y_scaler.scale_).to(device)*y_princ
+                y_scaler.fit(y_test.cpu())
+                dot_y_princ = torch.from_numpy(y_scaler.scale_).to(device)*y_test
                 s = torch.from_numpy(y_scaler.scale_).to(device)*pred
         
                 # s_princ = torch.reshape(pred,[t_pts,n_elems,2])
@@ -470,7 +441,7 @@ def train():
                 #test_loss = loss_fn(s_vec[:,0], y_test[:,0]) + loss_fn(s_vec[:,1], y_test[:,1]) + loss_fn(s_vec[:,2], y_test[:,2])
                 #test_loss = loss_fn(pred_princ[:,0],y_princ[:,0]) + loss_fn(pred_princ[:,1],y_princ[:,1]) + loss_fn(pred_eigen[:,0],y_eigen_vec[:,0]) + loss_fn(pred_eigen[:,1],y_eigen_vec[:,1]) + loss_fn(pred_eigen[:,2],y_eigen_vec[:,2]) + loss_fn(pred_eigen[:,3],y_eigen_vec[:,3])
                
-                test_loss = loss_fn(s[:,0],y_princ[:,0]) + loss_fn(s[:,1],y_princ[:,1])
+                test_loss = loss_fn(s[:,0], dot_y_princ[:,0]) + loss_fn(s[:,1], dot_y_princ[:,1])
                 
                 test_losses[batch] = test_loss
                
@@ -568,7 +539,7 @@ def train():
     N_INPUTS = X.shape[1]
     N_OUTPUTS = 2
 
-    N_UNITS = [25,20,15,10]
+    N_UNITS = [25,20,15]
     H_LAYERS = len(N_UNITS)
 
     WANDB_LOG = True
@@ -586,7 +557,7 @@ def train():
     epochs = 5000
     # Optimization variables
     # Optimization variables
-    learning_rate = 0.02
+    learning_rate = 0.008
     lr_mult = 1.0
 
     params = layer_wise_lr(model_1, lr_mult=lr_mult, learning_rate=learning_rate)
@@ -594,7 +565,7 @@ def train():
     loss_fn = torch.nn.MSELoss()
 
     
-    weight_decay=0.0
+    weight_decay=0.001
 
     optimizer = torch.optim.AdamW(params=params, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=10, cooldown=5, factor=0.88, min_lr=[params[i]['lr']*0.00005 for i in range(len(params))])

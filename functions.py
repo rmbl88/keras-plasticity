@@ -1,7 +1,3 @@
-from readline import parse_and_bind
-from scipy.signal import savgol_filter
-from scipy.signal import find_peaks
-from turtle import forward
 from sklearn import preprocessing
 import pandas as pd
 import os
@@ -13,7 +9,7 @@ import copy
 from constants import FORMAT_PBAR, LOOK_BACK
 import torch
 from tqdm import tqdm
-from torch import mode, nn
+from torch import nn
 from io import StringIO
 import math
 import torch.nn.functional as F
@@ -21,14 +17,12 @@ from torch.nn.utils import (
   parameters_to_vector as Params2Vec,
   vector_to_parameters as Vec2Params
 )
-from torch.autograd import Function
-import geotorch
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
-from statsmodels.nonparametric.kernel_regression import KernelReg
 import dask.dataframe as dd
 import gc
+import pyarrow.parquet as pq
 
 
 # -------------------------------
@@ -519,34 +513,28 @@ def rotate_tensor(t,theta,is_reverse=False):
     
     return t_
 
-def get_principal_strain(eps):  
-    
-    eps[:,-1] *= 0.5
+def get_principal(var, angles=None):  
 
-    # Getting principal angles
-    angles = 0.5 * np.arctan(2*eps[:,-1]/(eps[:,0]-eps[:,1]))
-    angles[np.isnan(angles)] = 0.0
+    if angles is None:
+        # Getting principal angles
+        angles = 0.5 * np.arctan(2*var[:,-1] / (var[:,0]-var[:,1]))
+        angles[np.isnan(angles)] = 0.0
 
-    # Constructing strain tensors
+    # Constructing tensors
     tril_indices = np.tril_indices(n=2)
-    eps_mat = np.zeros((eps.shape[0],2,2))
+    var_mat = np.zeros((var.shape[0],2,2))
 
-    eps[:,[1,2]] = eps[:,[2,1]]
+    var[:,[1,2]] = var[:,[2,1]]
 
-    eps_mat[:,tril_indices[0],tril_indices[1]] = eps[:,:]
-    eps_mat[:,tril_indices[1],tril_indices[0]] = eps[:,:]
+    var_mat[:,tril_indices[0],tril_indices[1]] = var[:,:]
+    var_mat[:,tril_indices[1],tril_indices[0]] = var[:,:]
 
-    # Rotating strain tensor to the principal plane
-    eps_princ_mat = rotate_tensor(eps_mat,angles)
-    eps_princ_mat[abs(eps_princ_mat)<=1e-16] = 0.0
-    eps_princ = eps_princ_mat[:,tril_indices[0][:-1],np.array([0,1,0])[:-1]]
-    
-    
-    # eps_princ, eigen_vec = torch.linalg.eigh(torch.from_numpy(eps_mat), UPLO='L')
-    # eps_princ[:,[0,1]] = eps_princ[:,[1,0]]
-    # eigen_vec = eigen_vec[:, torch.tensor([1,0])]
-    
-    return eps_princ, angles.reshape((-1,1))
+    # Rotating tensor to the principal plane
+    var_princ_mat = rotate_tensor(var_mat, angles)
+    var_princ_mat[abs(var_princ_mat)<=1e-16] = 0.0
+    var_princ = var_princ_mat[:,tril_indices[0][:-1],np.array([0,1,0])[:-1]]
+
+    return var_princ, angles
 
 def stress_from_cholesky(pred, d_e, t_pts, n_elems, n_tests=1, sbvf_gen=False):
 
@@ -897,7 +885,7 @@ def select_features_multi(df):
     X = df[['ep_1_dir','ep_2_dir','dep_1','dep_2','ep_1','ep_2']]
     #X = df[['ep_1','ep_2']]
     
-    y = df[['sxx_t','syy_t','sxy_t']]
+    y = df[['ds1','ds2']]
     f = df[['fxx_t','fyy_t']]
     #y = df[['sxx_t','syy_t','sxy_t']]
     #f = df[['fxx_t', 'fyy_t', 'fxy_t']]
@@ -905,7 +893,8 @@ def select_features_multi(df):
     coord = df[['id','area']]
     #info = df[['tag','inc','t','exx_p_dot','eyy_p_dot','exy_p_dot']]
     #info = df[['tag','inc','t','exx_dot','eyy_dot','exy_dot','d_exx','d_eyy','d_exy']]
-    info = df[['tag','inc','t','theta_p','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']]
+    info = df[['tag','inc','t','theta_ep','s1','s2','theta_sp']]
+    
     return X, y, f, coord, info
 
 def drop_features(df, drop_list):
@@ -982,53 +971,53 @@ def smooth_data(df):
         
     return new_df
 
-def add_strain_decomp(var_list, df):
+def preprocess_vars(var_list, df):
 
     new_df = copy.deepcopy(df)
-    # eps_vars = ['exx_dot_dir','eyy_dot_dir','exy_dot_dir',
-    #             'exx_dot','eyy_dot','exy_dot',
-    #             'd_exx','d_eyy','d_exy',
-    #             'ep_1','ep_2',
-    #             'ep_1_dir','ep_2_dir',
-    #             'dep_1','dep_2',
-    #             'ep_1_dot_dir','ep_2_dot_dir']
-    eps_vars = ['ep_1','ep_2',
-                'dep_1','dep_2',
-                'ep_1_dir','ep_2_dir', 
-                'theta_p']
-
-    # Strain and time vectors
-    e = df[var_list[0]].values
-    t = np.reshape(df['t'].values,(len(df),1))
     
-    # Time step
+    vars = [
+        'ep_1','ep_2',
+        'dep_1','dep_2',
+        'ep_1_dir','ep_2_dir', 
+        'theta_ep',
+        's1','s2',
+        'ds1','ds2',
+        'theta_sp',
+    ]
+
+    # Strain, stress and time variables
+    e = df[var_list[0]].values
+    e[:,-1] *= 0.5
+
+    s = df[var_list[1]].values
+
+    t = np.reshape(df['t'].values,(len(df),1))
     dt = np.diff(t,axis=0)
 
-    # Strain rate
-    d_e= np.diff(e,axis=0)
-    e_dot = d_e/dt.repeat(d_e.shape[-1], axis=1)
-    e_dot_dir = e_dot/np.reshape(np.linalg.norm(e_dot,axis=1),(e_dot.shape[0],1))
+    # Calculating principal strains and stresses
+    eps_princ, ep_angles = get_principal(e)
+    s_princ, sp_angles = get_principal(s)
+    # Principal stress rate
+    #dot_s_princ = np.gradient(s_princ,t.reshape(-1),axis=0)
+    dot_s_princ = np.diff(s_princ,axis=0)/dt
     
-    #e_dot = np.vstack((np.array([0,0,0]),e_dot))
+    # Principal strain rate
+    #dot_e_princ = np.gradient(eps_princ,t.reshape(-1),axis=0)
+    dot_e_princ = np.diff(eps_princ,axis=0)/dt
+    
+    # Direction of strain rate
+    de_princ_dir = dot_e_princ/(np.reshape(np.linalg.norm(dot_e_princ,axis=1),(dot_e_princ.shape[0],1)))
 
-    # Strain increment direction
+    de_princ_dir = np.vstack((de_princ_dir,np.array([np.NaN,np.NaN])))
+    dot_s_princ = np.vstack((dot_s_princ,np.array([np.NaN,np.NaN])))
+    dot_e_princ = np.vstack((dot_e_princ,np.array([np.NaN,np.NaN])))
     
-    #e_dot_dir = d_e/np.reshape(np.linalg.norm(d_e,axis=1),(d_e.shape[0],1))
-    #e_dot_dir = np.vstack((np.array([0,0,0]),e_dot_dir))
-    #d_e = np.vstack((np.array([0,0,0]),d_e))
+    princ_vars = pd.DataFrame(
+        np.concatenate([eps_princ,dot_e_princ,de_princ_dir,ep_angles.reshape(-1,1),s_princ,dot_s_princ,sp_angles.reshape(-1,1)],1),
+        columns=vars
+    )
 
-    #Principal strains
-    eps_princ, princ_angles = get_principal_strain(e)
-    # Increment in principal strain
-    #de_princ = np.diff(eps_princ,axis=0)/dt.repeat(dt.shape[-1], axis=1)
-    de_princ = np.gradient(eps_princ,t.reshape(-1),axis=0,edge_order=2)
-    #de_princ = gaussian_filter(de_princ,sigma=2.0)
-    de_princ_dir = de_princ/(np.reshape(np.linalg.norm(de_princ,axis=1),(de_princ.shape[0],1)))
-    de_princ_dir[:,0] = gaussian_filter(de_princ_dir[:,0],sigma=1.75)
-    de_princ_dir[:,1] = gaussian_filter(de_princ_dir[:,1],sigma=1.75)
-    
-    eps = pd.DataFrame(np.concatenate([eps_princ,de_princ,de_princ_dir,princ_angles],1),columns=eps_vars)
-    new_df = pd.concat([new_df,eps],axis=1)
+    new_df = pd.concat([new_df,princ_vars],axis=1)
 
     return new_df
 
@@ -1062,7 +1051,7 @@ def to_sequences(dataset, vars, seq_size=1):
 
 def pre_process(df_list):
 
-    var_list = [['exx_t','eyy_t','exy_t']]
+    var_list = [['exx_t','eyy_t','exy_t'],['sxx_t','syy_t','sxy_t']]
     #var_list = [['sxx_t','syy_t','sxy_t'],['exx_t','eyy_t','exy_t'],['fxx_t','fyy_t','fxy_t']]
     #lookback = 1
     
@@ -1079,7 +1068,7 @@ def pre_process(df_list):
         for i, df in enumerate(tqdm(df_list, desc='Pre-processing data',bar_format=FORMAT_PBAR)):
             #new_dfs[i] = smooth_data(df)
             #new_dfs[i] = add_past_step(var_list, LOOK_BACK, df)
-            new_dfs.append(add_strain_decomp(var_list, df))
+            new_dfs.append(preprocess_vars(var_list, df))
             #new_dfs[i] = to_sequences(df, var_list, LOOK_BACK)
 
     return new_dfs
@@ -1098,7 +1087,8 @@ def load_dataframes(directory):
     use_cols = ['tag','id','inc','t','area','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t','fxx_t','fyy_t']
     
     if 'crux' in directory:
-        df_list = [pd.read_parquet(file, columns=use_cols) for file in tqdm(file_list,desc='Reading .csv files',bar_format=FORMAT_PBAR)]
+        #df_list = [pd.read_parquet(file, columns=use_cols) for file in tqdm(file_list,desc='Reading .csv files',bar_format=FORMAT_PBAR)]
+        df_list = [pq.ParquetDataset(file).read_pandas(columns=use_cols).to_pandas() for file in tqdm(file_list,desc='Importing dataset files',bar_format=FORMAT_PBAR)]
     else:
         df_list = [pd.read_csv(file, sep=',', index_col=False, header=0, engine='c') for file in tqdm(file_list,desc='Reading .csv files',bar_format=FORMAT_PBAR)]
 

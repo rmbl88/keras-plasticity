@@ -90,85 +90,112 @@ for i,file in enumerate(file_list):
     trial = str.split(expr)[0]
     elem = str.split(expr)[-1]
 
-    ex_var_abaqus = df_list[i]['exx_t']
-    ey_var_abaqus = df_list[i]['eyy_t']
-    exy_var_abaqus = df_list[i]['exy_t']
-    sx_var_abaqus = df_list[i]['sxx_t']
-    sy_var_abaqus = df_list[i]['syy_t']
-    sxy_var_abaqus = df_list[i]['sxy_t']
+    ex_var_abaqus = df_list[i]['e_xx']
+    ey_var_abaqus = df_list[i]['e_yy']
+    exy_var_abaqus = df_list[i]['e_xy']
+    sx_var_abaqus = df_list[i]['s_xx']
+    sy_var_abaqus = df_list[i]['s_yy']
+    sxy_var_abaqus = df_list[i]['s_xy']
 
-    sx_pred_var = df_list[i]['pred_x']
-    sy_pred_var = df_list[i]['pred_y']
-    sxy_pred_var = df_list[i]['pred_xy']
+    e_1_abaqus = df_list[i]['e_1']
+    e_2_abaqus = df_list[i]['e_2']
 
-    # sx_pred_var_2 = df_list[i]['pred_x_D']
-    # sy_pred_var_2 = df_list[i]['pred_y_D']
-    # sxy_pred_var_2 = df_list[i]['pred_xy_D']
+    s_1_abaqus = df_list[i]['s_1']
+    s_2_abaqus = df_list[i]['s_2']
 
-    mse_x = err(torch.from_numpy(sx_pred_var.values), torch.from_numpy(sx_var_abaqus.values))
-    mse_y = err(torch.from_numpy(sy_pred_var.values), torch.from_numpy(sy_var_abaqus.values))
-    mse_xy = err(torch.from_numpy(sxy_pred_var.values), torch.from_numpy(sxy_var_abaqus.values))
+    s_1_pred = df_list[i]['s_1_pred']
+    s_2_pred = df_list[i]['s_2_pred']
 
-    # mse_x_2 = err(torch.from_numpy(sx_pred_var_2.values), torch.from_numpy(sx_var_abaqus.values))
-    # mse_y_2 = err(torch.from_numpy(sy_pred_var_2.values), torch.from_numpy(sy_var_abaqus.values))
-    # mse_xy_2 = err(torch.from_numpy(sxy_pred_var_2.values), torch.from_numpy(sxy_var_abaqus.values))
+    sx_pred_var = df_list[i]['s_xx_pred']
+    sy_pred_var = df_list[i]['s_yy_pred']
+    sxy_pred_var = df_list[i]['s_xy_pred']
 
-    r2_x = r2(torch.from_numpy(sx_pred_var.values), torch.from_numpy(sx_var_abaqus.values))
-    r2_y = r2(torch.from_numpy(sy_pred_var.values), torch.from_numpy(sy_var_abaqus.values))
-    r2_xy = r2(torch.from_numpy(sxy_pred_var.values), torch.from_numpy(sxy_var_abaqus.values))
-    
-    # r2_x_2 = r2(torch.from_numpy(sx_pred_var_2.values), torch.from_numpy(sx_var_abaqus.values))
-    # r2_y_2 = r2(torch.from_numpy(sy_pred_var_2.values), torch.from_numpy(sy_var_abaqus.values))
-    # r2_xy_2 = r2(torch.from_numpy(sxy_pred_var_2.values), torch.from_numpy(sxy_var_abaqus.values))
+    de_1_abaqus = df_list[i]['de_1']
+    de_2_abaqus = df_list[i]['de_2']
 
-    fig , (ax1, ax2, ax3) = plt.subplots(1,3)
+    dy_1_abaqus = df_list[i]['dy_1']
+    dy_2_abaqus = df_list[i]['dy_2']
+
+    ds_1_pred = df_list[i]['ds_1']
+    ds_2_pred = df_list[i]['ds_2']
+
+    fig , axs = plt.subplots(1,3)
     #fig.set_size_inches(16, 9)
     fig.set_size_inches(set_size(700,subplots=(1, 3)))
     fig.subplots_adjust(bottom=0.28, wspace=0.4)
     fig.suptitle(r'' + trial.replace('_','\_') + ': element \#' + elem, fontsize=9)
 
-    ax1.plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS', color='k')
-    ax1.plot(ex_var_abaqus, sx_pred_var, label='ANN',color='r')
-    #ax1.plot(ex_var_abaqus, sx_pred_var_2, label='ANN(D)',color='b')
-    ax1.set(xlabel=r'$\varepsilon_{xx}$', ylabel=r'$\sigma_{xx}$ [MPa]')
-    #ax1.add_artist(set_anchored_text(mse_x,r2_x,mse_x_2,r2_x_2))
-    #ax1.set_title(r'$\text{MSE}=%0.3f$' % (mse_x), fontsize=11)
-    ax2.plot(ey_var_abaqus, sy_var_abaqus, label='ABAQUS', color='k')
-    ax2.plot(ey_var_abaqus, sy_pred_var, label='ANN',color='r')
-    #ax2.plot(ey_var_abaqus, sy_pred_var_2, label='ANN(D)',color='b')
-    ax2.set(xlabel=r'$\varepsilon_{yy}$', ylabel=r'$\sigma_{yy}$ [MPa]')
-    #ax2.add_artist(set_anchored_text(mse_y,r2_y,mse_y_2,r2_y_2))
-    #ax2.set_title(r'$\text{MSE}=%0.3f$' % (mse_y), fontsize=11)
-    ax3.plot(exy_var_abaqus, sxy_var_abaqus, label='ABAQUS', color='k')
-    ax3.plot(exy_var_abaqus, sxy_pred_var, label='ANN',color='r')
-    #ax3.plot(exy_var_abaqus, sxy_pred_var_2, label='ANN(D)',color='b')
-    ax3.set(xlabel=r'$\varepsilon_{xy}$', ylabel=r'$\tau_{xy}$ [MPa]')
-    #ax3.add_artist(set_anchored_text(mse_xy,r2_xy,mse_xy_2,r2_xy_2))
-    #ax3.set_title(r'$\text{MSE}=%0.3f$' % (mse_xy), fontsize=11)
-    handles, labels = ax3.get_legend_handles_labels()
+    axs[0].plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS', color='k')
+    axs[0].plot(ex_var_abaqus, sx_pred_var, label='ANN',color='r')
+    #axs[0].plot(ex_var_abaqus, sx_pred_var_2, label='ANN(D)',color='b')
+    axs[0].set(xlabel=r'$\varepsilon_{xx}$', ylabel=r'$\sigma_{xx}$ [MPa]')
+    #axs[0].add_artist(set_anchored_text(mse_x,r2_x,mse_x_2,r2_x_2))
+    #axs[0].set_title(r'$\text{MSE}=%0.3f$' % (mse_x), fontsize=11)
+    axs[1].plot(ey_var_abaqus, sy_var_abaqus, label='ABAQUS', color='k')
+    axs[1].plot(ey_var_abaqus, sy_pred_var, label='ANN',color='r')
+    #axs[1].plot(ey_var_abaqus, sy_pred_var_2, label='ANN(D)',color='b')
+    axs[1].set(xlabel=r'$\varepsilon_{yy}$', ylabel=r'$\sigma_{yy}$ [MPa]')
+    #axs[1].add_artist(set_anchored_text(mse_y,r2_y,mse_y_2,r2_y_2))
+    #axs[1].set_title(r'$\text{MSE}=%0.3f$' % (mse_y), fontsize=11)
+    axs[2].plot(exy_var_abaqus, sxy_var_abaqus, label='ABAQUS', color='k')
+    axs[2].plot(exy_var_abaqus, sxy_pred_var, label='ANN',color='r')
+    #axs[2].plot(exy_var_abaqus, sxy_pred_var_2, label='ANN(D)',color='b')
+    axs[2].set(xlabel=r'$\varepsilon_{xy}$', ylabel=r'$\tau_{xy}$ [MPa]')
+    #axs[2].add_artist(set_anchored_text(mse_xy,r2_xy,mse_xy_2,r2_xy_2))
+    #axs[2].set_title(r'$\text{MSE}=%0.3f$' % (mse_xy), fontsize=11)
+    
+    handles, labels = axs[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc='lower center',ncol=2)
 
-    ax1.tick_params(axis='x', labelcolor='black', length=6)
-    ax1.tick_params(axis='y', labelcolor='black',length=6)
-    ax1.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
-    ax2.tick_params(axis='x', labelcolor='black', length=6)
-    ax2.tick_params(axis='y', labelcolor='black', length=6)
-    ax2.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
-    ax3.tick_params(axis='x', labelcolor='black', length=6)
-    ax3.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
-    ax3.tick_params(axis='y', labelcolor='black', length=6)
+    for ax in fig.axes:
 
-    ax1.xaxis.set_major_locator(MaxNLocator(6))
-    ax1.yaxis.set_major_locator(MaxNLocator(6)) 
-
-    ax2.xaxis.set_major_locator(MaxNLocator(6))
-    ax2.yaxis.set_major_locator(MaxNLocator(6)) 
-
-    ax3.xaxis.set_major_locator(MaxNLocator(6))
-    ax3.yaxis.set_major_locator(MaxNLocator(6)) 
-
+        ax.tick_params(axis='x', labelcolor='black', length=6)
+        ax.tick_params(axis='y', labelcolor='black',length=6)
+        ax.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
+    
+        ax.xaxis.set_major_locator(MaxNLocator(6))
+        ax.yaxis.set_major_locator(MaxNLocator(6)) 
 
     #plt.show()
-    plt.savefig(DIR + trial + expr + elem + ".png", format="png", dpi=300, bbox_inches='tight')
+    plt.savefig(DIR + trial + expr + elem + "_1.png", format="png", dpi=300, bbox_inches='tight')
     plt.close(fig)
+
+    fig , axs = plt.subplots(2,2)
+    #fig.set_size_inches(16, 9)
+    fig.set_size_inches(set_size(700,subplots=(2, 2)))
+    fig.subplots_adjust(bottom=0.28, wspace=0.4)
+    fig.suptitle(r'' + trial.replace('_','\_') + ': element \#' + elem, fontsize=9)
+
+    axs[0][0].plot(e_1_abaqus, s_1_abaqus, label='ABAQUS', color='k')
+    axs[0][0].plot(e_1_abaqus, s_1_pred, label='ANN',color='r')
+    axs[0][0].set(xlabel=r'$\varepsilon_{1}$', ylabel=r'$\sigma_{1}$ [MPa]')
+
+    axs[0][1].plot(e_2_abaqus, s_2_abaqus, label='ABAQUS', color='k')
+    axs[0][1].plot(e_2_abaqus, s_2_pred, label='ANN',color='r')
+    axs[0][1].set(xlabel=r'$\varepsilon_{2}$', ylabel=r'$\sigma_{2}$ [MPa]')
+
+    axs[1][0].plot(dy_1_abaqus, label='ABAQUS', color='k')
+    axs[1][0].plot(ds_1_pred, label='ANN',color='r')
+    axs[1][0].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{1}$ [MPa/s]')
+
+    axs[1][1].plot(dy_2_abaqus, label='ABAQUS', color='k')
+    axs[1][1].plot(ds_2_pred, label='ANN',color='r')
+    axs[1][1].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{2}$ [MPa/s]')
+
+    handles, labels = axs[0][1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc='lower center',ncol=2)
+
+    for ax in fig.axes:
+
+        ax.tick_params(axis='x', labelcolor='black', length=6)
+        ax.tick_params(axis='y', labelcolor='black',length=6)
+        ax.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
+    
+        ax.xaxis.set_major_locator(MaxNLocator(6))
+        ax.yaxis.set_major_locator(MaxNLocator(6)) 
+    
+    #plt.show()
+    plt.savefig(DIR + trial + expr + elem + "_2.png", format="png", dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
     print('\rProcessing image %i of %i' % (i+1,len(file_list)), end='')

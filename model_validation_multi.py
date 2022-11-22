@@ -15,6 +15,15 @@ import math
 from torch.autograd import Variable
 from matplotlib.gridspec import GridSpec
 import wandb
+import os
+
+def get_mre(pred,real):
+    
+    mre = np.abs(pred-real)[1:]/real[1:]
+    mre = np.vstack(([[0.0]],mre))
+
+    return mre
+
 
 def get_elastic_matrix(mean,var):
     s = np.sqrt(var)
@@ -112,11 +121,20 @@ model_1 = NeuralNetwork(INPUTS, OUTPUTS, N_UNITS, len(N_UNITS))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
 
-run = 'toasty-morning-2'
+RUN = 'effortless-terrain-41'
+DIR = 'crux-plastic_sbvf_abs_direct'
 
-x_scaler = joblib.load(f'outputs/crux-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-crux-plastic-1042-VFs-scaler_x.pkl')
-#model_1.load_state_dict(torch.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs.pt'))
-model_1.load_state_dict(torch.load(f'outputs/crux-plastic_sbvf_abs_direct/models/{run}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-crux-plastic-1042-VFs.pt'))
+for r, d, f in os.walk(f'outputs/{DIR}'):
+    for file in f:
+        if RUN in file and '.pt' in file:
+            model_1.load_state_dict(torch.load(f'outputs/{DIR}/models/{file}'))
+        
+        if RUN in file and 'scaler_x.pkl' in file:
+            x_scaler = joblib.load(f'outputs/{DIR}/models/{file}')
+
+# x_scaler = joblib.load(f'outputs/{DIR}/models/{RUN}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-crux-plastic-1022-VFs-scaler_x.pkl')
+# #model_1.load_state_dict(torch.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs.pt'))
+# model_1.load_state_dict(torch.load(f'outputs/crux-plastic_sbvf_abs_direct/models/{RUN}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-crux-plastic-1022-VFs.pt'))
 
 # model_2 = NeuralNetwork(3, 3, 0, 0)
 
@@ -138,7 +156,7 @@ r2 = torchmetrics.R2Score()
 
 elem_list = []
 r2_scores = []
-maes = []
+mres = []
 
 # entity = 'rmbl'
 # project='indirect_training_tests'
@@ -156,45 +174,42 @@ maes = []
 
 print("--------------------------------------\n\tMean Absolute Error\n--------------------------------------")
 with torch.no_grad():
+    last_tag = ''
     for i, df in enumerate(df_list):
         
-        if df['id'][0] == 1:
-            print("\n%s\tSxx\tSyy\tSxy\tr2_x\tr2_y\tr2_xy\tr2_x_D\tr2_y_D\tr2_xy_D\n" %(df['tag'][0]))
+        if df['tag'][0] != last_tag:
+            print("\n%s\t\tSxx\tSyy\tSxy\tS1\tS2\n" %(df['tag'][0]))
+            last_tag = df['tag'][0]
         
         X, y, _, _, info = select_features_multi(df)
+
         X_scaled=torch.from_numpy(x_scaler.transform(X))
-        #X_scaled = X_scaled[~torch.any(X_scaled.isnan(),dim=1)]
-        theta_p = torch.from_numpy(info[['theta_p']].values)
-        # theta_p = theta_p[~torch.any(theta_p.isnan(),dim=1)]
-        # theta_p = torch.cat((torch.as_tensor([[0]]),theta_p),0)
+        X_scaled = X_scaled[~torch.any(X_scaled.isnan(),dim=1)]
+       
+        y = torch.from_numpy(y.values)
+        y = y[~torch.any(y.isnan(),dim=1)]
+
+        theta_ep = torch.from_numpy(info[['theta_ep']].values)
+        theta_sp = torch.from_numpy(info[['theta_sp']].values)
+
         t = torch.from_numpy(info['t'].values).reshape(-1,1)
-        #dt = torch.diff(t,dim=0)
+        dt = torch.diff(t,dim=0)
 
-        y_pred_inv = model_1(X_scaled) # stress rate.
-        #y_pred_inv = torch.cat((torch.zeros(1,2),y_pred_inv),0)
-        #y_pred_inv = torch.cumulative_trapezoid(y_pred_inv,t,dim=0)
-        #y_pred_inv = torch.cat((torch.zeros(1,2),y_pred_inv),0)
-        # y_pred_inv = torch.cumsum(y_pred_inv,0)
-        y_pred_inv *= t.repeat(1,2)
-        # y_pred_inv = torch.cat((torch.zeros(1,2),y_pred_inv),0)
-        # y_pred_inv = torch.cumsum(y_pred_inv,0)
+        s_rate = model_1(X_scaled) # stress rate.
         
-        y_mat = np.zeros((y_pred_inv.shape[0],2,2))
-        y_mat[:,0,0] = y_pred_inv[:,0]
-        y_mat[:,1,1] = y_pred_inv[:,1]
+        s_princ = torch.zeros(t.shape[0],s_rate.shape[-1])
+        s_princ[1:,:] = s_rate*dt.repeat(1,2)
+        s_princ = torch.cumsum(s_princ,0)
 
-        y = rotate_tensor(y_mat,theta_p.reshape(-1),is_reverse=True)
+        #s_princ = torch.cumulative_trapezoid(s_rate,t,dim=0)
+        #s_princ = torch.cat((torch.as_tensor([[0,0]]),s_princ),0)
 
+        s_princ_mat = torch.zeros([s_princ.shape[0],2,2])        
+        s_princ_mat[:,0,0] = s_princ[:,0]
+        s_princ_mat[:,1,1] = s_princ[:,1]
 
-        # #ds_princ = y_pred_inv * dt.unsqueeze(-1).repeat(1,2)
-        # s_princ = torch.cumsum(y_pred_inv,0)
-        # s_mat = s_princ[:,0].reshape(s_princ.shape[0],1,1)*torch.einsum('bi,bj->bij', (eigen_vec[:,:,0], eigen_vec[:,:,0]))+s_princ[:,1].reshape(s_princ.shape[0],1,1)*torch.einsum('bi,bj->bij', (eigen_vec[:,:,1], eigen_vec[:,:,1]))
-        # s_mat = torch.cat([torch.zeros((1,2,2)),s_mat],0)
-
-
-        #s = y_pred_inv[:,:2]
-        #vec = y_pred_inv[:,2:].reshape(y_pred_inv.shape[0],2,2)
-        #y_pred_inv_2 = model_2(torch.tensor(X_scaled)).detach().numpy()
+        s = rotate_tensor(s_princ_mat.numpy(),theta_sp.reshape(-1).numpy(),is_reverse=True)
+        s = s[:,[0,1,1],[0,1,0]]
 
         # L = torch.zeros([51, 3, 3])
         # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
@@ -204,128 +219,82 @@ with torch.no_grad():
         # d_e= torch.from_numpy(info[['d_exx','d_eyy','d_exy']].values).reshape([51,3,1])
         # d_s = (H @ d_e).squeeze()
         # y_pred_inv = torch.cumsum(d_s,0).detach().numpy()
+       
+        # Strain values - Abaqus
+        ex_abaqus = df['exx_t'].values.reshape(-1,1)
+        ey_abaqus = df['eyy_t'].values.reshape(-1,1)
+        exy_abaqus = 0.5*df['exy_t'].values.reshape(-1,1)
 
-        #s_mat = s[:,0].reshape(s.shape[0],1,1)*torch.einsum('bi,bj->bij', (vec[:,:,0], vec[:,:,0]))+s[:,1].reshape(s.shape[0],1,1)*torch.einsum('bi,bj->bij', (vec[:,:,1], vec[:,:,1]))
+        # Stress values - Abaqus
+        sx_abaqus = df['sxx_t'].values.reshape(-1,1)
+        sy_abaqus = df['syy_t'].values.reshape(-1,1)
+        sxy_abaqus = df['sxy_t'].values.reshape(-1,1)
 
-        #angles = torch.from_numpy(info['theta_p'].values)
-        # rot_mat = torch.zeros_like(s_princ_mat)
-        # rot_mat[:,0,0] = torch.cos(angles[:])
-        # rot_mat[:,0,1] = torch.sin(angles[:])
-        # rot_mat[:,1,0] = -torch.sin(angles[:])
-        # rot_mat[:,1,1] = torch.cos(angles[:])
+        # Stress predictions - ANN
+        sx_pred = s[:,0].reshape(-1,1)
+        sy_pred = s[:,1].reshape(-1,1)
+        sxy_pred= s[:,2].reshape(-1,1)
 
-        #s = torch.transpose(rot_mat,1,2) @ s_princ_mat @ rot_mat
-        y_pred_inv = y[:,[0,1,1],[0,1,0]]
-        #y_pred_inv = s.numpy()
-    
-        ex_var_abaqus = df['exx_t']
-        ey_var_abaqus = df['eyy_t']
-        exy_var_abaqus = df['exy_t']
-        sx_var_abaqus = df['sxx_t']
-        sy_var_abaqus = df['syy_t']
-        sxy_var_abaqus = df['sxy_t']
+        ###################################################################################
+        #                             MEAN ABSOLUTE ERRORS
+        ###################################################################################
 
-        sx_pred_var = y_pred_inv[:,0]
-        sy_pred_var = y_pred_inv[:,1]
-        sxy_pred_var = y_pred_inv[:,2]
+        mre_sx = get_mre(sx_pred, sx_abaqus).reshape(-1,1)
+        mre_sy = get_mre(sy_pred, sy_abaqus).reshape(-1,1)
+        mre_sxy = get_mre(sxy_pred, sxy_abaqus).reshape(-1,1)
 
-        # sx_pred_var_2 = y_pred_inv_2[:,0]
-        # sy_pred_var_2 = y_pred_inv_2[:,1]
-        # sxy_pred_var_2 = y_pred_inv_2[:,2]
+        ###################################################################################
 
-        # mse_x = err(torch.from_numpy(sx_pred_var), torch.from_numpy(sx_var_abaqus.values))
-        # mse_y = err(torch.from_numpy(sy_pred_var), torch.from_numpy(sy_var_abaqus.values))
-        # mse_xy = err(torch.from_numpy(sxy_pred_var), torch.from_numpy(sxy_var_abaqus.values))
+        # Principal strain - Abaqus
+        e1_abaqus = X['ep_1'].values.reshape(-1,1)
+        e2_abaqus = X['ep_2'].values.reshape(-1,1)
+        
+        # Principal stress - Abaqus
+        y_princ = torch.from_numpy(df[['s1','s2']].values)
+        y1_abaqus = y_princ[:,0].numpy().reshape(-1,1)
+        y2_abaqus = y_princ[:,1].numpy().reshape(-1,1)
 
-        mse_x = ((torch.from_numpy(sx_pred_var)-torch.from_numpy(sx_var_abaqus.values))/torch.from_numpy(sx_var_abaqus.values))[1:]
-        mse_y = ((torch.from_numpy(sy_pred_var)-torch.from_numpy(sy_var_abaqus.values))/torch.from_numpy(sy_var_abaqus.values))[1:]
-        mse_xy = ((torch.from_numpy(sxy_pred_var)-torch.from_numpy(sxy_var_abaqus.values))/torch.from_numpy(sxy_var_abaqus.values))[1:]
-        # mse_x_2 = err(torch.from_numpy(sx_pred_var_2), torch.from_numpy(sx_var_abaqus.values))
-        # mse_y_2 = err(torch.from_numpy(sy_pred_var_2), torch.from_numpy(sy_var_abaqus.values))
-        # mse_xy_2 = err(torch.from_numpy(sxy_pred_var_2), torch.from_numpy(sxy_var_abaqus.values))
+        # Principal stress predictions - ANN
+        s1_pred = s_princ[:,0].numpy().reshape(-1,1)
+        s2_pred = s_princ[:,1].numpy().reshape(-1,1)
 
-        #maes.append([mse_x, mse_y, mse_xy, mse_x_2, mse_y_2, mse_xy_2])
+        ###################################################################################
+        #                             MEAN RELATIVE ERRORS
+        ###################################################################################
 
-        maes.append([mse_x, mse_y, mse_xy])
+        mre_s1 = get_mre(s1_pred, y1_abaqus).reshape(-1,1)
+        mre_s2 = get_mre(s2_pred, y2_abaqus).reshape(-1,1)
 
-        r2_x = r2(torch.from_numpy(sx_pred_var), torch.from_numpy(sx_var_abaqus.values))
-        r2_y = r2(torch.from_numpy(sy_pred_var), torch.from_numpy(sy_var_abaqus.values))
-        r2_xy = r2(torch.from_numpy(sxy_pred_var), torch.from_numpy(sxy_var_abaqus.values))
+        ###################################################################################
 
-        # r2_x_2 = r2(torch.from_numpy(sx_pred_var_2), torch.from_numpy(sx_var_abaqus.values))
-        # r2_y_2 = r2(torch.from_numpy(sy_pred_var_2), torch.from_numpy(sy_var_abaqus.values))
-        # r2_xy_2 = r2(torch.from_numpy(sxy_pred_var_2), torch.from_numpy(sxy_var_abaqus.values))
+        # Principal strain rate - Abaqus
+        de1_abaqus = X['dep_1'].values.reshape(-1,1)
+        de2_abaqus = X['dep_2'].values.reshape(-1,1)
 
-        #r2_scores.append([r2_x, r2_y, r2_xy, r2_x_2, r2_y_2, r2_xy_2])
+        # Principal stress rate - Abaqus
+        # dy_princ = np.gradient(y_princ,t.reshape(-1),axis=0)
+        dy_1 = y[:,0].reshape(-1,1).numpy()
+        dy_1 = np.vstack((dy_1,np.array([np.NaN])))
+        dy_2 = y[:,1].reshape(-1,1).numpy()
+        dy_2 = np.vstack((dy_2,np.array([np.NaN])))
 
-        r2_scores.append([r2_x, r2_y, r2_xy])
+        # Principal stress rate predictions
+        ds1_pred = s_rate[:,0].numpy().reshape(-1,1)
+        ds1_pred = np.vstack((ds1_pred,np.array([np.NaN])))
+        ds2_pred = s_rate[:,1].numpy().reshape(-1,1)
+        ds2_pred = np.vstack((ds2_pred,np.array([np.NaN])))
 
         elem_list.append(df['id'][0])
 
-        #print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'][0], mse_x, mse_y, mse_xy, mse_x_2, mse_y_2, mse_xy_2, r2_x, r2_y, r2_xy, r2_x_2, r2_y_2, r2_xy_2))
+        print("Elem #%i\t\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'][0], np.mean(mre_sx), np.mean(mre_sy), np.mean(mre_sxy), np.mean(mre_s1), np.mean(mre_s2)))
 
-        print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'][0], torch.mean(torch.abs(mse_x)), torch.mean(torch.abs(mse_y)), torch.mean(torch.abs(mse_xy)), r2_x, r2_y, r2_xy))
-       
-        # fig , (ax1, ax2, ax3) = plt.subplots(1,3)
-        # fig.suptitle(r''+ df['tag'][0].replace('_','\_') + ': element \#' + str(df['id'][0]),fontsize=14)
-        # fig.set_size_inches(10, 5)
-        # fig.subplots_adjust(bottom=0.2, top=0.8)
-    
-        # ax1.plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS')
-        # ax1.plot(ex_var_abaqus, sx_pred_var, label='ANN')
-        # ax1.set(xlabel=r'$\varepsilon_{xx}$', ylabel=r'$\sigma_{xx}$ [MPa]')
-        # #ax1.set_title(r'$\text{MSE}=%0.3f$' % (mse_x), fontsize=11)
-        # ax2.plot(ey_var_abaqus, sy_var_abaqus, label='ABAQUS')
-        # ax2.plot(ey_var_abaqus, sy_pred_var, label='ANN')
-        # ax2.set(xlabel=r'$\varepsilon_{yy}$', ylabel=r'$\sigma_{yy}$ [MPa]')
-        # ax2.ticklabel_format(axis="x", style="sci", scilimits=(0,0))
-        # #ax2.set_title(r'$\text{MSE}=%0.3f$' % (mse_y), fontsize=11)
-        # ax3.plot(exy_var_abaqus, sxy_var_abaqus, label='ABAQUS')
-        # # ax3.plot(exy_var_abaqus, func(exy_var_abaqus, *popt), label='ABAQUS')
-        # ax3.plot(exy_var_abaqus, sxy_pred_var, label='ANN')
-        # ax3.set(xlabel=r'$\varepsilon_{xy}$', ylabel=r'$\tau_{xy}$ [MPa]')
-        # ax3.ticklabel_format(axis="x", style="sci", scilimits=(0,0))
-        # #ax3.set_title(r'$\text{MSE}=%0.3f$' % (mse_xy), fontsize=11)
-        # handles, labels = ax3.get_legend_handles_labels()
-        # fig.legend(handles, labels, loc='lower center',ncol=2)
-        
-        #plt.show()
+        cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred','e_1','e_2','s_1','s_2','s_1_pred','s_2_pred','de_1','de_2','ds_1','ds_2','dy_1','dy_2','mre_sx','mre_sy','mre_sxy','mre_s1','mre_s2']
 
-        
-        
         if df['id'][0] in elem_list:
-            #predictions = pd.DataFrame(np.concatenate([y_pred_inv,y_pred_inv_2],axis=1), columns=['pred_x','pred_y','pred_xy','pred_x_D','pred_y_D','pred_xy_D'])
-            predictions = pd.DataFrame(y_pred_inv, columns=['pred_x','pred_y','pred_xy'])
-            #stats = pd.DataFrame([maes, r2_scores], columns=['mae_x','mae_y','mae_xy','r2_x','r2_y','r2_xy'])
-            results = pd.concat([df[['exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t']],predictions], axis=1)
-            results.to_csv('outputs/crux-plastic_sbvf_abs_direct/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',',float_format='%.12f')
             
-            # # Convert the DataFrame into a W&B Table
-            # # NOTE: Tables will have a row limit of 10000 but...
-            #artifact = wandb.Artifact(df['tag'][0]+'_'+str(df['id'][0]), type='run-table')
+            res = np.concatenate([ex_abaqus,ey_abaqus,exy_abaqus,sx_abaqus,sy_abaqus,sxy_abaqus,sx_pred,sy_pred,sxy_pred,e1_abaqus,e2_abaqus,y1_abaqus,y2_abaqus,s1_pred,s2_pred,de1_abaqus,de2_abaqus,ds1_pred,ds2_pred,dy_1,dy_2,mre_sx, mre_sy, mre_sxy, mre_s1, mre_s2], axis=1)
             
-            #table = wandb.Table(dataframe=results)
+            results = pd.DataFrame(res, columns=cols)
             
-#             artifact.add(table,df['tag'][0]+'_'+str(df['id'][0]))            
-
-#             # # # Log the table to visualize with a run...
-#             run2.log({df['tag'][0]+'_'+str(df['id'][0]): table})
-#             #run.log_artifact(artifact)
-#             #run.update()
-# run2.finish(0)
-# # # We will also log the raw csv file within an artifact to preserve our data
-# artifact.add_dir('outputs/9-elem-50-plastic_sbvf_abs/val/','plots')
-# # # Log as an Artifact to increase the available row limit!
-# generate_run.log_artifact(artifact, aliases='validation')
-# generate_run.finish(0)
-
-# # # Link the artifact to the training run using the API
-# # api = wandb.Api()
-# # run = api.runs(f'{entity}/{project}')[0]
-# artifact_ = api.artifact(f'{entity}/{project}/results:validation')
-# run_.use_artifact(artifact_)
-# #run_.update()
-
-
-
-wandb.finish()
+            results.to_csv(f'outputs/{DIR}/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',', float_format='%.6f')
+            
