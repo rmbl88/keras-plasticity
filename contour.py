@@ -1,3 +1,4 @@
+import matplotlib
 import numpy as np
 from functions import *
 from constants import *
@@ -27,51 +28,50 @@ def quads_to_tris(quads):
     return tris
 
 # plots a finite element mesh
-def plot_fem_mesh(nodes_x, nodes_y, elements):
+def plot_fem_mesh(nodes_x, nodes_y, elements,ax=None):
     for element in elements:
         x = [nodes_x[element[i]] for i in range(len(element))]
         y = [nodes_y[element[i]] for i in range(len(element))]
-        plt.fill(x, y, edgecolor='black', fill=False)
+        ax.fill(x, y, edgecolor='black', fill=False)
 
-def showMeshPlot(nodes, connectivity, fields):
+def plot_fields(nodes, connectivity, fields, triangulation):
 
-    n_subplots = len(fields.keys())
+    def contour_plot(triangulation, field, ax=None, **kwargs):
 
-    x = nodes[:,0]
-    y = nodes[:,1]
-
-    def quatplot(x, y, elements, field, ax=None, **kwargs):
-
-        if not ax: ax=plt.gca()
-        xy = np.c_[x,y]
-        verts= xy[elements]
-        pc = mc.PolyCollection(verts, **kwargs)
-        pc.set_array(field)
-        ax.add_collection(pc)
+        if not ax: ax = plt.gca()
+        pc = ax.tricontourf(triangulation, field.flatten(), **kwargs)
         ax.autoscale()
-        
+
         return pc
 
+    n_subplots = len(fields.keys())
 
     fig, axs = plt.subplots(1,n_subplots)
     
     fig.set_size_inches(12,6.75)
-    
-    
+        
     cmap = mcm.jet
 
     for i, (k, v) in enumerate(fields.items()):
 
-        axs[i].set_aspect('equal')
-        bounds  = np.linspace(min(v),max(v),13)
+        # Extrapolating from centroids to nodes
+        var_nodal = np.ones((4,1)) @ v.reshape(-1,1,1)
+        # Average values at nodes
+        var_avg = np.array([np.mean(var_nodal[np.isin(connectivity,j)],0) for j in range(len(nodes))])
+
+        # Defining contour levels
+        cbar_min = np.min(var_avg)
+        cbar_max = np.max(var_avg)
+        levels  = np.linspace(np.floor(cbar_min), np.ceil(cbar_max),256)
+        norm = matplotlib.colors.BoundaryNorm(levels, 256)
+
+        pc = contour_plot(triangulation, var_avg, ax=axs[i], cmap=cmap, levels=levels, norm=norm, vmin=cbar_min, vmax=cbar_max)
     
-        pc = quatplot(x, y, np.asarray(connectivity), v, ax=axs[i], edgecolor="face", linewidths=0.25, cmap=cmap,snap=True, norm=None)
-    
-        axs[i].plot(x,y, ls="")
         axs[i].axis('off')
-    
-        cb = fig.colorbar(pc, cax=axs[i].inset_axes((-0.05, 0.12, 0.02, 0.65)), boundaries=bounds, ticks=bounds,format='%.3e')
-        #cb.formatter.set_useMathText(True)
+        axs[i].set_aspect('equal')
+        cbarlabels = np.linspace(np.floor(cbar_min), np.ceil(cbar_max), num=13, endpoint=True)
+        cb = fig.colorbar(pc, cax=axs[i].inset_axes((-0.05, 0.12, 0.02, 0.65)),ticks=cbarlabels,format='%.3e')
+
         if k == 'sxx_t':
             cb_str = r'$\boldsymbol{\sigma}_{xx}~[\mathrm{MPa}]$'
         elif k == 'syy_t':
@@ -81,8 +81,6 @@ def showMeshPlot(nodes, connectivity, fields):
 
         cb.ax.set_title(cb_str, pad = 15, horizontalalignment='right')
         cb.ax.yaxis.set_tick_params(pad=7.5)
-        
-        #cb.ax.yaxis.set_major_formatter(ticker.ScalarFormatter(useMathText=True))
         cb.ax.yaxis.set_ticks_position('left')
 
 
@@ -90,35 +88,26 @@ def showMeshPlot(nodes, connectivity, fields):
     plt.show()
 
 plt.rcParams.update(PARAMS_CONTOUR)
-# plt.rc('text', usetex=True)
-# plt.rc('text.latex', preamble=r"\usepackage{amsmath,newpxtext,newpxmath}")
 
+# Loading data
 data=pq.ParquetDataset(os.path.join(TRAIN_MULTI_DIR,'processed','x05_y05_.parquet')).read_pandas().to_pandas()
 
+# Importing mesh
 mesh, connectivity, dof = read_mesh(TRAIN_MULTI_DIR)
 
+# Extracting nodal coordinates and connectivity
 nodes = mesh[:,1:]
 connectivity = connectivity[:,1:] - 1
 
+# Converting from quad mesh to triangular mesh
+tris = quads_to_tris(connectivity)
+triangulation = tri.Triangulation(nodes[:,0], nodes[:,1], tris)
+
+# Field variables to plot
 vars = ['sxx_t','syy_t','sxy_t']
 field_dict = dict.fromkeys(vars)
 
 for k, _ in field_dict.items():
     field_dict[k] =  data[data['inc']==119][k].values
 
-a=np.array([[0.25],[0.25],[0.25],[0.25]])@field_dict['sxy_t'].reshape(-1,1,1)
-meanStress = np.zeros((nodes.shape[0],1))
-for i in range(len(nodes)):
-    mask = np.isin(connectivity,i)
-    meanStress[i,:] = np.mean(a[mask],0) 
-
-elements_all_tris = quads_to_tris(connectivity)
-triangulation = tri.Triangulation(nodes[:,0], nodes[:,1], elements_all_tris)
-#plot_fem_mesh(nodes[:,0], nodes[:,1], connectivity)
-fig,ax = plt.subplots()
-ax.tricontourf(triangulation, meanStress.flatten(),levels=256,cmap=mcm.jet,vmin=min(meanStress),vmax=max(meanStress),aspect='equal')
-ax.set_aspect('equal')
-plt.show()
-#showMeshPlot(nodes, connectivity, field_dict)
-
-print('hey')
+plot_fields(nodes, connectivity, field_dict, triangulation)
