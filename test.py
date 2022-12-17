@@ -36,6 +36,8 @@ def set_size(width, fraction=1, subplots=(1, 1)):
         width_pt = 426.79135
     elif width == 'beamer':
         width_pt = 307.28987
+    elif width == 'esaform':
+        width_pt = 535.896
     else:
         width_pt = width
 
@@ -68,11 +70,13 @@ for r, d, f in os.walk(DIR):
 for file in file_list:
     df_list.append(pd.read_csv(file))
 
-plt.rcParams.update(PARAMS)
+plt.rcParams.update(PARAMS_CONTOUR)
 
 default_cycler = (cycler(color=["#ef476f","#118ab2","#073b4c"]))
 
 plt.rc('axes', prop_cycle=default_cycler)
+plt.rc('xtick', labelsize='x-small')
+plt.rc('ytick', labelsize='x-small')
 
 err = torchmetrics.MeanAbsoluteError()
 r2 = torchmetrics.R2Score()
@@ -121,24 +125,24 @@ for i,file in enumerate(file_list):
 
     fig , axs = plt.subplots(1,3)
     #fig.set_size_inches(16, 9)
-    fig.set_size_inches(set_size(700,subplots=(1, 3)))
-    fig.subplots_adjust(bottom=0.28, wspace=0.4)
+    fig.set_size_inches(set_size('esaform',subplots=(1, 3)))
+    fig.subplots_adjust(bottom=0.28, wspace=0.35)
     fig.suptitle(r'' + trial.replace('_','\_') + ': element \#' + elem, fontsize=9)
 
-    axs[0].plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS', color='k')
-    axs[0].plot(ex_var_abaqus, sx_pred_var, label='ANN',color='r')
+    axs[0].plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
+    axs[0].plot(ex_var_abaqus, sx_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
     #axs[0].plot(ex_var_abaqus, sx_pred_var_2, label='ANN(D)',color='b')
     axs[0].set(xlabel=r'$\varepsilon_{xx}$', ylabel=r'$\sigma_{xx}$ [MPa]')
     #axs[0].add_artist(set_anchored_text(mse_x,r2_x,mse_x_2,r2_x_2))
     #axs[0].set_title(r'$\text{MSE}=%0.3f$' % (mse_x), fontsize=11)
-    axs[1].plot(ey_var_abaqus, sy_var_abaqus, label='ABAQUS', color='k')
-    axs[1].plot(ey_var_abaqus, sy_pred_var, label='ANN',color='r')
+    axs[1].plot(ey_var_abaqus, sy_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
+    axs[1].plot(ey_var_abaqus, sy_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
     #axs[1].plot(ey_var_abaqus, sy_pred_var_2, label='ANN(D)',color='b')
     axs[1].set(xlabel=r'$\varepsilon_{yy}$', ylabel=r'$\sigma_{yy}$ [MPa]')
     #axs[1].add_artist(set_anchored_text(mse_y,r2_y,mse_y_2,r2_y_2))
     #axs[1].set_title(r'$\text{MSE}=%0.3f$' % (mse_y), fontsize=11)
-    axs[2].plot(exy_var_abaqus, sxy_var_abaqus, label='ABAQUS', color='k')
-    axs[2].plot(exy_var_abaqus, sxy_pred_var, label='ANN',color='r')
+    axs[2].plot(exy_var_abaqus, sxy_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
+    axs[2].plot(exy_var_abaqus, sxy_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
     #axs[2].plot(exy_var_abaqus, sxy_pred_var_2, label='ANN(D)',color='b')
     axs[2].set(xlabel=r'$\varepsilon_{xy}$', ylabel=r'$\tau_{xy}$ [MPa]')
     #axs[2].add_artist(set_anchored_text(mse_xy,r2_xy,mse_xy_2,r2_xy_2))
@@ -157,30 +161,40 @@ for i,file in enumerate(file_list):
         ax.yaxis.set_major_locator(MaxNLocator(6)) 
 
     #plt.show()
-    plt.savefig(DIR + trial + expr + elem + "_1.png", format="png", dpi=300, bbox_inches='tight')
+    plt.savefig(DIR + trial + expr + elem + "_1.png", format="png", dpi=600, bbox_inches='tight')
     plt.close(fig)
 
-    fig , axs = plt.subplots(2,2)
+    print('saving %i'% i)
+
+    fig , axs = plt.subplots(3,2)
     #fig.set_size_inches(16, 9)
-    fig.set_size_inches(set_size(700,subplots=(2, 2)))
-    fig.subplots_adjust(bottom=0.28, wspace=0.4)
+    fig.set_size_inches(set_size('esaform',subplots=(2, 2)))
+    fig.subplots_adjust(bottom=0.1, wspace=0.35)
     fig.suptitle(r'' + trial.replace('_','\_') + ': element \#' + elem, fontsize=9)
 
-    axs[0][0].plot(e_1_abaqus, s_1_abaqus, label='ABAQUS', color='k')
-    axs[0][0].plot(e_1_abaqus, s_1_pred, label='ANN',color='r')
+    axs[0][0].plot(e_1_abaqus, s_1_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+    axs[0][0].plot(e_1_abaqus, s_1_pred, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
     axs[0][0].set(xlabel=r'$\varepsilon_{1}$', ylabel=r'$\sigma_{1}$ [MPa]')
 
-    axs[0][1].plot(e_2_abaqus, s_2_abaqus, label='ABAQUS', color='k')
-    axs[0][1].plot(e_2_abaqus, s_2_pred, label='ANN',color='r')
+    axs[0][1].plot(e_2_abaqus, s_2_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+    axs[0][1].plot(e_2_abaqus, s_2_pred, label='ANN',color='r',marker='.',markersize=2.2, alpha=0.5)
     axs[0][1].set(xlabel=r'$\varepsilon_{2}$', ylabel=r'$\sigma_{2}$ [MPa]')
 
-    axs[1][0].plot(dy_1_abaqus, label='ABAQUS', color='k')
-    axs[1][0].plot(ds_1_pred, label='ANN',color='r')
+    axs[1][0].plot(dy_1_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+    axs[1][0].plot(ds_1_pred, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
     axs[1][0].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{1}$ [MPa/s]')
 
-    axs[1][1].plot(dy_2_abaqus, label='ABAQUS', color='k')
-    axs[1][1].plot(ds_2_pred, label='ANN',color='r')
+    axs[1][1].plot(dy_2_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+    axs[1][1].plot(ds_2_pred, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
     axs[1][1].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{2}$ [MPa/s]')
+
+    axs[2][0].plot(dy_1_abaqus*de_1_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+    axs[2][0].plot(ds_1_pred*de_1_abaqus, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
+    axs[2][0].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{1}\dot{\varepsilon}_{1}$')
+
+    axs[2][1].plot(dy_2_abaqus*de_2_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+    axs[2][1].plot(ds_2_pred*de_2_abaqus, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
+    axs[2][1].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{2}\dot{\varepsilon}_{2}$')
 
     handles, labels = axs[0][1].get_legend_handles_labels()
     fig.legend(handles, labels, loc='lower center',ncol=2)
@@ -195,7 +209,7 @@ for i,file in enumerate(file_list):
         ax.yaxis.set_major_locator(MaxNLocator(6)) 
     
     #plt.show()
-    plt.savefig(DIR + trial + expr + elem + "_2.png", format="png", dpi=300, bbox_inches='tight')
+    plt.savefig(DIR + trial + expr + elem + "_2.png", format="png", dpi=600, bbox_inches='tight')
     plt.close(fig)
 
     print('\rProcessing image %i of %i' % (i+1,len(file_list)), end='')

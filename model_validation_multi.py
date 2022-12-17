@@ -16,6 +16,7 @@ from torch.autograd import Variable
 from matplotlib.gridspec import GridSpec
 import wandb
 import os
+from constants import *
 
 def get_mre(pred,real):
     
@@ -96,7 +97,7 @@ plt.rc('axes', prop_cycle=default_cycler)
 torch.set_default_dtype(torch.float64)
 
 # Loading data
-df_list, file_names = load_dataframes(constants.VAL_DIR_MULTI)
+df_list, file_names = load_dataframes(constants.VAL_DIR_MULTI, preproc=False)
 
 file_names = [file_name.split('/')[-1] for file_name in file_names]
 # Loading data scalers
@@ -110,7 +111,7 @@ file_names = [file_name.split('/')[-1] for file_name in file_names]
 
 INPUTS = 6
 OUTPUTS = 2
-N_UNITS = [25,20,15]
+N_UNITS = [20,20,20,20]
 H_LAYERS = len(N_UNITS)
 
 # Loading ANN model
@@ -121,7 +122,7 @@ model_1 = NeuralNetwork(INPUTS, OUTPUTS, N_UNITS, len(N_UNITS))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
 
-RUN = 'effortless-terrain-41'
+RUN = 'neat-leaf-306'
 DIR = 'crux-plastic_sbvf_abs_direct'
 
 for r, d, f in os.walk(f'outputs/{DIR}'):
@@ -130,7 +131,10 @@ for r, d, f in os.walk(f'outputs/{DIR}'):
             model_1.load_state_dict(torch.load(f'outputs/{DIR}/models/{file}'))
         
         if RUN in file and 'scaler_x.pkl' in file:
-            x_scaler = joblib.load(f'outputs/{DIR}/models/{file}')
+            std,mean = joblib.load(f'outputs/{DIR}/models/{file}')
+
+#std, mean =  joblib.load(os.path.join(TRAIN_MULTI_DIR,'scaler_x.pkl'))
+            
 
 # x_scaler = joblib.load(f'outputs/{DIR}/models/{RUN}-[{INPUTS}-{N_UNITS[0]}x{H_LAYERS}-{OUTPUTS}]-crux-plastic-1022-VFs-scaler_x.pkl')
 # #model_1.load_state_dict(torch.load('outputs/9-elem-50-elastic_sbvf_abs/models/[3-3x0-3]-9-elem-50-elastic-12-VFs.pt'))
@@ -177,13 +181,14 @@ with torch.no_grad():
     last_tag = ''
     for i, df in enumerate(df_list):
         
-        if df['tag'][0] != last_tag:
-            print("\n%s\t\tSxx\tSyy\tSxy\tS1\tS2\n" %(df['tag'][0]))
-            last_tag = df['tag'][0]
+        if df['tag'].iloc[0] != last_tag:
+            print("\n%s\t\tSxx\tSyy\tSxy\tS1\tS2\n" %(df['tag'].iloc[0]))
+            last_tag = df['tag'].iloc[0]
         
         X, y, _, _, info = select_features_multi(df)
-
-        X_scaled=torch.from_numpy(x_scaler.transform(X))
+        #X_scaled = torch.from_numpy(X)
+        X_scaled = (torch.from_numpy(X.values) - mean) / std
+        #X_scaled=torch.from_numpy(x_scaler.transform(X))
         X_scaled = X_scaled[~torch.any(X_scaled.isnan(),dim=1)]
        
         y = torch.from_numpy(y.values)
@@ -194,10 +199,12 @@ with torch.no_grad():
 
         t = torch.from_numpy(info['t'].values).reshape(-1,1)
         dt = torch.diff(t,dim=0)
-
+        #dt = torch.cat((torch.as_tensor([[0]]),torch.diff(t,dim=0)),0)
+ 
         s_rate = model_1(X_scaled) # stress rate.
         
         s_princ = torch.zeros(t.shape[0],s_rate.shape[-1])
+        #s_princ = s_rate*dt.repeat(1,2)
         s_princ[1:,:] = s_rate*dt.repeat(1,2)
         s_princ = torch.cumsum(s_princ,0)
 
@@ -284,17 +291,17 @@ with torch.no_grad():
         ds2_pred = s_rate[:,1].numpy().reshape(-1,1)
         ds2_pred = np.vstack((ds2_pred,np.array([np.NaN])))
 
-        elem_list.append(df['id'][0])
+        elem_list.append(df['id'].iloc[0])
 
-        print("Elem #%i\t\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'][0], np.mean(mre_sx), np.mean(mre_sy), np.mean(mre_sxy), np.mean(mre_s1), np.mean(mre_s2)))
+        print("Elem #%i\t\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (df['id'].iloc[0], np.mean(mre_sx), np.mean(mre_sy), np.mean(mre_sxy), np.mean(mre_s1), np.mean(mre_s2)))
 
         cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred','e_1','e_2','s_1','s_2','s_1_pred','s_2_pred','de_1','de_2','ds_1','ds_2','dy_1','dy_2','mre_sx','mre_sy','mre_sxy','mre_s1','mre_s2']
 
-        if df['id'][0] in elem_list:
+        if df['id'].iloc[0] in elem_list:
             
             res = np.concatenate([ex_abaqus,ey_abaqus,exy_abaqus,sx_abaqus,sy_abaqus,sxy_abaqus,sx_pred,sy_pred,sxy_pred,e1_abaqus,e2_abaqus,y1_abaqus,y2_abaqus,s1_pred,s2_pred,de1_abaqus,de2_abaqus,ds1_pred,ds2_pred,dy_1,dy_2,mre_sx, mre_sy, mre_sxy, mre_s1, mre_s2], axis=1)
             
             results = pd.DataFrame(res, columns=cols)
             
-            results.to_csv(f'outputs/{DIR}/val/' + df['tag'][0]+'_'+str(df['id'][0])+'.csv', header=True, sep=',', float_format='%.6f')
+            results.to_csv(f'outputs/{DIR}/val/' + df['tag'].iloc[0]+'_'+str(df['id'].iloc[0])+'.csv', header=True, sep=',', float_format='%.6f')
             

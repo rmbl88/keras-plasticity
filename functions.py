@@ -324,6 +324,7 @@ class NeuralNetwork(nn.Module):
 
         self.layers = nn.ModuleList()
         self.activations = nn.ModuleList()
+        #self.dropouts = nn.ModuleList()
         
         if self.b_norm:
             self.b_norms = nn.ModuleList()
@@ -349,6 +350,9 @@ class NeuralNetwork(nn.Module):
                 self.layers.append(torch.nn.Linear(in_, out_, bias=True))
                 
                 self.activations.append(torch.nn.ELU())
+
+                #self.dropouts.append(torch.nn.Dropout(0.05))
+
                 
             self.layers.append(torch.nn.Linear(self.hidden_size[-1], self.output_size, bias=True))
 
@@ -366,7 +370,6 @@ class NeuralNetwork(nn.Module):
                 else:
                     x = self.activations[i](layer(x))
                    
-            
             return self.layers[-1](x)
 
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
@@ -483,8 +486,7 @@ class SBVFLoss(nn.Module):
        
         return torch.sum(torch.square(alpha)*torch.sum(torch.square(res),1))
         #return torch.sum(0.5*torch.square(alpha)*torch.mean(torch.square(res),1))
-        
-
+    
 # -------------------------------
 #       Method definitions
 # ------------------------------
@@ -1073,7 +1075,7 @@ def pre_process(df_list):
 
     return new_dfs
 
-def load_dataframes(directory):
+def load_dataframes(directory, preproc=True):
 
     file_list = []
     df_list = []
@@ -1084,16 +1086,17 @@ def load_dataframes(directory):
                 file_list.append(directory + file)
 
     # Loading training datasets
-    use_cols = ['tag','id','inc','t','area','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t','fxx_t','fyy_t']
+    #use_cols = ['tag','id','inc','t','area','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t','fxx_t','fyy_t']
     
     if 'crux' in directory:
         #df_list = [pd.read_parquet(file, columns=use_cols) for file in tqdm(file_list,desc='Reading .csv files',bar_format=FORMAT_PBAR)]
-        df_list = [pq.ParquetDataset(file).read_pandas(columns=use_cols).to_pandas() for file in tqdm(file_list,desc='Importing dataset files',bar_format=FORMAT_PBAR)]
+        df_list = [pq.ParquetDataset(file).read_pandas().to_pandas() for file in tqdm(file_list,desc='Importing dataset files',bar_format=FORMAT_PBAR)]
     else:
         df_list = [pd.read_csv(file, sep=',', index_col=False, header=0, engine='c') for file in tqdm(file_list,desc='Reading .csv files',bar_format=FORMAT_PBAR)]
 
     gc.collect()
 
-    df_list = pre_process(df_list)    
+    if preproc:
+        df_list = pre_process(df_list)    
 
     return df_list, file_list
