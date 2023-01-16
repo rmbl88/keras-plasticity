@@ -576,7 +576,7 @@ def train():
     #random.shuffle(data_by_batches)
      
     #trials = [list(set(df['tag']))[0] for df in data_by_tag]
-    trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'t_trials.csv'),index_col=False, header=0)
+    trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'t_trials.csv'), index_col=False, header=0)
     trials = list(trials['0'])
     
     # time_points = dict.fromkeys(trials)
@@ -680,7 +680,7 @@ def train():
     N_UNITS = [20,20,20,20]
     H_LAYERS = len(N_UNITS)
 
-    WANDB_LOG = True
+    WANDB_LOG = False
 
     model_1 = NeuralNetwork(N_INPUTS, N_OUTPUTS, N_UNITS, H_LAYERS)
 
@@ -766,10 +766,6 @@ def train():
 
         epochs_.append(t+1)
 
-        #Shuffling batches
-        # for generator in [train_generator,test_generator]:
-        #     generator.on_epoch_end()
-
         # Train loop
         start_train = time.time()
 
@@ -817,7 +813,6 @@ def train():
                 
             })
 
-
         if  early_stopping.early_stop:
             print("Early stopping")
             break
@@ -848,19 +843,17 @@ def train():
     for dir in directories:
         try:
             os.makedirs(dir)
-
         except FileExistsError:
             pass
 
     history.to_csv(output_loss + task + '.csv', sep=',', encoding='utf-8', header='true')
 
-    plot_history(history, output_loss, True, task)
+    #plot_history(history, output_loss, True, task)
 
     torch.save(model_1.state_dict(), output_models + task + '.pt')
     
-    #joblib.dump([VFs, W_virt], 'sbvfs.pkl')
-    #if train_dataset.scaler_x != None:
     joblib.dump([std, mean], output_models + task + '-scaler_x.pkl')
+    joblib.dump([FEATURES, OUTPUTS, INFO, N_UNITS], output_models + run.name + '-arch.pkl')
 
     if WANDB_LOG:
         # 3️⃣ At the end of training, save the model artifact
@@ -872,10 +865,17 @@ def train():
         # Add files to the artifact, in this case a simple text file
         model.add_file(local_path=output_models + task + '.pt')
         model.add_file(output_models + task + '-scaler_x.pkl')
+        model.add_file(output_models + task + '-arch.pkl')
         # Log the model to W&B
         run.log_artifact(model)
         # Call finish if you're in a notebook, to mark the run as done
         run.finish()
+
+        # Deleting temp folder
+    try:
+        shutil.rmtree(f'./temp/{run.name}')
+    except FileNotFoundError:
+        pass
 
 # -------------------------------
 #           Main script
@@ -888,9 +888,3 @@ if __name__ == '__main__':
         pass
 
     train()
-
-    # Deleting temp folder
-    try:
-        shutil.rmtree('temp/')
-    except FileNotFoundError:
-        pass

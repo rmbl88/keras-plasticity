@@ -1075,7 +1075,7 @@ def pre_process(df_list):
 
     return new_dfs
 
-def load_dataframes(directory, preproc=True):
+def load_dataframes(directory, preproc=True, cols=None):
 
     file_list = []
     df_list = []
@@ -1090,7 +1090,7 @@ def load_dataframes(directory, preproc=True):
     
     if 'crux' in directory:
         #df_list = [pd.read_parquet(file, columns=use_cols) for file in tqdm(file_list,desc='Reading .csv files',bar_format=FORMAT_PBAR)]
-        df_list = [pq.ParquetDataset(file).read_pandas().to_pandas() for file in tqdm(file_list,desc='Importing dataset files',bar_format=FORMAT_PBAR)]
+        df_list = [pq.ParquetDataset(file).read_pandas(columns=cols).to_pandas() for file in tqdm(file_list,desc='Importing dataset files',bar_format=FORMAT_PBAR)]
     else:
         df_list = [pd.read_csv(file, sep=',', index_col=False, header=0, engine='c') for file in tqdm(file_list,desc='Reading .csv files',bar_format=FORMAT_PBAR)]
 

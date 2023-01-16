@@ -60,7 +60,8 @@ def set_size(width, fraction=1, subplots=(1, 1)):
 file_list = []
 df_list = []
 
-DIR = "outputs/crux-plastic_sbvf_abs_direct/val/"
+RUN = 'logical-fire-305'
+DIR = f'outputs/crux-plastic_sbvf_abs_direct/val/{RUN}/'
 
 for r, d, f in os.walk(DIR):
     for file in sorted(f):
@@ -70,7 +71,7 @@ for r, d, f in os.walk(DIR):
 for file in file_list:
     df_list.append(pd.read_csv(file))
 
-plt.rcParams.update(PARAMS_CONTOUR)
+plt.rcParams.update(PARAMS)
 
 default_cycler = (cycler(color=["#ef476f","#118ab2","#073b4c"]))
 

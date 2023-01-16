@@ -89,7 +89,7 @@ def preprocess_vars(var_list, df):
     dot_e_princ = np.diff(eps_princ,axis=0)/dt
     
     # Direction of strain rate
-    de_princ_dir = dot_e_princ/(np.reshape(np.linalg.norm(dot_e_princ,axis=1),(dot_e_princ.shape[0],1)))
+    de_princ_dir = dot_e_princ/(np.reshape(np.linalg.norm(dot_e_princ,axis=1)+1e-12,(dot_e_princ.shape[0],1)))
 
     de_princ_dir = np.vstack((de_princ_dir, np.array([np.NaN,np.NaN])))
     dot_s_princ = np.vstack(((dot_s_princ, np.array([np.NaN,np.NaN]))))
@@ -189,7 +189,7 @@ if __name__ == '__main__':
     #trials = [list(set(df['tag']))[0] for df in data_by_tag]
     trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'raw','trials.csv'),header=None)[0].to_list()
 
-    random.shuffle(trials)
+    #random.shuffle(trials)
     val_trials = random.sample(trials, math.ceil(len(trials)*0.5))
     train_trials = list(set(trials).difference(val_trials))
 
@@ -206,11 +206,13 @@ if __name__ == '__main__':
                 if trial in train_trials:
                     data.to_parquet(os.path.join(TRAIN_MULTI_DIR,'processed', f'{trial}.parquet'),compression='brotli')
                 else:
-                    with tqdm(total=len(elems_val), desc=f'Exporting validation files - {trial}', bar_format=FORMAT_PBAR, leave=False) as pbar_:
-                        with ThreadPoolExecutor(len(elems_val)) as ex:
-                            futures_ = [ex.submit(save_file_worker,(os.path.join(VAL_DIR_MULTI, f'{trial}_id_{id}.parquet'), data[data['id']==id])) for id in elems_val]
-                            for f in as_completed(futures_):
-                                pbar_.update(1)
+                    data.to_parquet(os.path.join(TRAIN_MULTI_DIR,'processed_v', f'{trial}.parquet'),compression='brotli')
+
+                    # with tqdm(total=len(elems_val), desc=f'Exporting validation files - {trial}', bar_format=FORMAT_PBAR, leave=False) as pbar_:
+                    #     with ThreadPoolExecutor(len(elems_val)) as ex:
+                    #         futures_ = [ex.submit(save_file_worker,(os.path.join(VAL_DIR_MULTI, f'{trial}_id_{id}.parquet'), data[data['id']==id])) for id in elems_val]
+                    #         for f in as_completed(futures_):
+                    #             pbar_.update(1)
                 pbar.update(1)
 
 

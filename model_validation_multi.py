@@ -122,7 +122,7 @@ model_1 = NeuralNetwork(INPUTS, OUTPUTS, N_UNITS, len(N_UNITS))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-elastic_testfull/models/[6-4x1-3]-9-elem-200-elastic-4-VFs.pt'))
 #model_1.load_state_dict(torch.load('outputs/9-elem-200-plastic_testfull/models/[6-8x1-3]-9-elem-200-plastic-6-VFs_1.pt'))
 
-RUN = 'neat-leaf-306'
+RUN = 'logical-fire-305'
 DIR = 'crux-plastic_sbvf_abs_direct'
 
 for r, d, f in os.walk(f'outputs/{DIR}'):
@@ -133,6 +133,10 @@ for r, d, f in os.walk(f'outputs/{DIR}'):
         if RUN in file and 'scaler_x.pkl' in file:
             std,mean = joblib.load(f'outputs/{DIR}/models/{file}')
 
+try:
+    os.makedirs(f'outputs/{DIR}/val/{RUN}')
+except FileExistsError:
+    pass
 #std, mean =  joblib.load(os.path.join(TRAIN_MULTI_DIR,'scaler_x.pkl'))
             
 
@@ -303,5 +307,5 @@ with torch.no_grad():
             
             results = pd.DataFrame(res, columns=cols)
             
-            results.to_csv(f'outputs/{DIR}/val/' + df['tag'].iloc[0]+'_'+str(df['id'].iloc[0])+'.csv', header=True, sep=',', float_format='%.6f')
+            results.to_csv(f'outputs/{DIR}/val/{RUN}/' + df['tag'].iloc[0]+'_'+str(df['id'].iloc[0])+'.csv', header=True, sep=',', float_format='%.6f')
             
