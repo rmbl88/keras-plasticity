@@ -32,13 +32,9 @@ n_elems = len(set(df['id'].values))
 
 inputs = torch.from_numpy(df[['inc']+FEATURES].values).reshape(t_pts,n_elems,len(FEATURES)+1)
 
-
-
 input_width=6
 label_width=1
 shift=1
-
-
 
 w2 = WindowGenerator(train_df=df_list[0],input_width=6, label_width=1, shift=1,label_columns=['ds1','ds2'])
 

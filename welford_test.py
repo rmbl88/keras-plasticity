@@ -1,5 +1,6 @@
 import random
 import math
+from sympy import re
 
 # class SD(): # Plain () for python 3.x
 #     def __init__(self):
@@ -20,18 +21,54 @@ import math
 #         self.mean = 0
 #         self.M2 = 0
 #         self.k = 0
+#         self.var = 0
 
 #     def update(self, x):
 #         self.k += 1
 #         delta = x - self.mean
 #         self.mean += delta / self.k
 #         self.M2 += delta * (x - self.mean)
-
-#     def variance(self):
 #         if self.k > 1:
-#             return self.M2 / (self.k - 1)
-#         else:
-#             return 0
+#             self.var = self.M2 / (self.k - 1)
+
+class Welford:
+    def __init__(self):
+        self.mean_L = 0
+        self.mean_l = 0
+        self.M2 = 0
+        self.k = 0
+        self.var_l = 0
+        self.z = 0
+        self.alpha = 1
+
+    def update(self, loss):
+        self.k += 1
+
+        if self.k > 1:
+            self.l = loss / self.mean_L
+        else:
+            self.l = 0
+        
+        delta_L = loss - self.mean_L
+        delta_l = self.l - self.mean_l
+        
+        self.mean_L += delta_L / self.k
+        self.mean_l += delta_l / self.k 
+
+        self.M2 += delta_l * (self.l - self.mean_l)
+        if self.k > 1:
+            self.var_l = self.M2 / (self.k - 1)
+    
+    def get_alpha(self):
+
+        if self.k > 1:
+            c = self.var_l/self.mean_l
+            self.z += c
+            self.alpha = (1/self.z)*c
+            
+        return self.alpha
+
+
 
 # class TemperatureSensor:
 #     def __init__(self):
@@ -53,46 +90,6 @@ import math
 #     print(f"Temperature: {temperature}, Variance: {sensor.w.var}")
 
 # print('hey')
-
-
-
-class Welford:
-    def __init__(self) -> None:
-        self.u_L = 0
-        self.u_l = 0
-        self.l = 0
-        self.M = 0
-        self.t = 0
-        self.s_l = 0
-        self.c = 0
-        self.z = 0
-    
-    def update(self, loss):
-        self.t += 1
-        if self.t == 1:
-            self.l = 0
-        else:
-            self.l = loss / self.u_L
-        self.u_L = (1 - 1 / self.t) * self.u_L + (1/self.t) * loss
-        u_l = (1 - 1 / self.t) + (1/self.t) * self.l
-        self.M = (1-1/self.t) * self.M + (1/self.t) * (self.l-self.u_l) * (self.l-u_l)
-        self.u_l = u_l
-        self.s_l = math.sqrt(self.M)
-    
-    def get_alpha(self):
-        if self.t == 1:
-            self.c = 0
-        else:
-            self.c = self.u_l/self.s_l
-        
-        self.z += self.c
-
-        if self.t == 1:
-            return 1
-        else:
-            return (1/self.z) * self.c
-
-
 
 import torch    
 from torch import nn
@@ -119,6 +116,8 @@ output = torch.tensor([4,5,6],dtype=torch.float64,requires_grad=True)
 l_fn = Welford_MSE()
 
 
-l_fn.loss(output,input)
+a=l_fn.loss(output,input)
+a=l_fn.loss(input,output)
+a=l_fn.loss(output,input)
 
 print('a')

@@ -66,6 +66,7 @@ def preprocess_vars(var_list, df):
         's1','s2',
         'ds1','ds2',
         'theta_sp',
+        
     ]
 
     # Strain, stress and time variables
@@ -182,15 +183,15 @@ def process_trials(args):
 
 if __name__ == '__main__':   
     
-    # Reading element selection for validation
-    elems_val = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'elems_val.csv'), header=None)[0].to_list()
+    # # Reading element selection for validation
+    # elems_val = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'elems_val.csv'), header=None)[0].to_list()
 
     # Getting trial tags     
     #trials = [list(set(df['tag']))[0] for df in data_by_tag]
     trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'raw','trials.csv'),header=None)[0].to_list()
 
-    #random.shuffle(trials)
-    val_trials = random.sample(trials, math.ceil(len(trials)*0.5))
+    random.shuffle(trials)
+    val_trials = random.sample(trials, math.ceil(len(trials)*0.35))
     train_trials = list(set(trials).difference(val_trials))
 
     with tqdm(total=len(trials), desc='Processing dataset', bar_format=FORMAT_PBAR) as pbar:

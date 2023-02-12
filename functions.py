@@ -1,3 +1,5 @@
+from turtle import forward
+from pytools import T
 from sklearn import preprocessing
 import pandas as pd
 import os
@@ -9,7 +11,7 @@ import copy
 from constants import FORMAT_PBAR, LOOK_BACK
 import torch
 from tqdm import tqdm
-from torch import nn
+from torch import device, dropout, nn
 from io import StringIO
 import math
 import torch.nn.functional as F
@@ -372,6 +374,88 @@ class NeuralNetwork(nn.Module):
                    
             return self.layers[-1](x)
 
+# # LSTMModel class as in https://www.deeplearningwizard.com/deep_learning/practical_pytorch/pytorch_lstm_neuralnetwork/
+# class LSTMModel(nn.Module):
+#     def __init__(self, input_dim, hidden_dim, layer_dim, output_dim):
+#         super(LSTMModel, self).__init__()
+#         # Hidden dimensions
+#         self.device = device
+#         self.hidden_dim = hidden_dim
+
+#         # Number of hidden layers
+#         self.layer_dim = layer_dim
+
+#         # Building LSTM
+#         # batch_first=True causes input/output tensors to be of shape
+#         # (batch_dim, seq_dim, feature_dim)
+#         self.lstm = nn.LSTM(input_dim, hidden_dim, layer_dim, batch_first=True)
+#         # Readout layer
+#         self.fc = nn.Linear(hidden_dim, output_dim)
+
+#     def forward(self, x):
+        
+#         h0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim).requires_grad_().cuda()
+#         # Initialize cell state
+#         c0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim).requires_grad_().cuda()
+#         # 28 time steps
+#         # We need to detach as we are doing truncated backpropagation through time (BPTT)
+#         # If we don't, we'll backprop all the way to the start even after going through another batch
+#         out, (hn, cn) = self.lstm(x, (h0.detach(), c0.detach()))
+
+#         # Index hidden state of last time step
+#         # out.size() --> 100, 28, 100
+#         # out[:, -1, :] --> 100, 100 --> just want last time step hidden states! 
+#         out = self.fc(out[:, -1, :]) 
+#         # out.size() --> 100, 10
+#         return out
+
+class GRUModel(nn.Module):
+    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim, drop_prob=0.2):
+        super(GRUModel, self).__init__()
+
+        # Defining the number of layers and the nodes in each layer
+        self.layer_dim = layer_dim
+        self.hidden_dim = hidden_dim
+
+        # GRU layers
+        self.gru = nn.GRU(input_dim, hidden_dim, layer_dim, batch_first=True, dropout=drop_prob)
+
+        #self.fc_layers = nn.ModuleList()
+        # Fully connected layer
+        
+        self.fc = nn.Linear(hidden_dim, output_dim)
+        # self.fc_layers.append(nn.Linear(hidden_dim, hidden_dim))
+        # self.fc_layers.append(nn.Linear(hidden_dim, hidden_dim))
+        # self.fc_layers.append(nn.Linear(hidden_dim, output_dim))
+
+        self.relu = nn.ReLU()
+
+    def init_hidden(self, batch_size, device=None):
+        # Initializing hidden state for first input with zeros
+        if device != None:
+            self.h0 = torch.zeros(self.layer_dim, batch_size, self.hidden_dim).requires_grad_().to(device)
+        else:
+            self.h0 = torch.zeros(self.layer_dim, batch_size, self.hidden_dim).requires_grad_()
+        # weight = next(self.parameters()).data
+        # self.h0 = weight.new(self.n_layers, batch_size, self.hidden_dim).zero_().to(device)
+
+    def forward(self, x):
+
+        # Forward propagation by passing in the input and hidden state into the model
+        out, _ = self.gru(x, self.h0.detach())
+
+        # Reshaping the outputs in the shape of (batch_size, seq_length, hidden_size)
+        # so that it can fit into the fully connected layer
+        out = out[:, -1, :]
+
+        # Convert the final state to our desired output shape (batch_size, output_dim)
+        out = self.fc(self.relu(out))
+        # for layer in self.fc_layers[:-1]:
+        #     out = self.relu(layer(out))
+
+        # return self.fc_layers[-1](out)
+        return out
+
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
@@ -486,7 +570,127 @@ class SBVFLoss(nn.Module):
        
         return torch.sum(torch.square(alpha)*torch.sum(torch.square(res),1))
         #return torch.sum(0.5*torch.square(alpha)*torch.mean(torch.square(res),1))
+
+class BaseLoss(nn.modules.Module):
+
+    def __init__(self, device=None, n_losses=1):
+        super(BaseLoss, self).__init__()
+        self.device = device
+
+        self.train = False
+
+        #self.mse = torch.nn.MSELoss()
+
+        # Record the weights.
+        self.n_losses = n_losses
+        self.alphas = torch.zeros((self.n_losses,), requires_grad=False).type(torch.FloatTensor).to(self.device)
     
+    def to_eval(self):
+        self.train = False
+
+    def to_train(self):
+        self.train = True
+    
+    def mse_constraint(self, res):
+        return torch.sum(torch.square(res))/(2*res.shape[0])
+
+    def mse(self, pred, targ):
+        res = pred-targ
+        return torch.sum(torch.square(res))/(2*res.shape[0])
+    
+    def forward(self, res_tuples):
+        
+        loss = [self.mse(*res_tuples[i]) if len(res_tuples[i])>1 else self.mse_constraint(*res_tuples[i]) for i in range(len(res_tuples))]
+        
+        return loss
+    
+class CoVWeightingLoss(BaseLoss):
+
+    """
+        Wrapper of the BaseLoss which weighs the losses to the Cov-Weighting method,
+        where the statistics are maintained through Welford's algorithm. But now for 32 losses.
+    """
+
+    def __init__(self, mean_decay=None, device=None, n_losses=1):
+        super(CoVWeightingLoss, self).__init__(device, n_losses)
+
+        # # How to compute the mean statistics: Full mean or decaying mean.
+        # self.mean_decay = True if args.mean_sort == 'decay' else False
+        # self.mean_decay_param = args.mean_decay_param
+        
+        self.mean_decay_param = mean_decay
+        self.current_iter = -1
+        self.alphas = torch.zeros((self.n_losses,), requires_grad=False).type(torch.FloatTensor).to(self.device)
+        self.weighted_losses = []
+        self.unweighted_losses = []
+
+        # Initialize all running statistics at 0.
+        self.running_mean_L = torch.zeros((self.n_losses,), requires_grad=False).type(torch.FloatTensor).to(self.device)
+        self.running_mean_l = torch.zeros((self.n_losses,), requires_grad=False).type(torch.FloatTensor).to(self.device)
+        self.running_S_l = torch.zeros((self.n_losses,), requires_grad=False).type(torch.FloatTensor).to(self.device)
+        self.running_std_l = None
+
+    def forward(self, res_tuples):
+        # Retrieve the unweighted losses.
+        unweighted_losses = super(CoVWeightingLoss, self).forward(res_tuples)
+        
+        # Put the losses in a list. Just for computing the weights.
+        L = torch.tensor(unweighted_losses, requires_grad=False).to(self.device)
+
+        #self.l_norm = torch.linalg.vector_norm(L)
+        self.unweighted_losses = L
+
+        # If we are doing validation, we would like to return an unweighted loss be able
+        # to see if we do not overfit on the training set.
+        if not self.train:
+            return torch.sum(self.alphas * L)
+
+        # Increase the current iteration parameter.
+        self.current_iter += 1
+        # If we are at the zero-th iteration, set L0 to L. Else use the running mean.
+        L0 = L.clone() if self.current_iter == 0 else self.running_mean_L
+        # Compute the loss ratios for the current iteration given the current loss L.
+        l = L / L0
+
+        # If we are in the first iteration set alphas to all 1/32
+        if self.current_iter <= 1:
+            self.alphas = torch.ones((self.n_losses,), requires_grad=False).type(torch.FloatTensor).to(self.device) / self.n_losses
+        # Else, apply the loss weighting method.
+        else:
+            ls = self.running_std_l / self.running_mean_l
+            self.alphas = ls / torch.sum(ls)
+
+        # Apply Welford's algorithm to keep running means, variances of L,l. But only do this throughout
+        # training the model.
+        # 1. Compute the decay parameter the computing the mean.
+        if self.current_iter == 0:
+            mean_param = 0.0
+        elif self.current_iter > 0 and self.mean_decay_param != None:
+            mean_param = self.mean_decay_param
+        else:
+            mean_param = (1. - 1 / (self.current_iter + 1))
+
+        # 2. Update the statistics for l
+        x_l = l.clone().detach()
+        new_mean_l = mean_param * self.running_mean_l + (1 - mean_param) * x_l
+        self.running_S_l += (x_l - self.running_mean_l) * (x_l - new_mean_l)
+        self.running_mean_l = new_mean_l
+
+        # The variance is S / (t - 1), but we have current_iter = t - 1
+        running_variance_l = self.running_S_l / (self.current_iter + 1)
+        self.running_std_l = torch.sqrt(running_variance_l + 1e-8)
+
+        # 3. Update the statistics for L
+        x_L = L.clone().detach()
+        self.running_mean_L = mean_param * self.running_mean_L + (1 - mean_param) * x_L
+
+        # Get the weighted losses and perform a standard back-pass.
+        weighted_losses = [self.alphas[i] * unweighted_losses[i] for i in range(len(unweighted_losses))]
+        self.weighted_losses = weighted_losses
+
+        loss = sum(weighted_losses)
+        
+        return loss
 # -------------------------------
 #       Method definitions
 # ------------------------------
@@ -1082,8 +1286,8 @@ def load_dataframes(directory, preproc=True, cols=None):
 
     for r, d, f in os.walk(directory):
         for file in f:
-            if '.csv' or '.parquet' in file:
-                file_list.append(directory + file)
+            if ('.csv' or '.parquet' in file) and 'elems' not in file:
+                file_list.append(os.path.join(directory, file))
 
     # Loading training datasets
     #use_cols = ['tag','id','inc','t','area','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t','fxx_t','fyy_t']
