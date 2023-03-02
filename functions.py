@@ -418,24 +418,25 @@ class GRUModel(nn.Module):
         self.hidden_dim = hidden_dim
 
         # GRU layers
-        self.gru = nn.GRU(input_dim, hidden_dim, layer_dim, batch_first=True, dropout=drop_prob)
+        self.gru = nn.GRU(input_dim, hidden_dim[0], layer_dim, batch_first=True)
 
-        #self.fc_layers = nn.ModuleList()
+        self.fc_layers = nn.ModuleList()
         # Fully connected layer
-        
-        self.fc = nn.Linear(hidden_dim, output_dim)
-        # self.fc_layers.append(nn.Linear(hidden_dim, hidden_dim))
-        # self.fc_layers.append(nn.Linear(hidden_dim, hidden_dim))
-        # self.fc_layers.append(nn.Linear(hidden_dim, output_dim))
+        for i in range(len(self.hidden_dim)-1):
+            in_ = self.hidden_dim[i]
+            out_ = self.hidden_dim[i+1]
+            self.fc_layers.append(nn.Linear(in_, out_, bias=True))
+
+        self.fc_layers.append(nn.Linear(self.hidden_dim[-1],output_dim))
 
         self.relu = nn.ReLU()
 
     def init_hidden(self, batch_size, device=None):
         # Initializing hidden state for first input with zeros
         if device != None:
-            self.h0 = torch.zeros(self.layer_dim, batch_size, self.hidden_dim).requires_grad_().to(device)
+            self.h0 = torch.zeros(self.layer_dim, batch_size, self.hidden_dim[0]).requires_grad_().to(device)
         else:
-            self.h0 = torch.zeros(self.layer_dim, batch_size, self.hidden_dim).requires_grad_()
+            self.h0 = torch.zeros(self.layer_dim, batch_size, self.hidden_dim[0]).requires_grad_()
         # weight = next(self.parameters()).data
         # self.h0 = weight.new(self.n_layers, batch_size, self.hidden_dim).zero_().to(device)
 
@@ -449,12 +450,15 @@ class GRUModel(nn.Module):
         out = out[:, -1, :]
 
         # Convert the final state to our desired output shape (batch_size, output_dim)
-        out = self.fc(self.relu(out))
+        for layer in self.fc_layers[:-1]:
+                
+            out = self.relu(layer(out))
+                   
         # for layer in self.fc_layers[:-1]:
         #     out = self.relu(layer(out))
 
         # return self.fc_layers[-1](out)
-        return out
+        return self.fc_layers[-1](out)
 
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:

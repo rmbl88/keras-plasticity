@@ -1,3 +1,4 @@
+from dask import get
 import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
@@ -14,9 +15,13 @@ from matplotlib.offsetbox import AnchoredText
 import glob
 from tqdm import tqdm
 
-def set_anchored_text(mse,r2,mse_d,r2_d,frameon=True,loc='upper left'):
-    at = AnchoredText('MAE: %.5f\n$r^{2}$: %.5f\nMAE(D): %.5f\n$r^{2}$(D): %.5f' % (mse,r2,mse_d,r2_d), loc=loc, frameon=frameon,prop=dict(fontsize=7))
+def get_stats(var):
+    return (np.mean(var),np.median(var),max(var),min(var))
+
+def set_anchored_text(mean_e,median_e,max_e,min_e,frameon=True,loc='upper right'):
+    at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=5.5))
     at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+    at.patch.set_linewidth(0.55)
     return at
 
 def set_size(width, fraction=1, subplots=(1, 1)):
@@ -63,7 +68,7 @@ def set_size(width, fraction=1, subplots=(1, 1)):
 
 df_list = []
 
-RUN = 'solar-durian-9'
+RUN = 'comfy-deluge-145'
 DIR = f'outputs/crux-plastic_sbvf_abs_direct/val/{RUN}/'
 
 mech_tests = []
@@ -93,127 +98,160 @@ plt.rc('ytick', labelsize='x-small')
 err = torchmetrics.MeanAbsoluteError()
 r2 = torchmetrics.R2Score()
 
+TAG = 'x15_y15_'
+
 for k_test, elems in (pbar_1 := tqdm(mech_tests.items(), bar_format=FORMAT_PBAR, leave=False)):
     
     pbar_1.set_description(f'Processing trial - {k_test}')
+
+    if k_test == TAG:
     
-    for elem, df in (pbar_2 := tqdm(elems.items(), bar_format=FORMAT_PBAR, leave=False)):
+        for elem, df in (pbar_2 := tqdm(elems.items(), bar_format=FORMAT_PBAR, leave=False)):
+            
+            pbar_2.set_description(f'Plotting elem-{elem}')
+
+            TRIAL = k_test
+            ELEM = elem
+
+            TITLE = r'' + TRIAL.replace('_','\_') + ' - element \#' + ELEM
+            
+            ex_var_abaqus = df['e_xx'].values
+            ey_var_abaqus = df['e_yy'].values
+            exy_var_abaqus = df['e_xy'].values
+            sx_var_abaqus = df['s_xx'].values
+            sy_var_abaqus = df['s_yy'].values
+            sxy_var_abaqus = df['s_xy'].values
+
+            # e_1_abaqus = df['e_1']
+            # e_2_abaqus = df['e_2']
+
+            # s_1_abaqus = df['s_1']
+            # s_2_abaqus = df['s_2']
+
+            # s_1_pred = df['s_1_pred']
+            # s_2_pred = df['s_2_pred']
+
+            sx_pred_var = df['s_xx_pred'].values
+            sy_pred_var = df['s_yy_pred'].values
+            sxy_pred_var = df['s_xy_pred'].values
+
+            err_x = np.abs(sx_var_abaqus - sx_pred_var)
+            
+            err_y = np.abs(sy_var_abaqus - sy_pred_var)
+            
+            err_xy = np.abs(sxy_var_abaqus - sxy_pred_var)
         
-        pbar_2.set_description(f'Plotting elem-{elem}')
 
-        TRIAL = k_test
-        ELEM = elem
+            # de_1_abaqus = df['de_1']
+            # de_2_abaqus = df['de_2']
 
-        TITLE = r'' + TRIAL.replace('_','\_') + ' - element \#' + ELEM
+            # dy_1_abaqus = df['dy_1']
+            # dy_2_abaqus = df['dy_2']
+
+            # ds_1_pred = df['ds_1']
+            # ds_2_pred = df['ds_2']
+
+            fig , axs = plt.subplots(1,3)
+            #fig.set_size_inches(16, 9)
+            fig.set_size_inches(set_size('esaform',subplots=(1, 3)))
+            fig.subplots_adjust(bottom=0.28, wspace=0.35)
+            fig.suptitle(TITLE, fontsize=9)
+            
+            axs[0].plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
+            axs[0].plot(ex_var_abaqus, sx_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
+            axs[0].set(xlabel=r'$\varepsilon_{xx}$', ylabel=r'$\sigma_{xx}$ [MPa]')
+
+            axs[1].plot(ey_var_abaqus, sy_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
+            axs[1].plot(ey_var_abaqus, sy_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
+            axs[1].set(xlabel=r'$\varepsilon_{yy}$', ylabel=r'$\sigma_{yy}$ [MPa]')
+
+            axs[2].plot(exy_var_abaqus, sxy_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
+            axs[2].plot(exy_var_abaqus, sxy_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
+            axs[2].set(xlabel=r'$\varepsilon_{xy}$', ylabel=r'$\tau_{xy}$ [MPa]')
+
+            handles, labels = axs[0].get_legend_handles_labels()
+            fig.legend(handles, labels, loc='lower center',ncol=2)
+
+            for ax in fig.axes:
+
+                ax.tick_params(axis='x', labelcolor='black', length=6)
+                ax.tick_params(axis='y', labelcolor='black',length=6)
+                ax.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
+            
+                ax.xaxis.set_major_locator(MaxNLocator(6))
+                ax.yaxis.set_major_locator(MaxNLocator(6)) 
         
-        ex_var_abaqus = df['e_xx']
-        ey_var_abaqus = df['e_yy']
-        exy_var_abaqus = df['e_xy']
-        sx_var_abaqus = df['s_xx']
-        sy_var_abaqus = df['s_yy']
-        sxy_var_abaqus = df['s_xy']
+            plt.savefig(os.path.join(DIR,k_test,'plots', f'{TRIAL}_el-{ELEM}_a.png'), format="png", dpi=600, bbox_inches='tight')
+            plt.clf()
+            plt.close(fig)
+            
+            fig , axs = plt.subplots(1,3)
+            #fig.set_size_inches(16, 9)
+            fig.set_size_inches(set_size('esaform',subplots=(1, 3)))
+            fig.subplots_adjust(bottom=0.28, wspace=0.3)
+            fig.suptitle(TITLE, fontsize=9)
+            
+            colors = ['lightgray'] * err_x.shape[0]
 
-        e_1_abaqus = df['e_1']
-        e_2_abaqus = df['e_2']
+            # axs[0].bar(df.index.values, err_x, lw=0.2, width=0.8, ec="white", fc="black", alpha=0.5, align='edge')
+            # axs[1].bar(df.index.values, err_y, lw=0.2, width=0.8, ec="white", fc="black", alpha=0.5, align='edge')
+            # axs[2].bar(df.index.values, err_xy, lw=0.2, width=0.8, ec="white", fc="black", alpha=0.5, align='edge')
 
-        s_1_abaqus = df['s_1']
-        s_2_abaqus = df['s_2']
+            vars_lbl = [r'$\sigma_{xx}$', r'$\sigma_{yy}$', r'$\tau_{xy}$']
+            vars = [err_x, err_y, err_xy]
 
-        s_1_pred = df['s_1_pred']
-        s_2_pred = df['s_2_pred']
+            for i, ax in enumerate(fig.axes):
+                axs[i].bar(df.index.values, vars[i], lw=0.1, width=0.65, ec="white", fc="black", alpha=0.5, align='center')
+                ax.set(xlabel=r'Time steps', ylabel=r'%s - Abs. error [MPa]' % (vars_lbl[i]))
+                axs[i].add_artist(set_anchored_text(*get_stats(vars[i])))
+                # Choose the interval to space out xticks
+                _min = np.min(df.index.values)
+                diff = 20
+                # Decide positions of ticks
+                ticks = np.arange(_min, np.max(df.index.values), diff)
+                # Also, choose labels of the ticks
+                axs[i].set_xticks(ticks=ticks)
+                
+                
+            # axs[0][0].plot(e_1_abaqus, s_1_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+            # axs[0][0].plot(e_1_abaqus, s_1_pred, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
+            # axs[0][0].set(xlabel=r'$\varepsilon_{1}$', ylabel=r'$\sigma_{1}$ [MPa]')
 
-        sx_pred_var = df['s_xx_pred']
-        sy_pred_var = df['s_yy_pred']
-        sxy_pred_var = df['s_xy_pred']
+            # axs[0][1].plot(e_2_abaqus, s_2_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+            # axs[0][1].plot(e_2_abaqus, s_2_pred, label='ANN',color='r',marker='.',markersize=2.2, alpha=0.5)
+            # axs[0][1].set(xlabel=r'$\varepsilon_{2}$', ylabel=r'$\sigma_{2}$ [MPa]')
 
-        de_1_abaqus = df['de_1']
-        de_2_abaqus = df['de_2']
+            # axs[1][0].plot(dy_1_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+            # axs[1][0].plot(ds_1_pred, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
+            # axs[1][0].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{1}$ [MPa/s]')
 
-        dy_1_abaqus = df['dy_1']
-        dy_2_abaqus = df['dy_2']
+            # axs[1][1].plot(dy_2_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+            # axs[1][1].plot(ds_2_pred, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
+            # axs[1][1].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{2}$ [MPa/s]')
 
-        ds_1_pred = df['ds_1']
-        ds_2_pred = df['ds_2']
+            # axs[2][0].plot(dy_1_abaqus*de_1_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+            # axs[2][0].plot(ds_1_pred*de_1_abaqus, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
+            # axs[2][0].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{1}\dot{\varepsilon}_{1}$')
 
-        fig , axs = plt.subplots(1,3)
-        #fig.set_size_inches(16, 9)
-        fig.set_size_inches(set_size('esaform',subplots=(1, 3)))
-        fig.subplots_adjust(bottom=0.28, wspace=0.35)
-        fig.suptitle(TITLE, fontsize=9)
-        
-        axs[0].plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
-        axs[0].plot(ex_var_abaqus, sx_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
-        axs[0].set(xlabel=r'$\varepsilon_{xx}$', ylabel=r'$\sigma_{xx}$ [MPa]')
+            # axs[2][1].plot(dy_2_abaqus*de_2_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
+            # axs[2][1].plot(ds_2_pred*de_2_abaqus, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
+            # axs[2][1].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{2}\dot{\varepsilon}_{2}$')
 
-        axs[1].plot(ey_var_abaqus, sy_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
-        axs[1].plot(ey_var_abaqus, sy_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
-        axs[1].set(xlabel=r'$\varepsilon_{yy}$', ylabel=r'$\sigma_{yy}$ [MPa]')
+            # handles, labels = axs[0][1].get_legend_handles_labels()
+            # fig.legend(handles, labels, loc='lower center',ncol=2)
 
-        axs[2].plot(exy_var_abaqus, sxy_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
-        axs[2].plot(exy_var_abaqus, sxy_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
-        axs[2].set(xlabel=r'$\varepsilon_{xy}$', ylabel=r'$\tau_{xy}$ [MPa]')
+            # for ax in fig.axes:
 
-        handles, labels = axs[0].get_legend_handles_labels()
-        fig.legend(handles, labels, loc='lower center',ncol=2)
-
-        for ax in fig.axes:
-
-            ax.tick_params(axis='x', labelcolor='black', length=6)
-            ax.tick_params(axis='y', labelcolor='black',length=6)
-            ax.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
-        
-            ax.xaxis.set_major_locator(MaxNLocator(6))
-            ax.yaxis.set_major_locator(MaxNLocator(6)) 
-       
-        plt.savefig(os.path.join(DIR,k_test,'plots', f'{TRIAL}_el-{ELEM}_a.png'), format="png", dpi=600, bbox_inches='tight')
-        plt.clf()
-        plt.close(fig)
-        
-        fig , axs = plt.subplots(3,2)
-        #fig.set_size_inches(16, 9)
-        fig.set_size_inches(set_size('esaform',subplots=(2, 2)))
-        fig.subplots_adjust(bottom=0.1, wspace=0.35)
-        fig.suptitle(TITLE, fontsize=9)
-
-        axs[0][0].plot(e_1_abaqus, s_1_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
-        axs[0][0].plot(e_1_abaqus, s_1_pred, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
-        axs[0][0].set(xlabel=r'$\varepsilon_{1}$', ylabel=r'$\sigma_{1}$ [MPa]')
-
-        axs[0][1].plot(e_2_abaqus, s_2_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
-        axs[0][1].plot(e_2_abaqus, s_2_pred, label='ANN',color='r',marker='.',markersize=2.2, alpha=0.5)
-        axs[0][1].set(xlabel=r'$\varepsilon_{2}$', ylabel=r'$\sigma_{2}$ [MPa]')
-
-        axs[1][0].plot(dy_1_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
-        axs[1][0].plot(ds_1_pred, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
-        axs[1][0].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{1}$ [MPa/s]')
-
-        axs[1][1].plot(dy_2_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
-        axs[1][1].plot(ds_2_pred, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
-        axs[1][1].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{2}$ [MPa/s]')
-
-        axs[2][0].plot(dy_1_abaqus*de_1_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
-        axs[2][0].plot(ds_1_pred*de_1_abaqus, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
-        axs[2][0].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{1}\dot{\varepsilon}_{1}$')
-
-        axs[2][1].plot(dy_2_abaqus*de_2_abaqus, label='ABAQUS', color='k',  marker='.',markersize=2.2, alpha=0.65)
-        axs[2][1].plot(ds_2_pred*de_2_abaqus, label='ANN',color='r',  marker='.',markersize=2.2, alpha=0.5)
-        axs[2][1].set(xlabel=r'$t$', ylabel=r'$\dot{\sigma}_{2}\dot{\varepsilon}_{2}$')
-
-        handles, labels = axs[0][1].get_legend_handles_labels()
-        fig.legend(handles, labels, loc='lower center',ncol=2)
-
-        for ax in fig.axes:
-
-            ax.tick_params(axis='x', labelcolor='black', length=6)
-            ax.tick_params(axis='y', labelcolor='black',length=6)
-            ax.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
-        
-            ax.xaxis.set_major_locator(MaxNLocator(6))
-            ax.yaxis.set_major_locator(MaxNLocator(6)) 
-        
-        plt.savefig(os.path.join(DIR,k_test,'plots', f'{TRIAL}_el-{ELEM}_b.png'), format="png", dpi=600, bbox_inches='tight')
-        plt.clf()
-        plt.close(fig)
+            #     ax.tick_params(axis='x', labelcolor='black', length=6)
+            #     ax.tick_params(axis='y', labelcolor='black',length=6)
+            #     ax.ticklabel_format(style='sci', axis='x', scilimits=(0,0))
+            
+            #     ax.xaxis.set_major_locator(MaxNLocator(6))
+            #     ax.yaxis.set_major_locator(MaxNLocator(6)) 
+            
+            plt.savefig(os.path.join(DIR,k_test,'plots', f'{TRIAL}_el-{ELEM}_b.png'), format="png", dpi=600, bbox_inches='tight')
+            plt.clf()
+            plt.close(fig)
 
 # for i, file in enumerate(file_list):
 

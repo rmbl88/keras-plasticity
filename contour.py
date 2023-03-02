@@ -71,12 +71,12 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
     def set_anchored_text(mean_e,median_e,max_e,min_e,frameon=True,loc='upper right'):
         at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['font.size']))
         at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        at.patch.set_linewidth(0.55)
         return at
     
     matplotlib.use('TkAgg')
     plt.ioff()
     plt.rcParams.update(PARAMS_CONTOUR)  
-    cmap = mcm.jet
 
     triangulation = get_tri_mesh(nodes,connectivity)
     
@@ -110,15 +110,28 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                     # Average values at nodes
                     var_avg = np.array([np.mean(var_nodal[np.isin(connectivity,j)],0) for j in range(len(nodes))])
 
-                    # Defining contour levels
-                    cbar_min = np.min(var_avg)
-                    cbar_max = np.max(var_avg)
+                    if i == 0 and k == 'abaqus':
+                        # Defining contour levels
+                        cbar_min = np.min(var_avg)
+                        cbar_max = np.max(var_avg)
+                    elif i > 1 and k!= 'ann':
+                        cbar_min = np.min(var_avg)
+                        cbar_max = np.max(var_avg)
                         
+                    cmap = copy.copy(mcm.jet)
+
+                    if k == 'ann':
+                        cmap.set_under('white')
+                        cmap.set_over('black')
+                        CB_EXTEND = 'both'
+                    else:
+                        CB_EXTEND = 'neither'
+
                     levels  = np.linspace(cbar_min, cbar_max,256)
                     norm = matplotlib.colors.BoundaryNorm(levels, 256)
 
-                    pc = contour_plot(triangulation, var_avg, ax=axs[i], cmap=cmap, levels=levels, norm=norm, vmin=cbar_min, vmax=cbar_max)
-                   
+                    pc = contour_plot(triangulation, var_avg, ax=axs[i], cmap=cmap, levels=levels, norm=norm, vmin=cbar_min, vmax=cbar_max, extend=CB_EXTEND)
+
                     # pc = quatplot(nodes[:,0], nodes[:,1], connectivity, v.reshape(-1), ax=axs[i], edgecolor="face", linewidths=0.1, cmap=cmap,snap=True, norm=norm)
             
                     axs[i].axis('off')

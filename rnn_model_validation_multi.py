@@ -66,7 +66,7 @@ def load_data(dir: str, ftype: str):
 
 def get_field_data(df: pd.DataFrame, vars: dict, pred_vars: dict, n_elems: int, n_tps: int):
 
-    T_STEPS = [round((n_tps-SEQ_LEN-1)*0.5), n_tps-SEQ_LEN-1]
+    T_STEPS = [round((n_tps-1)*0.5), n_tps-1]
 
     KEYS = sum([[v for k,v in var.items()] for k_,var in vars.items()],[])
 
@@ -74,12 +74,12 @@ def get_field_data(df: pd.DataFrame, vars: dict, pred_vars: dict, n_elems: int, 
 
     for k, d in vars.items():
         for idx, v_name in d.items():
-            x = df[v_name].values.reshape(n_tps,n_elems,1)[SEQ_LEN-1:].transpose(1,0,2)
-            y = pred_vars[k][:,idx].reshape(n_elems,n_tps-SEQ_LEN+1,1)
+            x = df[v_name].values.reshape(n_tps,n_elems,1).transpose(1,0,2)
+            y = pred_vars[k][:,idx].reshape(n_elems,n_tps,1)
             for t, d_ in field_dict.items():
                 d_[v_name]['abaqus'] = x[:,t,:]
                 d_[v_name]['ann'] = y[:,t,:]
-                d_[v_name]['err'] = np.abs(y[:,t,:]-x[:,t,:])
+                d_[v_name]['err'] = np.abs(x[:,t,:]-y[:,t,:])
 
     return field_dict
 
@@ -97,7 +97,7 @@ def get_re(pred,real):
 
     '''Calculates the Relative error between a prediction and a real value.'''
     
-    re = np.abs(pred-real)*100/np.abs(real+1e-12)
+    re = np.abs(pred-real)*100/(1+np.abs(real))
 
     return re
 
@@ -112,7 +112,7 @@ plt.rc('axes', prop_cycle=default_cycler)
 torch.set_default_dtype(torch.float64)
 
 # Defining ann model to load
-RUN = 'silver-galaxy-106'
+RUN = 'comfy-deluge-145'
 
 # Defining output directory
 DIR = 'crux-plastic_sbvf_abs_direct'
@@ -124,7 +124,7 @@ RUN_DIR = create_dir(dir=RUN, root_dir=os.path.join('outputs', DIR, 'val'))
 NODES, CONNECT = import_mesh(TRAIN_MULTI_DIR)
 
 # Loading model architecture
-FEATURES, OUTPUTS, INFO, N_UNITS, SEQ_LEN = load_file(RUN, DIR, 'arch.pkl')
+FEATURES, OUTPUTS, INFO, N_UNITS, H_LAYERS, SEQ_LEN = load_file(RUN, DIR, 'arch.pkl')
 
 # Loading data scaler
 MIN, MAX = load_file(RUN, DIR, 'scaler_x.pkl')
@@ -143,7 +143,7 @@ DRAW_CONTOURS = True
 TAG = 'x15_y15_'
 
 # Setting up ANN model
-model_1 = GRUModel(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=1,output_dim=len(OUTPUTS))
+model_1 = GRUModel(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=len(OUTPUTS))
 model_1.load_state_dict(get_ann_model(RUN, DIR))    
 model_1.eval()
 
@@ -151,8 +151,7 @@ model_1.eval()
 df_list = load_data(dir=VAL_DIR_MULTI, ftype='parquet')
 
 cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred',
-        'e_1','e_2','s_1','s_2','s_1_pred','s_2_pred','de_1','de_2','ds_1','ds_2',
-        'dy_1','dy_2','mre_sx','mre_sy','mre_sxy','mre_s1','mre_s2']
+        'mre_sx','mre_sy','mre_sxy']
 
 with torch.no_grad():
     last_tag = ''
@@ -182,16 +181,21 @@ with torch.no_grad():
         y = df[OUTPUTS].values
         info = df[INFO]
 
-        x_std = (torch.from_numpy(X) - MIN) / (MAX - MIN)
+        pad_zeros = torch.zeros(SEQ_LEN * n_elems, X.shape[-1])
+        
+        X = torch.cat([pad_zeros, torch.from_numpy(X)], 0)
+
+        x_std = (X - MIN) / (MAX - MIN)
         X_scaled = x_std * (MAX - MIN) + MIN
         
 
-        x = X_scaled.reshape(n_tps,n_elems,-1)
-        x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)
+        x = X_scaled.reshape(n_tps + SEQ_LEN,n_elems,-1)
+        x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)[:,:-1]
         x = x.reshape(-1,*x.shape[2:])
         
         y = torch.from_numpy(y)
-        y = y.reshape(n_tps,n_elems,-1)[SEQ_LEN-1:].permute(1,0,2)
+        #y = y.reshape(n_tps,n_elems,-1)[SEQ_LEN-1:].permute(1,0,2)
+        y = y.reshape(n_tps,n_elems,-1).permute(1,0,2)
         y = y.reshape(-1,y.shape[-1])
 
         # theta_ep = torch.from_numpy(info[['theta_ep']].values)
@@ -218,7 +222,7 @@ with torch.no_grad():
         #------------------------------------------------------------------------------------
         #                       PREPARING FIELD DATA FOR CONTOUR PLOT
         #------------------------------------------------------------------------------------
-        if DRAW_CONTOURS:
+        if DRAW_CONTOURS and tag == TAG:
 
             vars = {'s': {0: 'sxx_t', 1:'syy_t', 2:'sxy_t'}}
             
@@ -232,8 +236,8 @@ with torch.no_grad():
         #                              RESHAPING DATA
         #------------------------------------------------------------------------------------
 
-        s = s.reshape(n_elems,n_tps-SEQ_LEN+1,-1)
-        y = y.reshape(n_elems,n_tps-SEQ_LEN+1,-1)
+        s = s.reshape(n_elems,n_tps,-1)
+        y = y.reshape(n_elems,n_tps,-1)
 
         for elem in ELEMS_VAL:
             idx = elem - 1
@@ -248,9 +252,9 @@ with torch.no_grad():
             sxy_abaqus = df[df['id']==elem]['sxy_t'].values.reshape(-1,1)
 
             # Stress predictions - ANN
-            sx_pred = s[:,idx,0].reshape(-1,1)
-            sy_pred = s[:,idx,1].reshape(-1,1)
-            sxy_pred= s[:,idx,2].reshape(-1,1)
+            sx_pred = s[idx,:,0].reshape(-1,1)
+            sy_pred = s[idx,:,1].reshape(-1,1)
+            sxy_pred= s[idx,:,2].reshape(-1,1)
 
             ###################################################################################
             #                             RELATIVE ERRORS
@@ -262,54 +266,54 @@ with torch.no_grad():
 
             ###################################################################################
 
-            # Principal strain - Abaqus
-            e1_abaqus = df[df['id']==elem]['ep_1'].values.reshape(-1,1)
-            e2_abaqus = df[df['id']==elem]['ep_2'].values.reshape(-1,1)
+            # # Principal strain - Abaqus
+            # e1_abaqus = df[df['id']==elem]['ep_1'].values.reshape(-1,1)
+            # e2_abaqus = df[df['id']==elem]['ep_2'].values.reshape(-1,1)
         
-            # Principal stress - Abaqus
-            y_princ = torch.from_numpy(df[df['id']==elem][['s1','s2']].values)
-            y1_abaqus = y_princ[:,0].numpy().reshape(-1,1)
-            y2_abaqus = y_princ[:,1].numpy().reshape(-1,1)
+            # # Principal stress - Abaqus
+            # y_princ = torch.from_numpy(df[df['id']==elem][['s1','s2']].values)
+            # y1_abaqus = y_princ[:,0].numpy().reshape(-1,1)
+            # y2_abaqus = y_princ[:,1].numpy().reshape(-1,1)
 
-            # Principal stress predictions - ANN
-            s1_pred = s_princ[:,idx,0].numpy().reshape(-1,1)
-            s2_pred = s_princ[:,idx,1].numpy().reshape(-1,1)
+            # # Principal stress predictions - ANN
+            # s1_pred = s_princ[:,idx,0].numpy().reshape(-1,1)
+            # s2_pred = s_princ[:,idx,1].numpy().reshape(-1,1)
 
             ###################################################################################
             #                             RELATIVE ERRORS
             ###################################################################################
 
-            mre_s1 = get_re(s1_pred, y1_abaqus).reshape(-1,1)
-            mre_s2 = get_re(s2_pred, y2_abaqus).reshape(-1,1)
+            # mre_s1 = get_re(s1_pred, y1_abaqus).reshape(-1,1)
+            # mre_s2 = get_re(s2_pred, y2_abaqus).reshape(-1,1)
 
             ###################################################################################
 
-            # Principal strain rate - Abaqus
-            de1_abaqus = df[df['id']==elem]['dep_1'].values.reshape(-1,1)
-            de2_abaqus = df[df['id']==elem]['dep_2'].values.reshape(-1,1)
+            # # Principal strain rate - Abaqus
+            # de1_abaqus = df[df['id']==elem]['dep_1'].values.reshape(-1,1)
+            # de2_abaqus = df[df['id']==elem]['dep_2'].values.reshape(-1,1)
 
-            # Principal stress rate - Abaqus
-            dy_1 = y[:,idx,0].reshape(-1,1).numpy()
-            dy_1 = np.vstack((dy_1,np.array([np.NaN])))
-            dy_2 = y[:,idx,1].reshape(-1,1).numpy()
-            dy_2 = np.vstack((dy_2,np.array([np.NaN])))
+            # # Principal stress rate - Abaqus
+            # dy_1 = y[:,idx,0].reshape(-1,1).numpy()
+            # dy_1 = np.vstack((dy_1,np.array([np.NaN])))
+            # dy_2 = y[:,idx,1].reshape(-1,1).numpy()
+            # dy_2 = np.vstack((dy_2,np.array([np.NaN])))
 
-            # Principal stress rate - ANN
-            ds1_pred = s_rate[:,idx,0].numpy().reshape(-1,1)
-            ds1_pred = np.vstack((ds1_pred,np.array([np.NaN])))
-            ds2_pred = s_rate[:,idx,1].numpy().reshape(-1,1)
-            ds2_pred = np.vstack((ds2_pred,np.array([np.NaN])))
+            # # Principal stress rate - ANN
+            # ds1_pred = s_rate[:,idx,0].numpy().reshape(-1,1)
+            # ds1_pred = np.vstack((ds1_pred,np.array([np.NaN])))
+            # ds2_pred = s_rate[:,idx,1].numpy().reshape(-1,1)
+            # ds2_pred = np.vstack((ds2_pred,np.array([np.NaN])))
 
             if tag != last_tag:
                 print("\n%s\t\tSxx\tSyy\tSxy\tS1\tS2\n" % (tag))
             
-            print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (elem, np.mean(mre_sx), np.mean(mre_sy), np.mean(mre_sxy), np.mean(mre_s1), np.mean(mre_s2)))
+            print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f" % (elem, np.mean(mre_sx), np.mean(mre_sy), np.mean(mre_sxy)))
 
             # cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred',
             #         'e_1','e_2','s_1','s_2','s_1_pred','s_2_pred','de_1','de_2','ds_1','ds_2',
             #         'dy_1','dy_2','mre_sx','mre_sy','mre_sxy','mre_s1','mre_s2']
 
-            res = np.concatenate([ex_abaqus,ey_abaqus,exy_abaqus,sx_abaqus,sy_abaqus,sxy_abaqus,sx_pred,sy_pred,sxy_pred,e1_abaqus,e2_abaqus,y1_abaqus,y2_abaqus,s1_pred,s2_pred,de1_abaqus,de2_abaqus,ds1_pred,ds2_pred,dy_1,dy_2,mre_sx, mre_sy, mre_sxy, mre_s1, mre_s2], axis=1)
+            res = np.concatenate([ex_abaqus,ey_abaqus,exy_abaqus,sx_abaqus,sy_abaqus,sxy_abaqus,sx_pred,sy_pred,sxy_pred, mre_sx, mre_sy, mre_sxy], axis=1)
             
             results = pd.DataFrame(res, columns=cols)
             

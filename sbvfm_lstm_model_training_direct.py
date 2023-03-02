@@ -88,18 +88,24 @@ class CruciformDataset(torch.utils.data.Dataset):
 
         t_pts = len(list(set(t.numpy())))
         n_elems = len(set(self.data[idx]['id'].values))
+
+        # Adding a padding of zeros to the input data in order to make predictions start at zero
+        pad_zeros = torch.zeros(self.seq_len * n_elems, x.shape[-1])
         
+        x = torch.cat([pad_zeros, x], 0)
+
         if self.transform != None:
             
             #dt = torch.diff(t.reshape(t_pts,n_elems,-1),0)
             x = self.transform(x)
 
-        x = self.rolling_window(x.reshape(t_pts,n_elems,-1), seq_size=self.seq_len)
+        x = self.rolling_window(x.reshape(t_pts + self.seq_len,n_elems,-1), seq_size=self.seq_len)[:,:-1]
         x = x.reshape(-1,*x.shape[2:])
         #t = self.rolling_window(t.reshape(t_pts,n_elems,-1), seq_size=self.seq_len)
 
         #y = y.reshape(t_pts-1,n_elems,-1)[self.seq_len-1:].reshape(-1,y.shape[-1])
-        y = y.reshape(t_pts,n_elems,-1)[self.seq_len-1:].permute(1,0,2)
+        #y = y.reshape(t_pts,n_elems,-1)[self.seq_len-1:].permute(1,0,2)
+        y = y.reshape(t_pts,n_elems,-1).permute(1,0,2)
         y = y.reshape(-1,y.shape[-1])
 
         idx_ = torch.randperm(x.shape[0])
@@ -266,13 +272,17 @@ def train():
                 
                 with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                     #l_triaxiality = torch.mean(torch.nn.functional.relu(torch.abs(triaxiality)-2/3)
-                    #l_tuples = [(pred[:,0], y_train[:,0]), (pred[:,1], y_train[:,1]), (l_triax,)]
+                    #l_tuples = [(pred[:,0], y_batches[i][:,0].to(device)), (pred[:,1], y_batches[i][:,1].to(device)), (pred[:,1], y_batches[i][:,1].to(device))]
                     
                     loss = l_fn(pred, y_batches[i].to(device))
                 
                     #loss = l_fn(l_tuples)
                 
                 scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
+
+                # scaler.unscale_(optimizer)
+
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2)
             
                 if ((i + 1) % ITERS_TO_ACCUMULATE == 0) or (i + 1 == len(x_batches)):    
                     
@@ -464,7 +474,7 @@ def train():
     ])
 
     # Preparing dataloaders for mini-batch training
-    SEQ_LEN = 6
+    SEQ_LEN = 4
 
     train_dataset = CruciformDataset(train_trials, TRAIN_MULTI_DIR, 'processed', FEATURES, OUTPUTS, INFO, transform=transform, seq_len=SEQ_LEN)
     test_dataset = CruciformDataset(test_trials, TRAIN_MULTI_DIR, 'processed', FEATURES, OUTPUTS, INFO, transform=transform, seq_len=SEQ_LEN)
@@ -476,8 +486,8 @@ def train():
     N_INPUTS = len(FEATURES)
     N_OUTPUTS = len(OUTPUTS)
     
-    N_UNITS = 16
-    H_LAYERS = 1
+    N_UNITS = [32,16]
+    H_LAYERS = 2
 
     ITERS_TO_ACCUMULATE = 1
 
@@ -487,9 +497,9 @@ def train():
     # WANDB logging
     WANDB_LOG = True
 
-    model_1 = GRUModel(input_dim=N_INPUTS,hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=N_OUTPUTS)
+    model_1 = GRUModel(input_dim=N_INPUTS, hidden_dim=N_UNITS, layer_dim=H_LAYERS, output_dim=N_OUTPUTS)
 
-    # model_1.apply(init_weights)
+    model_1.apply(init_weights)
     model_1.to(device)
 
     # clip_value = 100
@@ -508,7 +518,7 @@ def train():
     #l_fn = CoVWeightingLoss(device=device, n_losses=3)
     l_fn = torch.nn.MSELoss()
 
-    weight_decay=0.001
+    weight_decay = 0.001
 
     optimizer = torch.optim.AdamW(params=model_1.parameters(), weight_decay=weight_decay, lr=learning_rate)
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=20, cooldown=8, factor=0.88, min_lr=[params[i]['lr']*0.00005 for i in range(len(params))])
@@ -648,8 +658,8 @@ def train():
 
     history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
 
-
-    task = r'%s-[%i-%ix%i-%i]-%s-%i-VFs' % (run.name,N_INPUTS, N_UNITS, H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
+    task = f"{run.name}-[{N_INPUTS}-GRUx{H_LAYERS}-{*N_UNITS,}-{N_OUTPUTS}]-{TRAIN_MULTI_DIR.split('/')[-2]}-{count_parameters(model_1)}-VFs"
+    #task = r'%s-[%i-%ix%i-%i]-%s-%i-VFs' % (run.name,N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
 
     output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct'
     output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct/loss/'
@@ -678,7 +688,8 @@ def train():
     if WANDB_LOG:
         # 3️⃣ At the end of training, save the model artifact
         # Name this artifact after the current run
-        task_ = r'__%i-%ix%i-%i__%s-direct' % (N_INPUTS, N_UNITS, H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2])
+        task_ = f"{run.name}-[{N_INPUTS}-GRUx{H_LAYERS}-{*N_UNITS,}-{N_OUTPUTS}]-{TRAIN_MULTI_DIR.split('/')[-2]}-direct"
+        #task_ = r'__%i-%ix%i-%i__%s-direct' % (N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2])
         model_artifact_name = run.id + '_' + run.name + task_
         # Create a new artifact, which is a sample dataset
         model = wandb.Artifact(model_artifact_name, type='model')
