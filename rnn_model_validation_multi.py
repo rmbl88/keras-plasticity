@@ -1,6 +1,6 @@
 import constants
 import joblib
-from functions import (GRUModel, read_mesh, rotate_tensor, NeuralNetwork)
+from functions import (GRUModel, read_mesh)
 from contour import plot_fields
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -56,7 +56,7 @@ def get_ann_model(run: str, dir: str):
 
 def load_data(dir: str, ftype: str):
 
-    DIR = os.path.join(dir,'processed_v')
+    DIR = os.path.join(dir,'processed')
     
     files = glob.glob(os.path.join(DIR, f'*.{ftype}'))
     
@@ -74,8 +74,15 @@ def get_field_data(df: pd.DataFrame, vars: dict, pred_vars: dict, n_elems: int, 
 
     for k, d in vars.items():
         for idx, v_name in d.items():
-            x = df[v_name].values.reshape(n_tps,n_elems,1).transpose(1,0,2)
-            y = pred_vars[k][:,idx].reshape(n_elems,n_tps,1)
+            if v_name == 'mises':
+                s = df[KEYS[:-1]].values.reshape(n_tps,n_elems,-1).transpose(2,1,0)
+                s_hat = pred_vars[k].reshape(n_elems, n_tps, -1).transpose(2,0,1)
+                x = np.expand_dims(get_mises(*s),-1)
+                y = np.expand_dims(get_mises(*s_hat),-1)
+            else:
+                x = df[v_name].values.reshape(n_tps,n_elems,1).transpose(1,0,2)
+                y = pred_vars[k][:,idx].reshape(n_elems,n_tps,1)
+
             for t, d_ in field_dict.items():
                 d_[v_name]['abaqus'] = x[:,t,:]
                 d_[v_name]['ann'] = y[:,t,:]
@@ -92,7 +99,6 @@ def import_mesh(dir: str):
 
     return nodes, connectivity
 
-
 def get_re(pred,real):
 
     '''Calculates the Relative error between a prediction and a real value.'''
@@ -101,18 +107,21 @@ def get_re(pred,real):
 
     return re
 
+def get_mises(s_x, s_y, s_xy):
+    return np.sqrt(np.square(s_x)+np.square(s_y)-s_x*s_y+3*np.square(s_xy))
+
 #--------------------------------------------------------------------------
 
 # Initializing Matplotlib settings
-plt.rcParams.update(constants.PARAMS)
-default_cycler = (cycler(color=["#ef476f","#118ab2","#073b4c"]))
-plt.rc('axes', prop_cycle=default_cycler)
+# plt.rcParams.update(constants.PARAMS)
+# default_cycler = (cycler(color=["#ef476f","#118ab2","#073b4c"]))
+# plt.rc('axes', prop_cycle=default_cycler)
 
 # Setting Pytorch floating point precision
 torch.set_default_dtype(torch.float64)
 
 # Defining ann model to load
-RUN = 'comfy-deluge-145'
+RUN = 'whole-puddle-134'
 
 # Defining output directory
 DIR = 'crux-plastic_sbvf_abs_direct'
@@ -143,7 +152,7 @@ DRAW_CONTOURS = True
 TAG = 'x15_y15_'
 
 # Setting up ANN model
-model_1 = GRUModel(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=len(OUTPUTS))
+model_1 = GRUModel(input_dim=len(FEATURES),hidden_dim=[N_UNITS],layer_dim=H_LAYERS,output_dim=len(OUTPUTS))
 model_1.load_state_dict(get_ann_model(RUN, DIR))    
 model_1.eval()
 
@@ -202,7 +211,7 @@ with torch.no_grad():
         # theta_sp = torch.from_numpy(info[['theta_sp']].values)
 
         t = torch.from_numpy(info['t'].values).reshape(n_tps, n_elems, 1)
-        dt = torch.diff(t,dim=0)
+        #dt = torch.diff(t,dim=0)
 
         model_1.init_hidden(x.size(0))
         s = model_1(x) # stress rate.
@@ -224,7 +233,7 @@ with torch.no_grad():
         #------------------------------------------------------------------------------------
         if DRAW_CONTOURS and tag == TAG:
 
-            vars = {'s': {0: 'sxx_t', 1:'syy_t', 2:'sxy_t'}}
+            vars = {'s': {0: 'sxx_t', 1:'syy_t', 2:'sxy_t', 3:'mises'}}
             
             pred_vars = {'s': s.numpy()}
 

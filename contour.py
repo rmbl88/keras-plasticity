@@ -100,6 +100,10 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                 cb_str = r'$\boldsymbol{\sigma}_{11}~[\mathrm{MPa}]$'
             elif var == 's2':
                 cb_str = r'$\boldsymbol{\sigma}_{22}~[\mathrm{MPa}]$'
+            elif var == 'mises':
+                cb_str = r'$\boldsymbol{\sigma}_{Mises}~[\mathrm{MPa}]$'
+            else:
+                cb_str=''
 
             for i, (k,v) in enumerate(fields_.items()):
 

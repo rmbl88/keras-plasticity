@@ -415,19 +415,22 @@ class GRUModel(nn.Module):
 
         # Defining the number of layers and the nodes in each layer
         self.layer_dim = layer_dim
-        self.hidden_dim = hidden_dim
+        self.hidden_dim = hidden_dim if type(hidden_dim) is list else [hidden_dim]
 
         # GRU layers
-        self.gru = nn.GRU(input_dim, hidden_dim[0], layer_dim, batch_first=True)
+        self.gru = nn.GRU(input_dim, self.hidden_dim[0], layer_dim, batch_first=True)
 
-        self.fc_layers = nn.ModuleList()
-        # Fully connected layer
-        for i in range(len(self.hidden_dim)-1):
-            in_ = self.hidden_dim[i]
-            out_ = self.hidden_dim[i+1]
-            self.fc_layers.append(nn.Linear(in_, out_, bias=True))
+        if len(self.hidden_dim)>1:
+            self.fc_layers = nn.ModuleList()
+            # Fully connected layer
+            for i in range(len(self.hidden_dim)-1):
+                in_ = self.hidden_dim[i]
+                out_ = self.hidden_dim[i+1]
+                self.fc_layers.append(nn.Linear(in_, out_, bias=True))
 
-        self.fc_layers.append(nn.Linear(self.hidden_dim[-1],output_dim))
+            self.fc_layers.append(nn.Linear(self.hidden_dim[-1], output_dim))
+        else:
+            self.fc = nn.Linear(self.hidden_dim[0], output_dim)
 
         self.relu = nn.ReLU()
 
@@ -450,15 +453,14 @@ class GRUModel(nn.Module):
         out = out[:, -1, :]
 
         # Convert the final state to our desired output shape (batch_size, output_dim)
-        for layer in self.fc_layers[:-1]:
-                
-            out = self.relu(layer(out))
-                   
-        # for layer in self.fc_layers[:-1]:
-        #     out = self.relu(layer(out))
-
-        # return self.fc_layers[-1](out)
-        return self.fc_layers[-1](out)
+        if len(self.hidden_dim)>1:
+            for layer in self.fc_layers[:-1]:
+                    
+                out = self.relu(layer(out))
+                    
+            return self.fc_layers[-1](out)
+        else:
+            return self.fc(self.relu(out))
 
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:
