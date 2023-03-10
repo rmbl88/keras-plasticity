@@ -12,6 +12,7 @@ from pytools import F
 from functions import (
     CoVWeightingLoss,
     GRUModel,
+    SBVFLoss,
     global_dof,
     layer_wise_lr,
     standardize_data,
@@ -176,7 +177,7 @@ def train():
             #torch.nn.init.ones_(m.bias)
             m.bias.data.fill_(0.01)
 
-    def train_loop(dataloader, model, l_fn, optimizer, epoch):
+    def train_loop(dataloader, model, l_fn, optimizer):
         '''
         Custom loop for neural network training, using mini-batches
 
@@ -186,10 +187,10 @@ def train():
 
         num_batches = len(dataloader)
         
-        losses = []
-        f_loss = []
-        triax_loss = []
-        l_loss = []
+        losses = {}
+        # f_loss = []
+        # triax_loss = []
+        # l_loss = []
                
         model.train()
         #l_fn.to_train()
@@ -202,21 +203,23 @@ def train():
             X_train = X_train.squeeze(0)
             y_train = y_train.squeeze(0)
 
-            x_batches = X_train.split(X_train.shape[0]//32)
-            y_batches = y_train.split(y_train.shape[0]//32)
+            x_batches = X_train.split(X_train.shape[0]//BATCH_DIVIDER)
+            y_batches = y_train.split(y_train.shape[0]//BATCH_DIVIDER)
 
             for i, batch in enumerate(x_batches):
-                model.init_hidden(batch.size(0),device)
+                model.init_hidden(batch.size(0), DEVICE)
                 with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                    pred = model(batch.to(device)) # stress rate
+                    pred = model(batch.to(DEVICE)) # stress rate
 
+                #*******************************
                 # ADD OTHER CALCULATIONS HERE!
+                #*******************************
                 
                 with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                     
                     #l_tuples = [(pred[:,0], y_batches[i][:,0].to(device)), (pred[:,1], y_batches[i][:,1].to(device)), (pred[:,1], y_batches[i][:,1].to(device))]
                     
-                    loss = l_fn(pred, y_batches[i].to(device))
+                    loss = l_fn(pred, y_batches[i].to(DEVICE))
                 
                     #loss = l_fn(l_tuples)
                 
@@ -232,21 +235,22 @@ def train():
                     warmup_lr.step()
             
                 # Saving loss values
-                losses.append(loss.item())
-                f_loss.append(0.0)
-                triax_loss.append(0.0)
-                l_loss.append(0.0  )
+                losses[i] = loss.item()
+                # f_loss.append(0.0)
+                # triax_loss.append(0.0)
+                # l_loss.append(0.0  )
 
             print('\r>Train: %d/%d' % (batch_idx + 1, num_batches), end='')
               
         #-----------------------------
-        return losses
+        return np.fromiter(losses.values(), dtype=np.float32)
 
     def test_loop(dataloader, model, l_fn):
 
         data_iter = iter(dataloader)
 
         num_batches = len(dataloader)
+        
         test_losses = []
 
         model.eval()
@@ -258,18 +262,20 @@ def train():
             
                 X_test, y_test, _, t_pts, n_elems = data_iter.__next__()
             
-                X_test = X_test.squeeze(0).to(device)
-                y_test = y_test.squeeze(0).to(device)
+                X_test = X_test.squeeze(0).to(DEVICE)
+                y_test = y_test.squeeze(0).to(DEVICE)
 
-                x_batches = X_test.split(X_test.shape[0]//32)
-                y_batches = y_test.split(y_test.shape[0]//32)
+                x_batches = X_test.split(X_test.shape[0]//BATCH_DIVIDER)
+                y_batches = y_test.split(y_test.shape[0]//BATCH_DIVIDER)
 
                 for i, batch in enumerate(x_batches):
-                    model.init_hidden(batch.size(0),device)
+                    model.init_hidden(batch.size(0),DEVICE)
                     with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                         pred = model(batch) # stress rate
         
+                    #*******************************
                     # ADD OTHER CALCULATIONS HERE! 
+                    #*******************************
                 
                     with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                         
@@ -277,13 +283,14 @@ def train():
                     
                         #test_loss = l_fn(l_tuples)
                         
-                        test_loss = l_fn(pred, y_batches[i].to(device))
+                        test_loss = l_fn(pred, y_batches[i].to(DEVICE))
                 
                     test_losses.append(test_loss.item())
 
                 print('\r>Test: %d/%d' % (batch_idx + 1, num_batches), end='')
 
-        return test_losses
+        return np.array(test_losses)
+
 #////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 # 
 #                               NEURAL NETWORK TRAINING SCRIPT - Configuration
@@ -291,7 +298,7 @@ def train():
 #////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 #       
 #-------------------------------------------------------------------------------------------------------------------
-#                                              PYTORCH SETUP
+#                                                   PYTORCH SETUP
 #-------------------------------------------------------------------------------------------------------------------
 
     # Disabling Debug APIs
@@ -380,9 +387,6 @@ def train():
 
     # No. of after which to start early-stopping check
     ES_START = 200
-    
-    # Loss function(s)
-    L_FN = torch.nn.MSELoss()
 
     # No. of batches to divide training data into
     BATCH_DIVIDER = 32
@@ -393,18 +397,26 @@ def train():
     # Automatic mixed precision
     USE_AMP = True
 
+#-------------------------------------------------------------------------------------------------------------------
+#                                                   LOSS FUNCTIONS
+#-------------------------------------------------------------------------------------------------------------------
+
+    # Loss function(s)
+    #l_fn = torch.nn.MSELoss()
+    l_fn = SBVFLoss()
+
     # Initializing GradScaler object
-    SCALER = torch.cuda.amp.GradScaler()
+    scaler = torch.cuda.amp.GradScaler()
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                               WANDB CONFIGURATIONS
 #-------------------------------------------------------------------------------------------------------------------
     
+    # Project name
+    PROJ = 'sbvfm_indirect_crux_gru'
+    
     # WANDB logging
     WANDB_LOG = False
-
-    # WANDB project name
-    WANDB_PROJ = 'sbvfm_indirect_crux_gru'
 
     # WANDB model details
     WANDB_CONFIG = {
@@ -419,13 +431,16 @@ def train():
     }
 
     if WANDB_LOG:
-        # Starting WANDB logging
-        WANDB_RUN = wandb.init(project=WANDB_PROJ, entity="rmbl", config=WANDB_CONFIG)
 
+        # Starting WANDB logging
+        WANDB_RUN = wandb.init(project=PROJ, entity="rmbl", config=WANDB_CONFIG)
+        
+        # Tagging the model
         MODEL_TAG = WANDB_RUN.name
 
     else:
-        
+
+        # Tagging the model
         MODEL_TAG = time.strftime("%Y%m%d-%H%M%S")
 
 #-------------------------------------------------------------------------------------------------------------------
@@ -442,7 +457,7 @@ def train():
     CHECKPOINT_DIR = os.path.join(TEMP_DIR, 'checkpoint.pt')
     
     # Output paths
-    DIR_TASK = os.path.join('outputs', WANDB_PROJ)
+    DIR_TASK = os.path.join('outputs', PROJ)
     DIR_LOSS = os.path.join(DIR_TASK,'loss')
     DIR_STATS = os.path.join(DIR_TASK, 'stats')
     DIR_MODELS = os.path.join(DIR_TASK, 'models')
@@ -453,12 +468,9 @@ def train():
     MODEL_FILE = os.path.join(DIR_MODELS, MODEL_NAME,'.pt')
     ARCH_FILE = os.path.join(DIR_MODELS, MODEL_TAG, '-arch.pkl')
 
-#////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-# 
-#                                           NEURAL NETWORK TRAINING SCRIPT
-# 
-#////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
+#-------------------------------------------------------------------------------------------------------------------
+#                                           OUTPUT DIRECTORIES
+#-------------------------------------------------------------------------------------------------------------------
 
     # Creating output directories
     directories = [TEMP_DIR, DIR_TASK, DIR_LOSS, DIR_STATS, DIR_MODELS, DIR_VAL, DIR_LOGS]
@@ -468,6 +480,12 @@ def train():
             os.makedirs(dir)
         except FileExistsError:
             pass
+
+#////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+# 
+#                                           NEURAL NETWORK TRAINING SCRIPT
+# 
+#////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     # Loading mechanical trial tags to separate train/test datasets
     trials = pd.read_csv(os.path.join(TRAIN_DIR,'t_trials.csv'), index_col=False, header=0)
@@ -482,7 +500,7 @@ def train():
     file_list = glob.glob(os.path.join(dir, f'*.parquet'))
     file_list = [file for file in file_list if file.split('\\')[-1].split('.')[0] in train_trials]
     
-    df_list = [pq.ParquetDataset(file).read_pandas(columns=['tag']+FEATURES).to_pandas() for file in tqdm(file_list,desc='Importing training data', bar_format=FORMAT_PBAR)]
+    df_list = [pq.ParquetDataset(file).read_pandas(columns=FEATURES).to_pandas() for file in tqdm(file_list,desc='Importing training data', bar_format=FORMAT_PBAR)]
 
     raw_data = pd.concat(df_list)
 
@@ -581,7 +599,7 @@ def train():
         #--------------------------------------------------------------
         start_t = time.time()
 
-        batch_losses = train_loop(train_dataloader, model, L_FN, optimizer, t)
+        batch_losses = train_loop(train_dataloader, model, l_fn, optimizer)
     
         log_dict['loss']['train'][t] = np.mean(batch_losses)
     
@@ -600,7 +618,7 @@ def train():
         #--------------------------------------------------------------
         start_t = time.time()
 
-        batch_val_losses = test_loop(test_dataloader, model, L_FN)
+        batch_val_losses = test_loop(test_dataloader, model, l_fn)
         
         log_dict['loss']['test'][t] = np.mean(batch_val_losses)
 
@@ -639,11 +657,11 @@ def train():
     print("Done!")
 
     # Load the checkpoint with the best model
-    model.load_state_dict(torch.load(f'temp/{WANDB_RUN.name}/checkpoint.pt'))
+    model.load_state_dict(torch.load(CHECKPOINT_DIR))
 
-    epoch = log_dict['epoch'].values
-    train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
-    val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
+    epoch = np.fromiter(log_dict['epoch'].values(), dtype=np.int16).reshape(-1,1)
+    train_loss = np.fromiter(log_dict['loss']['train'].values(), dtype=np.float32).reshape(-1,1)
+    val_loss = np.fromiter(log_dict['loss']['test'].values(), dtype=np.float32).reshape(-1,1)
 
     history = pd.DataFrame(np.concatenate([epoch, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
     
@@ -682,6 +700,7 @@ def train():
 #           Main script
 # -------------------------------
 if __name__ == '__main__':
+    
     # Creating temporary folder
     try:
         os.makedirs('./temp')
