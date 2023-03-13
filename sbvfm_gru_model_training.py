@@ -11,10 +11,14 @@ from pytools import F
 
 from functions import (
     CoVWeightingLoss,
+    Element,
     GRUModel,
     SBVFLoss,
     global_dof,
+    global_strain_disp,
+    global_strain_disp_,
     layer_wise_lr,
+    read_mesh,
     standardize_data,
     plot_history
     )
@@ -24,7 +28,7 @@ from functions import (
     NeuralNetwork
     )
 
-import tensorflow as tf
+import math
 import pandas as pd
 import random
 import numpy as np
@@ -481,6 +485,59 @@ def train():
         except FileExistsError:
             pass
 
+#-------------------------------------------------------------------------------------------------------------------
+#                                           MESH INFORMATIOON
+#-------------------------------------------------------------------------------------------------------------------
+
+    # Reading mesh file
+    MESH, CONNECTIVITY, DOF = read_mesh(TRAIN_DIR)
+
+    # Defining geometry limits
+    x_min = min(MESH[:,1])
+    x_max = max(MESH[:,1])
+    y_min = min(MESH[:,-1])
+    y_max = max(MESH[:,-1])
+
+    # Total degrees of freedom
+    TOTAL_DOF = MESH.shape[0] * 2
+
+    # Defining edge boundary conditions
+    #     0 - no constraint
+    #     1 - displacements fixed along the edge
+    #     2 - displacements constant along the edge
+    BC_SETTINGS = {
+
+        'b_conds': {
+            'left': {
+                'cond': [1,0],
+                'dof': global_dof(MESH[MESH[:,1]==x_min][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==x_min) & (MESH[:,2]==y_min)][:,0])
+            },  
+            'bottom': {
+                'cond': [0,1],
+                'dof': global_dof(MESH[MESH[:,-1]==y_min][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==x_min) & (MESH[:,2]==y_min)][:,0])
+            },  # master dof
+            'right': {
+                'cond': [2,0],
+                'dof': global_dof(MESH[MESH[:,1]==x_max][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==x_max) & (MESH[:,2]==y_max/2)][:,0])
+            },  # master dof
+            'top': {
+                'cond': [0,2],
+                'dof': global_dof(MESH[MESH[:,-1]==y_max][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==x_max/2) & (MESH[:,2]==y_max)][:,0])
+            }  # master dof
+        }
+        
+    }
+
+    # Constructing element properties based on mesh info
+    ELEMENTS = [Element(CONNECTIVITY[i,:], MESH[CONNECTIVITY[i,1:]-1,1:], DOF[i,:]) for i in range(CONNECTIVITY.shape[0])]
+
+    # Assembling global strain-displacement matrices
+    B_GLOB, B_INV, ACTIVE_DOF = global_strain_disp_(ELEMENTS, TOTAL_DOF, BC_SETTINGS)
+
 #////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 # 
 #                                           NEURAL NETWORK TRAINING SCRIPT
@@ -504,8 +561,8 @@ def train():
 
     raw_data = pd.concat(df_list)
 
-    min = torch.min(torch.from_numpy(raw_data.values).float(),0).values
-    max = torch.max(torch.from_numpy(raw_data.values).float(),0).values
+    min_ = torch.min(torch.from_numpy(raw_data.values).float(),0).values
+    max_ = torch.max(torch.from_numpy(raw_data.values).float(),0).values
     #std, mean = torch.std_mean(torch.from_numpy(input_data.values),0)
 
     # Cleaning workspace from useless variables
@@ -515,7 +572,7 @@ def train():
 
     # Defining data transforms
     transform = transforms.Compose([
-        MinMaxScaler(min,max),
+        MinMaxScaler(min_,max_),
         #Normalize(mean.tolist(), std.tolist()),
         #transforms.RandomApply([AddGaussianNoise(0., 1.)],p=0.15)
     ])
@@ -671,7 +728,7 @@ def train():
 
     torch.save(model.state_dict(), os.path.join(DIR_MODELS, MODEL_NAME, '.pt'))
     
-    joblib.dump([min, max], os.path.join(DIR_MODELS, MODEL_NAME + '-scaler_x.pkl'))
+    joblib.dump([min_, max_], os.path.join(DIR_MODELS, MODEL_NAME + '-scaler_x.pkl'))
     joblib.dump([FEATURES, OUTPUTS, INFO, HIDDEN_UNITS, GRU_LAYERS, SEQ_LEN], os.path.join(DIR_MODELS, MODEL_TAG, '-arch.pkl'))
 
     # At the end of training, save the model artifact

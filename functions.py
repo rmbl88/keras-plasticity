@@ -1,3 +1,4 @@
+import glob
 from turtle import forward
 from pytools import T
 from sklearn import preprocessing
@@ -25,7 +26,7 @@ from scipy.ndimage import gaussian_filter
 import dask.dataframe as dd
 import gc
 import pyarrow.parquet as pq
-
+from time import process_time
 
 # -------------------------------
 #        Class definitions
@@ -516,7 +517,7 @@ class Element():
     def __init__(self, connect, node_coord, dof) -> None:
         self.id = connect[0]
         self.connect = connect[1:]
-        self.node_coord = torch.tensor(node_coord)
+        self.node_coord = torch.from_numpy(node_coord).float()
         self.global_dof = dof
         self.local_dof = np.arange(len(dof))
     
@@ -527,8 +528,8 @@ class Element():
 
         n = list(zip(x,y))
 
-        dN_dcsi = torch.tensor([0.25*(i)*(1+eta*j) for (i,j) in n])
-        dN_deta = torch.tensor([0.25*(1+csi*i)*(j) for (i,j) in n])
+        dN_dcsi = torch.as_tensor([0.25*(i)*(1+eta*j) for (i,j) in n])
+        dN_deta = torch.as_tensor([0.25*(1+csi*i)*(j) for (i,j) in n])
 
         dN_csi_eta = torch.stack([dN_dcsi,dN_deta],0)
         J = dN_csi_eta @ self.node_coord
@@ -865,6 +866,76 @@ def param_deltas(model):
 
     return eval_dicts
 
+#/////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+def global_strain_disp_(elements: list, total_dofs: int, bc_settings: dict):
+
+    G_DOF = list(range(total_dofs))  # Global degrees of freedom
+    N_PTS = len(elements)  # Number of elements
+    N_COMPS = 3  # Number of strain components
+
+    # Initializing global strain-displacement matrix (B)
+    b_glob = torch.zeros([N_COMPS * N_PTS, total_dofs]) 
+
+    # Assembly of global strain-displacement matrix (B)
+    for i, element in enumerate(elements):
+        
+        b_glob[N_COMPS*i:N_COMPS*i + N_COMPS, element.global_dof-1] += element.b_el()
+
+    # Initializing modified strain-displacement matrix (B_)
+    b_bar = copy.deepcopy(b_glob)
+
+    # Degrees of freedom to apply boundary conditions
+    bc_fixed = []
+    bc_slaves = []
+    bc_masters = []
+
+    for edge, props in bc_settings['b_conds'].items():
+
+        edge_dof_x = list(props['dof'][::2]-1)
+        edge_dof_y = list(props['dof'][1::2]-1)
+            
+        master_dof = list(props['m_dof']-1)
+        slave_dof = list(set(list(props['dof']-1)) - set(master_dof))
+
+        # Set bc along x-direction
+        if props['cond'][0] == 0:
+            pass
+        elif props['cond'][0] == 1:
+            bc_fixed += edge_dof_x
+        elif props['cond'][0] == 2:
+            b_bar[:, master_dof[0]] += torch.sum(b_bar[:,slave_dof[::2]],1)
+            bc_slaves += slave_dof[::2]
+            bc_masters.append(master_dof[0])
+        
+        # Set bc along y-direction
+        if props['cond'][1] == 0:
+            pass
+        elif props['cond'][1] == 1:
+            bc_fixed += edge_dof_y
+        elif props['cond'][1] == 2:
+            b_bar[:, master_dof[1]] += torch.sum(b_bar[:,slave_dof[1::2]],1)
+            bc_slaves += slave_dof[1::2]
+            bc_masters.append(master_dof[1])
+        
+    # Defining the active degrees of freedom
+    actDOFs = list(set(G_DOF)-set(sum([bc_fixed,bc_slaves],[])))
+    
+    # Checking for incompatible boundary conditions
+    if len(list(set(bc_masters).intersection(bc_fixed)))!=0:
+        raise Exception('Incompatible BCs, adjacent boundary conditions cannot be both fixed/uniform').with_traceback()
+
+    # Discarding redundant boundary conditions
+    b_bar = b_bar[:,actDOFs].cuda()
+    print('Calculating B_bar matrix')
+    t1_start = process_time() 
+    # Computing pseudo-inverse strain-displacement matrix
+    b_inv = torch.linalg.pinv(b_bar)
+    t1_stop = process_time()
+    print("Elapsed time for matrix inversion:", t1_stop-t1_start)
+    
+    return b_glob, b_inv, actDOFs
+#///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 def global_strain_disp(elements, total_dofs, bcs):
     
     g_dof = list(range(total_dofs))
@@ -889,7 +960,7 @@ def global_strain_disp(elements, total_dofs, bcs):
         edge_dof_y = list(props['dof'][1::2]-1)
 
         if edge == 'left' or edge == 'bottom':
-        
+            
             master_dof = list(props['dof'][0:2]-1)
             slave_dof = list(props['dof'][2:]-1)
 
@@ -932,6 +1003,8 @@ def global_strain_disp(elements, total_dofs, bcs):
     b_inv = torch.linalg.pinv(b_bar)
     
     return b_glob, b_inv, actDOFs
+
+# ////////////////////////////////////////////////////////////////////////////////////////////
 
 def prescribe_u(u, bcs):
     U = copy.deepcopy(u)
@@ -1003,11 +1076,11 @@ def read_mesh(dir):
     def get_substring_index(list, sub):
         return next((s for s in list if sub in s), None)
 
-    inp_file = ''
-    for r, d, f in os.walk(dir):
-        for file in f:
-            if '.inp' in file:
-                inp_file = dir+file
+    inp_file = glob.glob(os.path.join(dir, '*.inp'))[0]
+    # for r, d, f in os.walk(dir):
+    #     for file in f:
+    #         if '.inp' in file:
+    #             inp_file = dir+file
 
     lines = []
     with open(inp_file) as f:
