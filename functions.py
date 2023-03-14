@@ -868,73 +868,73 @@ def param_deltas(model):
 
 #/////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-def global_strain_disp_(elements: list, total_dofs: int, bc_settings: dict):
+# def global_strain_disp_(elements: list, total_dofs: int, bc_settings: dict):
 
-    G_DOF = list(range(total_dofs))  # Global degrees of freedom
-    N_PTS = len(elements)  # Number of elements
-    N_COMPS = 3  # Number of strain components
+#     G_DOF = list(range(total_dofs))  # Global degrees of freedom
+#     N_PTS = len(elements)  # Number of elements
+#     N_COMPS = 3  # Number of strain components
 
-    # Initializing global strain-displacement matrix (B)
-    b_glob = torch.zeros([N_COMPS * N_PTS, total_dofs]) 
+#     # Initializing global strain-displacement matrix (B)
+#     b_glob = torch.zeros([N_COMPS * N_PTS, total_dofs]) 
 
-    # Assembly of global strain-displacement matrix (B)
-    for i, element in enumerate(elements):
+#     # Assembly of global strain-displacement matrix (B)
+#     for i, element in enumerate(elements):
         
-        b_glob[N_COMPS*i:N_COMPS*i + N_COMPS, element.global_dof-1] += element.b_el()
+#         b_glob[N_COMPS*i:N_COMPS*i + N_COMPS, element.global_dof-1] += element.b_el()
 
-    # Initializing modified strain-displacement matrix (B_)
-    b_bar = copy.deepcopy(b_glob)
+#     # Initializing modified strain-displacement matrix (B_)
+#     b_bar = copy.deepcopy(b_glob)
 
-    # Degrees of freedom to apply boundary conditions
-    bc_fixed = []
-    bc_slaves = []
-    bc_masters = []
+#     # Degrees of freedom to apply boundary conditions
+#     bc_fixed = []
+#     bc_slaves = []
+#     bc_masters = []
 
-    for edge, props in bc_settings['b_conds'].items():
+#     for edge, props in bc_settings['b_conds'].items():
 
-        edge_dof_x = list(props['dof'][::2]-1)
-        edge_dof_y = list(props['dof'][1::2]-1)
+#         edge_dof_x = list(props['dof'][::2]-1)
+#         edge_dof_y = list(props['dof'][1::2]-1)
             
-        master_dof = list(props['m_dof']-1)
-        slave_dof = list(set(list(props['dof']-1)) - set(master_dof))
+#         master_dof = list(props['m_dof']-1)
+#         slave_dof = list(set(list(props['dof']-1)) - set(master_dof))
 
-        # Set bc along x-direction
-        if props['cond'][0] == 0:
-            pass
-        elif props['cond'][0] == 1:
-            bc_fixed += edge_dof_x
-        elif props['cond'][0] == 2:
-            b_bar[:, master_dof[0]] += torch.sum(b_bar[:,slave_dof[::2]],1)
-            bc_slaves += slave_dof[::2]
-            bc_masters.append(master_dof[0])
+#         # Set bc along x-direction
+#         if props['cond'][0] == 0:
+#             pass
+#         elif props['cond'][0] == 1:
+#             bc_fixed += edge_dof_x
+#         elif props['cond'][0] == 2:
+#             b_bar[:, master_dof[0]] += torch.sum(b_bar[:,slave_dof[::2]],1)
+#             bc_slaves += slave_dof[::2]
+#             bc_masters.append(master_dof[0])
         
-        # Set bc along y-direction
-        if props['cond'][1] == 0:
-            pass
-        elif props['cond'][1] == 1:
-            bc_fixed += edge_dof_y
-        elif props['cond'][1] == 2:
-            b_bar[:, master_dof[1]] += torch.sum(b_bar[:,slave_dof[1::2]],1)
-            bc_slaves += slave_dof[1::2]
-            bc_masters.append(master_dof[1])
+#         # Set bc along y-direction
+#         if props['cond'][1] == 0:
+#             pass
+#         elif props['cond'][1] == 1:
+#             bc_fixed += edge_dof_y
+#         elif props['cond'][1] == 2:
+#             b_bar[:, master_dof[1]] += torch.sum(b_bar[:,slave_dof[1::2]],1)
+#             bc_slaves += slave_dof[1::2]
+#             bc_masters.append(master_dof[1])
         
-    # Defining the active degrees of freedom
-    actDOFs = list(set(G_DOF)-set(sum([bc_fixed,bc_slaves],[])))
+#     # Defining the active degrees of freedom
+#     actDOFs = list(set(G_DOF)-set(sum([bc_fixed,bc_slaves],[])))
     
-    # Checking for incompatible boundary conditions
-    if len(list(set(bc_masters).intersection(bc_fixed)))!=0:
-        raise Exception('Incompatible BCs, adjacent boundary conditions cannot be both fixed/uniform').with_traceback()
+#     # Checking for incompatible boundary conditions
+#     if len(list(set(bc_masters).intersection(bc_fixed)))!=0:
+#         raise Exception('Incompatible BCs, adjacent boundary conditions cannot be both fixed/uniform').with_traceback()
 
-    # Discarding redundant boundary conditions
-    b_bar = b_bar[:,actDOFs].cuda()
-    print('Calculating B_bar matrix')
-    t1_start = process_time() 
-    # Computing pseudo-inverse strain-displacement matrix
-    b_inv = torch.linalg.pinv(b_bar)
-    t1_stop = process_time()
-    print("Elapsed time for matrix inversion:", t1_stop-t1_start)
+#     # Discarding redundant boundary conditions
+#     b_bar = b_bar[:,actDOFs].cuda()
+#     print('Calculating B_bar matrix')
+#     t1_start = process_time() 
+#     # Computing pseudo-inverse strain-displacement matrix
+#     b_inv = torch.linalg.pinv(b_bar)
+#     t1_stop = process_time()
+#     print("Elapsed time for matrix inversion:", t1_stop-t1_start)
     
-    return b_glob, b_inv, actDOFs
+#     return b_glob, b_inv, actDOFs
 #///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 def global_strain_disp(elements, total_dofs, bcs):
     

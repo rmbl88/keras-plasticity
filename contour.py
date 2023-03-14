@@ -16,13 +16,6 @@ import matplotlib.tri as tri
 from tqdm import tqdm
 import gc
 
-# # plots a finite element mesh
-# def plot_fem_mesh(nodes_x, nodes_y, elements,ax=None):
-#     for element in elements:
-#         x = [nodes_x[element[i]] for i in range(len(element))]
-#         y = [nodes_y[element[i]] for i in range(len(element))]
-#         ax.fill(x, y, edgecolor='black', fill=False)
-
 def plot_fields(nodes, connectivity, fields, out_dir, tag):
     
     def get_tri_mesh(nodes: np.array, connectivity: np.array):

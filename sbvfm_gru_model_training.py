@@ -1,24 +1,20 @@
 # ---------------------------------
 #    Library and function imports
 # ---------------------------------
-from cmath import log
 import glob
-from msvcrt import kbhit
 import os
+from pickle import GLOBAL
 import shutil
 import joblib
 from pytools import F
 
 from functions import (
     CoVWeightingLoss,
-    Element,
     GRUModel,
     SBVFLoss,
-    global_dof,
     global_strain_disp,
-    global_strain_disp_,
     layer_wise_lr,
-    read_mesh,
+    
     standardize_data,
     plot_history
     )
@@ -27,6 +23,17 @@ from functions import (
     EarlyStopping,
     NeuralNetwork
     )
+
+from mesh_utils import (
+    Element,
+    get_b_inv,
+    get_geom_limits,
+    get_glob_strain_disp,
+    get_b_bar,
+    global_dof,
+    read_mesh,
+
+)
 
 import math
 import pandas as pd
@@ -493,13 +500,13 @@ def train():
     MESH, CONNECTIVITY, DOF = read_mesh(TRAIN_DIR)
 
     # Defining geometry limits
-    x_min = min(MESH[:,1])
-    x_max = max(MESH[:,1])
-    y_min = min(MESH[:,-1])
-    y_max = max(MESH[:,-1])
+    X_MIN, X_MAX, Y_MIN, Y_MAX = get_geom_limits(MESH)
 
     # Total degrees of freedom
     TOTAL_DOF = MESH.shape[0] * 2
+
+    # Global degrees of freedom
+    GLOBAL_DOF = list(range(TOTAL_DOF)) 
 
     # Defining edge boundary conditions
     #     0 - no constraint
@@ -510,24 +517,24 @@ def train():
         'b_conds': {
             'left': {
                 'cond': [1,0],
-                'dof': global_dof(MESH[MESH[:,1]==x_min][:,0]),
-                'm_dof': global_dof(MESH[(MESH[:,1]==x_min) & (MESH[:,2]==y_min)][:,0])
+                'dof': global_dof(MESH[MESH[:,1]==X_MIN][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==X_MIN) & (MESH[:,2]==Y_MIN)][:,0])
             },  
             'bottom': {
                 'cond': [0,1],
-                'dof': global_dof(MESH[MESH[:,-1]==y_min][:,0]),
-                'm_dof': global_dof(MESH[(MESH[:,1]==x_min) & (MESH[:,2]==y_min)][:,0])
-            },  # master dof
+                'dof': global_dof(MESH[MESH[:,-1]==Y_MIN][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==X_MIN) & (MESH[:,2]==Y_MIN)][:,0])
+            },
             'right': {
                 'cond': [2,0],
-                'dof': global_dof(MESH[MESH[:,1]==x_max][:,0]),
-                'm_dof': global_dof(MESH[(MESH[:,1]==x_max) & (MESH[:,2]==y_max/2)][:,0])
-            },  # master dof
+                'dof': global_dof(MESH[MESH[:,1]==X_MAX][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==X_MAX) & (MESH[:,2]==Y_MAX/2)][:,0])
+            },
             'top': {
                 'cond': [0,2],
-                'dof': global_dof(MESH[MESH[:,-1]==y_max][:,0]),
-                'm_dof': global_dof(MESH[(MESH[:,1]==x_max/2) & (MESH[:,2]==y_max)][:,0])
-            }  # master dof
+                'dof': global_dof(MESH[MESH[:,-1]==Y_MAX][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==X_MAX/2) & (MESH[:,2]==Y_MAX)][:,0])
+            }
         }
         
     }
@@ -535,8 +542,14 @@ def train():
     # Constructing element properties based on mesh info
     ELEMENTS = [Element(CONNECTIVITY[i,:], MESH[CONNECTIVITY[i,1:]-1,1:], DOF[i,:]) for i in range(CONNECTIVITY.shape[0])]
 
-    # Assembling global strain-displacement matrices
-    B_GLOB, B_INV, ACTIVE_DOF = global_strain_disp_(ELEMENTS, TOTAL_DOF, BC_SETTINGS)
+    # Global strain-displacement matrix
+    B_GLOB = get_glob_strain_disp(ELEMENTS, TOTAL_DOF, BC_SETTINGS)
+
+    # Modified strain-displacement matrix and active defrees of freedom
+    B_BAR, ACTIVE_DOF = get_b_bar(BC_SETTINGS, B_GLOB, GLOBAL_DOF)
+
+    # Inverse of modified strain-displacement matrix
+    B_INV = get_b_inv(B_BAR)
 
 #////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 # 
