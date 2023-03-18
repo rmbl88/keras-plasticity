@@ -1,3 +1,4 @@
+from email import header
 from tqdm import tqdm
 from functions import load_dataframes
 from constants import *
@@ -19,16 +20,10 @@ import math
 
 def load_dataframes(file_list, tag):
 
-    #file_list = []
     df_list = []
 
-    # for r, d, f in os.walk(directory):
-    #     for file in f:
-    #         if '.csv' or '.parquet' in file:
-    #             file_list.append(directory + file)
-
     # Loading training datasets
-    use_cols = ['tag','id','inc','t','area','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t','fxx_t','fyy_t']
+    use_cols = ['tag','id','inc','t','cent_x','cent_y','area','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t','fxx_t','fyy_t']
     
     df_list = [pq.ParquetDataset(file).read_pandas(columns=use_cols).to_pandas() for file in tqdm(file_list,desc=f'Importing files - {tag}',bar_format=FORMAT_PBAR, leave=False)]
 
@@ -191,8 +186,10 @@ if __name__ == '__main__':
     trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'raw','trials.csv'),header=None)[0].to_list()
 
     random.shuffle(trials)
-    val_trials = random.sample(trials, math.ceil(len(trials)*0.35))
-    train_trials = list(set(trials).difference(val_trials))
+    #val_trials = random.sample(trials, math.ceil(len(trials)*0.35))
+    #train_trials = list(set(trials).difference(val_trials))
+    val_trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'v_trials.csv'), header=0)['0'].to_list()
+    train_trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'t_trials.csv'), header=0)['0'].to_list()
 
     with tqdm(total=len(trials), desc='Processing dataset', bar_format=FORMAT_PBAR) as pbar:
         
@@ -207,7 +204,7 @@ if __name__ == '__main__':
                 if trial in train_trials:
                     data.to_parquet(os.path.join(TRAIN_MULTI_DIR,'processed', f'{trial}.parquet'),compression='brotli')
                 else:
-                    data.to_parquet(os.path.join(TRAIN_MULTI_DIR,'processed_v', f'{trial}.parquet'),compression='brotli')
+                    data.to_parquet(os.path.join(VAL_DIR_MULTI,'processed', f'{trial}.parquet'),compression='brotli')
 
                     # with tqdm(total=len(elems_val), desc=f'Exporting validation files - {trial}', bar_format=FORMAT_PBAR, leave=False) as pbar_:
                     #     with ThreadPoolExecutor(len(elems_val)) as ex:

@@ -473,7 +473,7 @@ def test_loop(dataloader, model, loss_fn):
 # -------------------------------
 
 # Initiating wandb
-wandb.init(project="pytorch_linear_model", entity="rmbl")
+#wandb.init(project="pytorch_linear_model", entity="rmbl")
 
 torch.set_default_dtype(torch.float32)
 torch.set_printoptions(precision=8)
@@ -495,7 +495,7 @@ t_pts = 8
 # Performing test/train split
 partition = {"train": None, "test": None}
 
-if t_pts == DATA_SAMPLES:
+if t_pts == 1000:
     # Reorganizing dataset by tag, subsequent grouping by time increment
     data_by_tag = [df for _, df in data.groupby(['tag'])]
     random.shuffle(data_by_tag)
@@ -629,7 +629,7 @@ l = []
 # Initializing the early_stopping object
 #early_stopping = EarlyStopping(patience=12, verbose=True)
 
-wandb.watch(model_1)
+#wandb.watch(model_1)
 
 w_int = np.zeros((epochs,1,4))
 w_int_real = np.zeros((epochs,1,4))
@@ -689,13 +689,13 @@ for t in range(epochs):
     #      print("Early stopping")
     #      break
 
-    wandb.log({
-        "Epoch": t,
-        "Train Loss": train_loss[t],
-        "Test Loss": val_loss[t],
-        #"Learning Rate": scheduler._last_lr[0]
-        }
-        )
+    # wandb.log({
+    #     "Epoch": t,
+    #     "Train Loss": train_loss[t],
+    #     "Test Loss": val_loss[t],
+    #     #"Learning Rate": scheduler._last_lr[0]
+    #     }
+    #     )
 
 print("Done!")
 

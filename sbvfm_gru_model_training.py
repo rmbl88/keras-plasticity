@@ -1,40 +1,12 @@
 # ---------------------------------
-#    Library and function imports
+#    Library imports
 # ---------------------------------
+import enum
 import glob
 import os
-from pickle import GLOBAL
+from re import X
 import shutil
 import joblib
-from pytools import F
-
-from functions import (
-    CoVWeightingLoss,
-    GRUModel,
-    SBVFLoss,
-    global_strain_disp,
-    layer_wise_lr,
-    
-    standardize_data,
-    plot_history
-    )
-from functions import (
-    weightConstraint,
-    EarlyStopping,
-    NeuralNetwork
-    )
-
-from mesh_utils import (
-    Element,
-    get_b_inv,
-    get_geom_limits,
-    get_glob_strain_disp,
-    get_b_bar,
-    global_dof,
-    read_mesh,
-
-)
-
 import math
 import pandas as pd
 import random
@@ -45,23 +17,51 @@ import time
 import wandb
 from torch.autograd.functional import jacobian
 import time
-from sklearn import preprocessing
-import time
 import random
-from tkinter import *
-import matplotlib.pyplot as plt
 import gc
 import pyarrow.parquet as pq
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torchvision import transforms
-import pytorch_warmup as warmup
 from warmup_scheduler import GradualWarmupScheduler
-import math
+
+from functions import (
+    
+    CoVWeightingLoss,
+    GRUModel,
+    EarlyStopping    
+
+    )
+
+from mesh_utils import (
+    
+    Element,
+    get_b_inv,
+    get_geom_limits,
+    get_glob_strain_disp,
+    get_b_bar,
+    global_dof,
+    read_mesh,
+
+)
+
+from vfm import (
+    external_vw,
+    get_ud_vfs,
+    internal_vw
+)
+
+from vfm_loss import (
+    
+    SBVFLoss, 
+    UDVFLoss
+    
+)
 
 from constants import (
     FORMAT_PBAR
-    )
+)
+
 
 # ----------------------------------------
 #        Class definitions
@@ -78,7 +78,7 @@ class AddGaussianNoise(object):
         return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
 
 class CruciformDataset(torch.utils.data.Dataset):
-    def __init__(self, trials, root_dir, data_dir, features, outputs, info, scaler_x=None, transform=None, seq_len=1):
+    def __init__(self, trials, root_dir, data_dir, features, outputs, info, centroids, scaler_x=None, transform=None, seq_len=1):
         self.seq_len = seq_len
         self.trials = trials
         self.root_dir = root_dir
@@ -87,9 +87,10 @@ class CruciformDataset(torch.utils.data.Dataset):
         self.features = features
         self.outputs = outputs
         self.info = info
+        self.centroids = centroids
         self.transform = transform
         self.files = [os.path.join(self.root_dir, self.data_dir , trial + '.parquet') for trial in self.trials]
-        self.data = [pq.ParquetDataset(file).read_pandas(columns=self.features+self.outputs+['t','id','s1','s2','fxx_t','fyy_t','area','sxx_t','syy_t']).to_pandas() for file in self.files]
+        self.data = [pq.ParquetDataset(file).read_pandas(columns=self.features+self.outputs+self.info+['id','area']).to_pandas() for file in self.files]
 
     def __len__(self):
         return len(self.trials)
@@ -98,6 +99,8 @@ class CruciformDataset(torch.utils.data.Dataset):
         
         x = torch.from_numpy(self.data[idx][self.features].dropna().values).float()
         y = torch.from_numpy(self.data[idx][self.outputs].dropna().values).float()
+        f = torch.from_numpy(self.data[idx][['fxx_t','fyy_t']].dropna().values).float()
+        a = torch.from_numpy(self.data[idx]['area'][self.data[idx]['t']==0].dropna().values).float()
         t = torch.from_numpy(self.data[idx]['t'].values).float()
         
         t_pts = len(list(set(t.numpy())))
@@ -113,15 +116,18 @@ class CruciformDataset(torch.utils.data.Dataset):
             x = self.transform(x)
 
         x = self.rolling_window(x.reshape(t_pts + self.seq_len,n_elems,-1), seq_size=self.seq_len)[:,:-1]
-        x = x.reshape(-1,*x.shape[2:])
+        #x = x.reshape(-1,*x.shape[2:])
         #t = self.rolling_window(t.reshape(t_pts,n_elems,-1), seq_size=self.seq_len)
 
         y = y.reshape(t_pts,n_elems,-1).permute(1,0,2)
-        y = y.reshape(-1,y.shape[-1])
+        #y = y.reshape(-1,y.shape[-1])
 
-        idx_ = torch.randperm(x.shape[0])
+        f = torch.mean(f.reshape(t_pts,n_elems,-1),1)
+        a = a.unsqueeze(-1)
+        #idx_ = torch.randperm(x.shape[0])
 
-        return x[idx_], y[idx_], t, t_pts, n_elems        
+        #return x[idx_], y[idx_], f, t, t_pts, n_elems
+        return x, y, f, t, a, self.centroids, t_pts, n_elems        
     
     def rolling_window(self, x, seq_size, step_size=1):
         # unfold dimension to make our rolling window
@@ -209,44 +215,64 @@ def train():
         for batch_idx in range(len(dataloader)):
 
             # Extracting variables for training
-            X_train, y_train, _, t_pts, n_elems = data_iter.__next__()
+            X_train, y_train, f, _, area, centroids, t_pts, n_elems = data_iter.__next__()
             
             X_train = X_train.squeeze(0)
             y_train = y_train.squeeze(0)
+            centroids = centroids.squeeze(0)
+            area = area.squeeze(0).to(DEVICE)
+            f = f.squeeze(0).to(DEVICE)
 
-            x_batches = X_train.split(X_train.shape[0]//BATCH_DIVIDER)
-            y_batches = y_train.split(y_train.shape[0]//BATCH_DIVIDER)
+            x_batches = torch.split(X_train, t_pts//BATCH_DIVIDER, 1)
+            y_batches = torch.split(y_train, t_pts//BATCH_DIVIDER, 1)
+            f_batches = torch.split(f, t_pts//BATCH_DIVIDER, 0)
 
             for i, batch in enumerate(x_batches):
-                model.init_hidden(batch.size(0), DEVICE)
+                x = batch.reshape([-1,*batch.shape[-2:]])
+                y = y_batches[i]
+                f_ = f_batches[i]
+                model.init_hidden(x.size(0), DEVICE)
                 with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                    pred = model(batch.to(DEVICE)) # stress rate
+                    pred = model(x.to(DEVICE)) # stress
 
                 #*******************************
                 # ADD OTHER CALCULATIONS HERE!
                 #*******************************
-                
+                v_strain =  V_STRAIN.unsqueeze(2).repeat(1,1,batch.size(1),1)
+                v_disp = V_DISP.unsqueeze(1)
+                a_ = area.unsqueeze(2).repeat(1,batch.size(1),1)
+
+                w_int_ann = internal_vw(pred.reshape_as(y), v_strain, a_)
+                #w_int_ann = torch.sum(torch.sum(pred * (torch.from_numpy(V_STRAIN) * area).to(DEVICE), -1, keepdim=True), 1)
+
+                w_int = internal_vw(y.to(DEVICE), v_strain, a_)
+                #w_int = torch.sum(torch.sum((batch_y * torch.from_numpy(V_STRAIN) * area).to(DEVICE), -1, keepdim=True), 1)
+
+                #w_ext = torch.sum((f[t] * V_DISP).to(DEVICE), -1, keepdim=True)
+                w_ext = external_vw(f_, v_disp)
+
+
                 with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                     
                     #l_tuples = [(pred[:,0], y_batches[i][:,0].to(device)), (pred[:,1], y_batches[i][:,1].to(device)), (pred[:,1], y_batches[i][:,1].to(device))]
                     
-                    loss = l_fn(pred, y_batches[i].to(DEVICE))
+                    loss = l_fn(w_int_ann, w_ext)
                 
                     #loss = l_fn(l_tuples)
                 
                 scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
             
-                if ((i + 1) % ITERS_TO_ACCUMULATE == 0) or (i + 1 == len(x_batches)):    
+                if ((t + 1) % ITERS_TO_ACCUMULATE == 0) or (t + 1 == t_pts):    
                     
                     scaler.step(optimizer)
                     scaler.update()
                     
+                    warmup_lr.step()
+
                     optimizer.zero_grad(set_to_none=True)
 
-                    warmup_lr.step()
-            
                 # Saving loss values
-                losses[i] = loss.item()
+                losses[t] = loss.item()
                 # f_loss.append(0.0)
                 # triax_loss.append(0.0)
                 # l_loss.append(0.0  )
@@ -271,22 +297,26 @@ def train():
 
             for batch_idx in range(len(dataloader)):
             
-                X_test, y_test, _, t_pts, n_elems = data_iter.__next__()
+                X_test, _, f, _, area, centroids, t_pts, n_elems = data_iter.__next__()
             
-                X_test = X_test.squeeze(0).to(DEVICE)
-                y_test = y_test.squeeze(0).to(DEVICE)
+                X_test = X_test.squeeze(0)
+                # y_test = y_test.squeeze(0)
+                centroids = centroids.squeeze(0)
+                area = area.squeeze(0).to(DEVICE)
+                f = f.squeeze(0).to(DEVICE)
 
-                x_batches = X_test.split(X_test.shape[0]//BATCH_DIVIDER)
-                y_batches = y_test.split(y_test.shape[0]//BATCH_DIVIDER)
+                for t in range(t_pts):
+                
+                    batch_x = X_test[:,t]
+                    #batch_y = y_test[:,t]
 
-                for i, batch in enumerate(x_batches):
-                    model.init_hidden(batch.size(0),DEVICE)
+                    model.init_hidden(batch_x.size(0), DEVICE)
                     with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                        pred = model(batch) # stress rate
+                        pred = model(batch_x.to(DEVICE)) # stress
         
-                    #*******************************
-                    # ADD OTHER CALCULATIONS HERE! 
-                    #*******************************
+                    w_int_ann = internal_vw(pred, V_STRAIN, area)
+                    
+                    w_ext = external_vw(f[t], V_DISP)
                 
                     with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                         
@@ -294,7 +324,7 @@ def train():
                     
                         #test_loss = l_fn(l_tuples)
                         
-                        test_loss = l_fn(pred, y_batches[i].to(DEVICE))
+                        test_loss =  l_fn(w_int_ann, w_ext)
                 
                     test_losses.append(test_loss.item())
 
@@ -346,6 +376,12 @@ def train():
     torch.manual_seed(SEED)
 
 #-------------------------------------------------------------------------------------------------------------------
+#                                                   PROGRAM MODE
+#-------------------------------------------------------------------------------------------------------------------
+
+    # TO BE ADDED
+
+#-------------------------------------------------------------------------------------------------------------------
 #                                               DATASET CONFIGURATIONS
 #-------------------------------------------------------------------------------------------------------------------
     
@@ -358,7 +394,7 @@ def train():
     # Defining variables of interest
     FEATURES = ['exx_t','eyy_t','exy_t']
     OUTPUTS = ['sxx_t','syy_t','sxy_t']
-    INFO = ['tag','inc','t','fxx_t','fyy_t']
+    INFO = ['tag','inc','t','cent_x','cent_y','fxx_t','fyy_t']
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                              MODEL HYPERPARAMETERS
@@ -399,8 +435,8 @@ def train():
     # No. of after which to start early-stopping check
     ES_START = 200
 
-    # No. of batches to divide training data into
-    BATCH_DIVIDER = 32
+    # No. of batches to divide training data into (acts upon time points)
+    BATCH_DIVIDER = 16
 
     # No. of steps to acumulate gradients
     ITERS_TO_ACCUMULATE = 1
@@ -409,15 +445,96 @@ def train():
     USE_AMP = True
 
 #-------------------------------------------------------------------------------------------------------------------
-#                                                   LOSS FUNCTIONS
+#                                               VFM CONFIGURATION
 #-------------------------------------------------------------------------------------------------------------------
 
-    # Loss function(s)
-    #l_fn = torch.nn.MSELoss()
-    l_fn = SBVFLoss()
+    # Selecting VFM formulation:
+    #   ud - user-defined vf's
+    #   sb - sensitivity-based
+    VFM_TYPE = 'ud'
 
-    # Initializing GradScaler object
-    scaler = torch.cuda.amp.GradScaler()
+#-------------------------------------------------------------------------------------------------------------------
+#                                           MESH INFORMATION FOR VFM
+#-------------------------------------------------------------------------------------------------------------------
+
+    # Reading mesh file
+    MESH, CONNECTIVITY, DOF = read_mesh(TRAIN_DIR)
+
+    # Defining geometry limits
+    X_MIN, X_MAX, Y_MIN, Y_MAX = get_geom_limits(MESH)
+
+    # Element centroids
+    CENTROIDS = pd.read_csv(os.path.join(TRAIN_DIR,'centroids.csv'), usecols=['cent_x','cent_y']).values
+
+    # Defining edge boundary conditions:
+        #   0 - no constraint
+        #   1 - displacements fixed along the edge
+        #   2 - displacements constant along the edge
+    BC_SETTINGS = {
+
+        'b_conds': {
+            'left': {
+                'cond': [1,0],
+                'dof': global_dof(MESH[MESH[:,1]==X_MIN][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==X_MIN) & (MESH[:,2]==Y_MIN)][:,0]),
+                'nodes': MESH[MESH[:,1]==X_MIN]
+            },  
+            'bottom': {
+                'cond': [0,1],
+                'dof': global_dof(MESH[MESH[:,-1]==Y_MIN][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==X_MIN) & (MESH[:,2]==Y_MIN)][:,0]),
+                'nodes': MESH[MESH[:,2]==Y_MIN]
+            },
+            'right': {
+                'cond': [2,0],
+                'dof': global_dof(MESH[MESH[:,1]==X_MAX][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==X_MAX) & (MESH[:,2]==Y_MAX/2)][:,0]),
+                'nodes': MESH[MESH[:,1]==X_MAX]
+            },
+            'top': {
+                'cond': [0,2],
+                'dof': global_dof(MESH[MESH[:,-1]==Y_MAX][:,0]),
+                'm_dof': global_dof(MESH[(MESH[:,1]==X_MAX/2) & (MESH[:,2]==Y_MAX)][:,0]),
+                'nodes': MESH[MESH[:,2]==Y_MAX]
+            }
+        }
+        
+    }
+
+    if VFM_TYPE == 'sb':  # Sensitivity-based VFM
+
+        # Total degrees of freedom
+        TOTAL_DOF = MESH.shape[0] * 2
+
+        # Global degrees of freedom
+        GLOBAL_DOF = list(range(TOTAL_DOF)) 
+
+        # Constructing element properties based on mesh info
+        ELEMENTS = [Element(CONNECTIVITY[i,:], MESH[CONNECTIVITY[i,1:]-1,1:], DOF[i,:]) for i in range(CONNECTIVITY.shape[0])]
+
+        # Global strain-displacement matrix
+        B_GLOB = get_glob_strain_disp(ELEMENTS, TOTAL_DOF, BC_SETTINGS)
+
+        # Modified strain-displacement matrix and active defrees of freedom
+        B_BAR, ACTIVE_DOF = get_b_bar(BC_SETTINGS, B_GLOB, GLOBAL_DOF)
+
+        # Inverse of modified strain-displacement matrix
+        B_INV = get_b_inv(B_BAR)
+    
+    elif VFM_TYPE == 'ud':  # User-defined VFM
+
+        # Maximum dimensions of specimen
+        WIDTH = X_MAX - X_MIN
+        HEIGHT = Y_MAX - Y_MIN
+
+        # Coordinates for traction surfaces
+        SURF_COORDS = [X_MAX, Y_MAX]
+
+        # Computing virtual fields
+        TOTAL_VFS, V_DISP, V_STRAIN = get_ud_vfs(CENTROIDS, SURF_COORDS, WIDTH, HEIGHT)
+
+        V_DISP = torch.from_numpy(V_DISP).to(DEVICE)
+        V_STRAIN = torch.from_numpy(V_STRAIN).to(DEVICE)
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                               WANDB CONFIGURATIONS
@@ -429,19 +546,19 @@ def train():
     # WANDB logging
     WANDB_LOG = False
 
-    # WANDB model details
-    WANDB_CONFIG = {
-        'inputs': N_INPUTS,
-        'outputs': N_OUTPUTS,
-        'hidden_layers': len(HIDDEN_UNITS),
-        'hidden_units': f'{*HIDDEN_UNITS,}',
-        'stack_units': GRU_LAYERS,        
-        'epochs': EPOCHS,
-        'l_rate': L_RATE,
-        'l2_reg': L2_REG
-    }
-
     if WANDB_LOG:
+
+        # WANDB model details
+        WANDB_CONFIG = {
+            'inputs': N_INPUTS,
+            'outputs': N_OUTPUTS,
+            'hidden_layers': len(HIDDEN_UNITS),
+            'hidden_units': f'{*HIDDEN_UNITS,}',
+            'stack_units': GRU_LAYERS,        
+            'epochs': EPOCHS,
+            'l_rate': L_RATE,
+            'l2_reg': L2_REG
+        }
 
         # Starting WANDB logging
         WANDB_RUN = wandb.init(project=PROJ, entity="rmbl", config=WANDB_CONFIG)
@@ -480,7 +597,7 @@ def train():
     ARCH_FILE = os.path.join(DIR_MODELS, MODEL_TAG, '-arch.pkl')
 
 #-------------------------------------------------------------------------------------------------------------------
-#                                           OUTPUT DIRECTORIES
+#                                           CREATING OUTPUT DIRECTORIES
 #-------------------------------------------------------------------------------------------------------------------
 
     # Creating output directories
@@ -493,63 +610,20 @@ def train():
             pass
 
 #-------------------------------------------------------------------------------------------------------------------
-#                                           MESH INFORMATIOON
+#                                                   LOSS FUNCTIONS
 #-------------------------------------------------------------------------------------------------------------------
 
-    # Reading mesh file
-    MESH, CONNECTIVITY, DOF = read_mesh(TRAIN_DIR)
+    # Loss functions for VFM
+    if VFM_TYPE == 'sb':
+    
+        l_fn = SBVFLoss()
+    
+    elif VFM_TYPE == 'ud':
 
-    # Defining geometry limits
-    X_MIN, X_MAX, Y_MIN, Y_MAX = get_geom_limits(MESH)
+        l_fn = UDVFLoss(normalize='wint')
 
-    # Total degrees of freedom
-    TOTAL_DOF = MESH.shape[0] * 2
-
-    # Global degrees of freedom
-    GLOBAL_DOF = list(range(TOTAL_DOF)) 
-
-    # Defining edge boundary conditions
-    #     0 - no constraint
-    #     1 - displacements fixed along the edge
-    #     2 - displacements constant along the edge
-    BC_SETTINGS = {
-
-        'b_conds': {
-            'left': {
-                'cond': [1,0],
-                'dof': global_dof(MESH[MESH[:,1]==X_MIN][:,0]),
-                'm_dof': global_dof(MESH[(MESH[:,1]==X_MIN) & (MESH[:,2]==Y_MIN)][:,0])
-            },  
-            'bottom': {
-                'cond': [0,1],
-                'dof': global_dof(MESH[MESH[:,-1]==Y_MIN][:,0]),
-                'm_dof': global_dof(MESH[(MESH[:,1]==X_MIN) & (MESH[:,2]==Y_MIN)][:,0])
-            },
-            'right': {
-                'cond': [2,0],
-                'dof': global_dof(MESH[MESH[:,1]==X_MAX][:,0]),
-                'm_dof': global_dof(MESH[(MESH[:,1]==X_MAX) & (MESH[:,2]==Y_MAX/2)][:,0])
-            },
-            'top': {
-                'cond': [0,2],
-                'dof': global_dof(MESH[MESH[:,-1]==Y_MAX][:,0]),
-                'm_dof': global_dof(MESH[(MESH[:,1]==X_MAX/2) & (MESH[:,2]==Y_MAX)][:,0])
-            }
-        }
-        
-    }
-
-    # Constructing element properties based on mesh info
-    ELEMENTS = [Element(CONNECTIVITY[i,:], MESH[CONNECTIVITY[i,1:]-1,1:], DOF[i,:]) for i in range(CONNECTIVITY.shape[0])]
-
-    # Global strain-displacement matrix
-    B_GLOB = get_glob_strain_disp(ELEMENTS, TOTAL_DOF, BC_SETTINGS)
-
-    # Modified strain-displacement matrix and active defrees of freedom
-    B_BAR, ACTIVE_DOF = get_b_bar(BC_SETTINGS, B_GLOB, GLOBAL_DOF)
-
-    # Inverse of modified strain-displacement matrix
-    B_INV = get_b_inv(B_BAR)
+    # Initializing GradScaler object
+    scaler = torch.cuda.amp.GradScaler()
 
 #////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 # 
@@ -591,8 +665,8 @@ def train():
     ])
 
     # Preparing dataloaders for mini-batch training
-    train_dataset = CruciformDataset(train_trials, TRAIN_DIR, 'processed', FEATURES, OUTPUTS, INFO, transform=transform, seq_len=SEQ_LEN)
-    test_dataset = CruciformDataset(test_trials, TRAIN_DIR, 'processed', FEATURES, OUTPUTS, INFO, transform=transform, seq_len=SEQ_LEN)
+    train_dataset = CruciformDataset(train_trials, TRAIN_DIR, 'processed', FEATURES, OUTPUTS, INFO, CENTROIDS, transform=transform, seq_len=SEQ_LEN)
+    test_dataset = CruciformDataset(test_trials, TRAIN_DIR, 'processed', FEATURES, OUTPUTS, INFO, CENTROIDS, transform=transform, seq_len=SEQ_LEN)
     
     train_dataloader = DataLoader(train_dataset, shuffle=True, **KWARGS)
     test_dataloader = DataLoader(test_dataset, **KWARGS)

@@ -13,7 +13,7 @@ from io import StringIO
 
 class Element():
     """
-    A class to a bilinear quadrilateral element.
+    A class to represent a bilinear quadrilateral element.
 
     Attributes
     ----------
