@@ -68,8 +68,10 @@ def set_size(width, fraction=1, subplots=(1, 1)):
 
 df_list = []
 
-RUN = 'whole-puddle-134'
-DIR = f'outputs/crux-plastic_sbvf_abs_direct/val/{RUN}/'
+RUN = 'generous-surf-100'
+#RUN = 'whole-puddle-134'
+#DIR = f'outputs/crux-plastic_sbvf_abs_direct/val/{RUN}/'
+DIR = f'outputs/sbvfm_indirect_crux_gru/val/{RUN}/'
 
 mech_tests = []
 for r, d, f in os.walk(DIR):

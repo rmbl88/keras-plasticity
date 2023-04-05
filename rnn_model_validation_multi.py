@@ -67,6 +67,7 @@ def load_data(dir: str, ftype: str):
 def get_field_data(df: pd.DataFrame, vars: dict, pred_vars: dict, n_elems: int, n_tps: int):
 
     T_STEPS = [round((n_tps-1)*0.5), n_tps-1]
+    #T_STEPS = [19,20,21,22,23]
 
     KEYS = sum([[v for k,v in var.items()] for k_,var in vars.items()],[])
 
@@ -121,10 +122,12 @@ def get_mises(s_x, s_y, s_xy):
 torch.set_default_dtype(torch.float64)
 
 # Defining ann model to load
-RUN = 'whole-puddle-134'
+#RUN = 'whole-puddle-134'
+RUN = 'hirogen-queen-142'
 
 # Defining output directory
-DIR = 'crux-plastic_sbvf_abs_direct'
+#DIR = 'crux-plastic_sbvf_abs_direct'
+DIR = 'sbvfm_indirect_crux_gru'
 
 # Creting output directories
 RUN_DIR = create_dir(dir=RUN, root_dir=os.path.join('outputs', DIR, 'val'))
@@ -152,7 +155,7 @@ DRAW_CONTOURS = True
 TAG = 'x15_y15_'
 
 # Setting up ANN model
-model_1 = GRUModel(input_dim=len(FEATURES),hidden_dim=[N_UNITS],layer_dim=H_LAYERS,output_dim=len(OUTPUTS))
+model_1 = GRUModel(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=len(OUTPUTS))
 model_1.load_state_dict(get_ann_model(RUN, DIR))    
 model_1.eval()
 
@@ -162,6 +165,8 @@ df_list = load_data(dir=VAL_DIR_MULTI, ftype='parquet')
 cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred',
         'mre_sx','mre_sy','mre_sxy']
 
+std = torch.tensor([0.0283, 0.0319, 0.0240])
+mean = torch.tensor([0.0075, 0.0114, 0.0025])
 with torch.no_grad():
     last_tag = ''
     for i, df in enumerate(df_list):
@@ -190,16 +195,17 @@ with torch.no_grad():
         y = df[OUTPUTS].values
         info = df[INFO]
 
-        pad_zeros = torch.zeros(SEQ_LEN * n_elems, X.shape[-1])
+        pad_zeros = torch.zeros((SEQ_LEN-1) * n_elems, X.shape[-1])
         
         X = torch.cat([pad_zeros, torch.from_numpy(X)], 0)
 
-        x_std = (X - MIN) / (MAX - MIN)
-        X_scaled = x_std * (MAX - MIN) + MIN
+        #x_std = (X - MIN) / (MAX - MIN)
+        #X_scaled = x_std * (MAX - MIN) + MIN
+        X_scaled = (X-mean)/std
         
-
-        x = X_scaled.reshape(n_tps + SEQ_LEN,n_elems,-1)
-        x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)[:,:-1]
+        x = X_scaled.reshape(n_tps + SEQ_LEN-1, n_elems, -1)
+        #x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)[:,:-1]
+        x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)
         x = x.reshape(-1,*x.shape[2:])
         
         y = torch.from_numpy(y)
@@ -214,7 +220,7 @@ with torch.no_grad():
         #dt = torch.diff(t,dim=0)
 
         model_1.init_hidden(x.size(0))
-        s = model_1(x) # stress rate.
+        s, _ = model_1(x) # stress rate.
         
         # s_princ = torch.zeros(n_tps,n_elems, s_rate.shape[-1])
         

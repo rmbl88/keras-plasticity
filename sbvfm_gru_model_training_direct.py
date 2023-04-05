@@ -46,6 +46,7 @@ from torchvision import transforms
 import pytorch_warmup as warmup
 from warmup_scheduler import GradualWarmupScheduler
 import math
+import glob
 # ----------------------------------------
 #        Class definitions
 # ----------------------------------------
@@ -72,7 +73,7 @@ class CruciformDataset(torch.utils.data.Dataset):
         self.info = info
         self.transform = transform
         self.files = [os.path.join(self.root_dir, self.data_dir , trial + '.parquet') for trial in self.trials]
-        self.data = [pq.ParquetDataset(file).read_pandas(columns=self.features+self.outputs+['t','id','s1','s2','fxx_t','fyy_t','area','sxx_t','syy_t']).to_pandas() for file in self.files]
+        self.data = [pq.ParquetDataset(file).read_pandas(columns=self.features+self.outputs+['tag','t','id','s1','s2','fxx_t','fyy_t','area','sxx_t','syy_t']).to_pandas() for file in self.files]
 
     def __len__(self):
         return len(self.trials)
@@ -145,8 +146,8 @@ class Normalize(object):
 # -------------------------------
 
 def batch_jacobian(f, x):
-    f_sum = lambda x: torch.sum(f(x), axis=0)
-    return jacobian(f_sum, x,create_graph=True).permute(1,0,2)
+    f_sum = lambda x: torch.sum(f(x[:,-1]), axis=0)
+    return jacobian(f_sum, x[:,-1],create_graph=True).permute(1,0,2)
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -224,9 +225,28 @@ def train():
 
             for i, batch in enumerate(x_batches):
                 model.init_hidden(batch.size(0),device)
+                batch.requires_grad_(True)
                 with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                     pred = model(batch.to(device)) # stress rate
-               
+                
+                
+
+                # J = torch.zeros(pred.shape[0],3,3)
+                # for i in range(3):
+                #     v = torch.ones_like(pred).cuda()
+                #     v[:,i] *= 0.
+                #     pred.backward(v, retain_graph=True)
+                #     J[:,:,i] = batch.grad[:,-1]
+                #     batch.grad.zero_()
+                
+
+                jac = torch.stack([torch.autograd.grad(pred[:, j].sum(), batch, create_graph=True)[0][:,-1] for j in range(3)],-1)
+                # J = torch.zeros(pred.shape[0],3,3).cuda()
+                # for j in range(3):
+                #     output = torch.zeros(pred.shape[0],3).cuda()
+                #     output[:,j] = 1.
+                #     J[:,:,j:j+1] = torch.autograd.grad(pred, batch, grad_outputs=output, create_graph=True)[0][:,-1].unsqueeze(-1)
+
             #dt = torch.diff(t.reshape(t_pts,n_elems,1),dim=0)
             #s_princ_ = torch.zeros([t_pts,n_elems,2]).to(device)
             #s_princ_[1:,:,:] = pred.reshape(t_pts-1,n_elems,pred.shape[-1])*dt
@@ -274,8 +294,8 @@ def train():
                     #l_triaxiality = torch.mean(torch.nn.functional.relu(torch.abs(triaxiality)-2/3)
                     #l_tuples = [(pred[:,0], y_batches[i][:,0].to(device)), (pred[:,1], y_batches[i][:,1].to(device)), (pred[:,1], y_batches[i][:,1].to(device))]
                     
-                    loss = l_fn(pred, y_batches[i].to(device))
-                
+                    l_jac = torch.sum(torch.square(torch.cat([jac[:,2,[0,1]],jac[:,[0,1],2]],1)))
+                    loss = l_fn(pred, y_batches[i].to(device)) + l_jac
                     #loss = l_fn(l_tuples)
                 
                 scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
@@ -295,7 +315,7 @@ def train():
             
                 # Saving loss values
                 losses.append(loss.item())
-                f_loss.append(0.0)
+                f_loss.append(l_jac.item())
                 triax_loss.append(0.0)
                 l_loss.append(0.0  )
 
@@ -442,14 +462,16 @@ def train():
 
     # Gathering statistics on training dataset
 
-    file_list = []
+    #file_list = []
     df_list = []
 
     dir = os.path.join(TRAIN_MULTI_DIR,'processed/')
-    for r, d, f in os.walk(dir):
-        for file in f:
-            if '.csv' or '.parquet' in file:
-                file_list.append(dir + file)
+    # for r, d, f in os.walk(dir):
+    #     for file in f:
+    #         if '.csv' or '.parquet' in file:
+    #             file_list.append(dir + file)
+
+    file_list = glob.glob(os.path.join(dir, f'*.parquet'))
 
     df_list = [pq.ParquetDataset(file).read_pandas(columns=['tag']+FEATURES).to_pandas() for file in tqdm(file_list,desc='Importing dataset files',bar_format=FORMAT_PBAR)]
 
@@ -486,7 +508,7 @@ def train():
     N_INPUTS = len(FEATURES)
     N_OUTPUTS = len(OUTPUTS)
     
-    N_UNITS = [32,16]
+    N_UNITS = [32]
     H_LAYERS = 2
 
     ITERS_TO_ACCUMULATE = 1
@@ -559,7 +581,7 @@ def train():
             "lr": learning_rate,
             "l2_reg": weight_decay
         }
-        run=wandb.init(project="direct_training_principal_inc_crux_lstm", entity="rmbl",config=config)
+        run=wandb.init(project="sbvfm_direct_crux_gru_constraint", entity="rmbl",config=config)
         wandb.watch(model_1,log='all')
     
     # Initializing the early_stopping object
@@ -634,7 +656,7 @@ def train():
                 'l_rate': warmup_lr._last_lr[0],
                 'train_loss': train_loss[t],
                 'test_loss': val_loss[t],
-                'f_loss': f_loss[t],
+                'l_jac': f_loss[t],
                 't_loss': triax_loss[t],
                 'mse_loss': l_loss[t],
                 'alpha_1': alpha1[t],

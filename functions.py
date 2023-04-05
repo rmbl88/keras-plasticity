@@ -446,22 +446,22 @@ class GRUModel(nn.Module):
 
     def forward(self, x):
 
-        # Forward propagation by passing in the input and hidden state into the model
-        out, _ = self.gru(x, self.h0.detach())
+        # Forward propagation by passing in the input and hidden state into the model   
+        out, hidden = self.gru(x, self.h0.detach())
 
         # Reshaping the outputs in the shape of (batch_size, seq_length, hidden_size)
         # so that it can fit into the fully connected layer
         out = out[:, -1, :]
 
         # Convert the final state to our desired output shape (batch_size, output_dim)
-        if len(self.hidden_dim)>1:
+        if len(self.hidden_dim) > 1:
             for layer in self.fc_layers[:-1]:
                     
                 out = self.relu(layer(out))
                     
-            return self.fc_layers[-1](out)
+            return self.fc_layers[-1](out), hidden
         else:
-            return self.fc(self.relu(out))
+            return self.fc(self.relu(out)), hidden
 
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:
@@ -577,6 +577,19 @@ class SBVFLoss(nn.Module):
        
         return torch.sum(torch.square(alpha)*torch.sum(torch.square(res),1))
         #return torch.sum(0.5*torch.square(alpha)*torch.mean(torch.square(res),1))
+
+class SparsityLoss(nn.Module):
+    def __init__(self, sparsity_param=0.05) -> None:
+        super(SparsityLoss, self).__init__()
+        self.rho = sparsity_param
+
+    def forward(self, x):
+
+        rho_hat = torch.mean(x,1)
+
+        loss = torch.sum(torch.nan_to_num(self.rho * torch.log(self.rho/rho_hat) + (1-self.rho) * torch.log((1-self.rho)/(1-rho_hat)),nan=0.))
+        
+        return loss
 
 class BaseLoss(nn.modules.Module):
 

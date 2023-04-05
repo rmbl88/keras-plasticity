@@ -95,6 +95,14 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                 cb_str = r'$\boldsymbol{\sigma}_{22}~[\mathrm{MPa}]$'
             elif var == 'mises':
                 cb_str = r'$\boldsymbol{\sigma}_{Mises}~[\mathrm{MPa}]$'
+            elif var == 'ivw_xx':
+                cb_str = r'$\boldsymbol{W}^{int}_{xx}~[\mathrm{J}]$'
+            elif var == 'ivw_yy':
+                cb_str = r'$\boldsymbol{W}^{int}_{yy}~[\mathrm{J}]$'
+            elif var == 'ivw_xy':
+                cb_str = r'$\boldsymbol{W}^{int}_{xy}~[\mathrm{J}]$'
+            elif var == 'ivw':
+                cb_str = r'$\boldsymbol{W}^{int}~[\mathrm{J}]$'
             else:
                 cb_str=''
 

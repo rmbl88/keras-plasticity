@@ -31,19 +31,40 @@ class SBVFLoss(torch.nn.Module):
         #return torch.sum(0.5*torch.square(alpha)*torch.mean(torch.square(res),1))
 
 class UDVFLoss(torch.nn.Module):
-    def __init__(self, normalize=None):
+    def __init__(self, normalize=None, type='L2', reduction='mean'):
         super(UDVFLoss, self).__init__()
         self.normalize = normalize
+        self.type_ = type
+        self.reduction = reduction
     
     def forward(self, wi, we):
         
+        # Calculating residual
         res = wi - we
 
+        # Getting number of elements in tensor
+        m = torch.tensor(res.size()).prod()
+
         if self.normalize == 'wint':
+            
+            # Normalizing the residual by the internal virtual work
             wi_max = torch.max(torch.abs(wi.detach()))
-            return torch.sum(torch.sum(torch.square(res/wi_max), 1))
+
+            res = res / wi_max
+            
         elif self.normalize == 'wext':
+
+            # Normalizing the residual by the external virtual work
             we_max = torch.max(torch.abs(we.detach()))
-            return torch.sum(torch.sum(torch.square(res/we_max), 1))
-        else:
-            return torch.sum(torch.sum(torch.square(res), 1))
+            
+            res = res / we_max
+
+        if self.type_ == 'L2':
+
+            # Loss based on the mean squared residuals
+            return (1/(2*m)) * torch.sum(torch.square(res)) if self.reduction == 'mean' else torch.sum(torch.square(res))
+            
+        elif self.type_ == 'L1':
+
+            # Loss based on the mean of the absolute value of the residuals
+            return (1/m) * torch.sum(torch.abs(res)) if self.reduction == 'mean' else torch.sum(torch.abs(res))

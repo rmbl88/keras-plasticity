@@ -77,7 +77,7 @@ RUN = 'whole-puddle-134'
 DIR = 'crux-plastic_sbvf_abs_direct'
 
 # Creting output directories
-F_DIR = create_dir(dir='global_force_ann', root_dir=os.path.join(TRAIN_MULTI_DIR,'processed'))
+F_DIR = create_dir(dir='global_force_ann', root_dir=os.path.join(VAL_DIR_MULTI,'processed'))
 
 RUN_DIR = create_dir(dir=RUN, root_dir=F_DIR)
 
@@ -142,7 +142,7 @@ with torch.no_grad():
 
         stress = s.reshape(n_elems, n_tps, -1)
         
-        area = torch.from_numpy(df['area'].values).reshape(n_elems,n_tps, -1)
+        area = torch.from_numpy(df['area'].values).reshape(n_tps,n_elems, -1).permute(1,0,2)
         
         f = torch.sum(stress * area / 30.0, 0).numpy()
         
