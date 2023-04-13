@@ -91,16 +91,18 @@ class CruciformDataset(torch.utils.data.Dataset):
         n_elems = len(set(self.data[idx]['id'].values))
 
         # Adding a padding of zeros to the input data in order to make predictions start at zero
-        pad_zeros = torch.zeros(self.seq_len * n_elems, x.shape[-1])
+        #pad_zeros = torch.zeros(self.seq_len * n_elems, x.shape[-1])
         
+        pad_zeros = torch.zeros((self.seq_len-1) * n_elems, x.shape[-1])
         x = torch.cat([pad_zeros, x], 0)
 
         if self.transform != None:
             
             #dt = torch.diff(t.reshape(t_pts,n_elems,-1),0)
             x = self.transform(x)
-
-        x = self.rolling_window(x.reshape(t_pts + self.seq_len,n_elems,-1), seq_size=self.seq_len)[:,:-1]
+            
+        #x = self.rolling_window(x.reshape(t_pts + self.seq_len,n_elems,-1), seq_size=self.seq_len)[:,:-1]
+        x = self.rolling_window(x.reshape(t_pts + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)
         x = x.reshape(-1,*x.shape[2:])
         #t = self.rolling_window(t.reshape(t_pts,n_elems,-1), seq_size=self.seq_len)
 
@@ -111,7 +113,7 @@ class CruciformDataset(torch.utils.data.Dataset):
 
         idx_ = torch.randperm(x.shape[0])
 
-        return x[idx_], y[idx_], t, t_pts, n_elems        
+        return x[idx_], y[idx_], t, t_pts, n_elems      
     
     def rolling_window(self, x, seq_size, step_size=1):
     # unfold dimension to make our rolling window
@@ -225,9 +227,9 @@ def train():
 
             for i, batch in enumerate(x_batches):
                 model.init_hidden(batch.size(0),device)
-                batch.requires_grad_(True)
+                #batch.requires_grad_(True)
                 with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                    pred = model(batch.to(device)) # stress rate
+                    pred, _ = model(batch.to(device)) # stress rate
                 
                 
 
@@ -240,7 +242,7 @@ def train():
                 #     batch.grad.zero_()
                 
 
-                jac = torch.stack([torch.autograd.grad(pred[:, j].sum(), batch, create_graph=True)[0][:,-1] for j in range(3)],-1)
+                #jac = torch.stack([torch.autograd.grad(pred[:, j].sum(), batch, create_graph=True)[0][:,-1] for j in range(3)],-1)
                 # J = torch.zeros(pred.shape[0],3,3).cuda()
                 # for j in range(3):
                 #     output = torch.zeros(pred.shape[0],3).cuda()
@@ -294,8 +296,8 @@ def train():
                     #l_triaxiality = torch.mean(torch.nn.functional.relu(torch.abs(triaxiality)-2/3)
                     #l_tuples = [(pred[:,0], y_batches[i][:,0].to(device)), (pred[:,1], y_batches[i][:,1].to(device)), (pred[:,1], y_batches[i][:,1].to(device))]
                     
-                    l_jac = torch.sum(torch.square(torch.cat([jac[:,2,[0,1]],jac[:,[0,1],2]],1)))
-                    loss = l_fn(pred, y_batches[i].to(device)) + l_jac
+                    #l_jac = torch.sum(torch.square(torch.cat([jac[:,2,[0,1]],jac[:,[0,1],2]],1)))
+                    loss = l_fn(pred, y_batches[i].to(device))
                     #loss = l_fn(l_tuples)
                 
                 scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
@@ -315,7 +317,7 @@ def train():
             
                 # Saving loss values
                 losses.append(loss.item())
-                f_loss.append(l_jac.item())
+                f_loss.append(0.0)
                 triax_loss.append(0.0)
                 l_loss.append(0.0  )
 
@@ -361,7 +363,7 @@ def train():
                 for i, batch in enumerate(x_batches):
                     model.init_hidden(batch.size(0),device)
                     with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                        pred = model(batch) # stress rate
+                        pred, _ = model(batch) # stress rate
                     
                 # dt = torch.diff(t.reshape(t_pts,n_elems,1),dim=0)
                 # s_princ_ = torch.zeros([t_pts,n_elems,2]).to(device)
@@ -480,7 +482,7 @@ def train():
 
     min = torch.min(torch.from_numpy(input_data.values).float(),0).values
     max = torch.max(torch.from_numpy(input_data.values).float(),0).values
-    #std, mean = torch.std_mean(torch.from_numpy(input_data.values),0)
+    std, mean = torch.std_mean(torch.from_numpy(input_data.values),0)
 
     # Cleaning workspace from useless variables
     del df_list
@@ -490,8 +492,8 @@ def train():
 
     # Defining data transforms - normalization and noise addition 
     transform = transforms.Compose([
-        MinMaxScaler(min,max),
-        #Normalize(mean.tolist(), std.tolist()),
+        #MinMaxScaler(min,max),
+        Normalize(mean.tolist(), std.tolist()),
         #transforms.RandomApply([AddGaussianNoise(0., 1.)],p=0.15)
     ])
 
@@ -581,7 +583,7 @@ def train():
             "lr": learning_rate,
             "l2_reg": weight_decay
         }
-        run=wandb.init(project="sbvfm_direct_crux_gru_constraint", entity="rmbl",config=config)
+        run=wandb.init(project="direct_training_principal_inc_crux_lstm", entity="rmbl",config=config)
         wandb.watch(model_1,log='all')
     
     # Initializing the early_stopping object
@@ -704,7 +706,12 @@ def train():
 
     torch.save(model_1.state_dict(), output_models + task + '.pt')
     
-    joblib.dump([min, max], output_models + task + '-scaler_x.pkl')
+    scaler_dict = {
+        'type': 'standard',
+        'stat_vars': [std, mean]
+    }
+
+    joblib.dump(scaler_dict, output_models + task + '-scaler_x.pkl')
     joblib.dump([FEATURES, OUTPUTS, INFO, N_UNITS, H_LAYERS, SEQ_LEN], output_models + run.name + '-arch.pkl')
 
     if WANDB_LOG:

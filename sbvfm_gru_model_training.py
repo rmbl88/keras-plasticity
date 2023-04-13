@@ -8,6 +8,7 @@ import os
 from platform import mac_ver
 from re import X
 import shutil
+from tkinter import W
 import joblib
 import math
 import pandas as pd
@@ -27,7 +28,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torchvision import transforms
 from warmup_scheduler import GradualWarmupScheduler
-
+import copy
 from functions import (
     
     CoVWeightingLoss,
@@ -98,31 +99,47 @@ class CruciformDataset(torch.utils.data.Dataset):
         self.shuffle = shuffle
         self.files = [os.path.join(self.root_dir, self.data_dir , trial + '.parquet') for trial in self.trials]
         self.data = [pq.ParquetDataset(file).read_pandas(columns=self.features+self.outputs+self.info+['id','area']).to_pandas() for file in self.files]
+        
+        if shuffle:
+            self.f_files = glob.glob(os.path.join('data/training_multi/crux-plastic/processed/global_force_ann/solar-planet-147','*.parquet'))
+            self.f = [pq.ParquetDataset(file).read_pandas().to_pandas() for file in self.f_files]
+        else:
+            self.f_files = glob.glob(os.path.join('data/validation_multi/crux-plastic/processed/global_force_ann/solar-planet-147','*.parquet'))
+            self.f = [pq.ParquetDataset(file).read_pandas().to_pandas() for file in self.f_files]
 
     def __len__(self):
         return len(self.trials)
 
     def __getitem__(self, idx):
-        
+        tag = self.data[idx]['tag'][0]
         x = torch.from_numpy(self.data[idx][self.features].dropna().values).float()
         y = torch.from_numpy(self.data[idx][self.outputs].dropna().values).float()
-        f = torch.from_numpy(self.data[idx][['fxx_t','fyy_t']].dropna().values).float()
+        #f = torch.from_numpy(self.data[idx][['fxx_t','fyy_t']].dropna().values).float()
         a = torch.from_numpy(self.data[idx]['area'].dropna().values).float()
         t = torch.from_numpy(self.data[idx]['t'].values).float()
         
         t_pts = len(list(set(t.numpy())))
         n_elems = len(set(self.data[idx]['id'].values))
 
+        #dt = torch.diff(t.reshape(t_pts,n_elems,1)[:,0],dim=0)
+
         # Adding a padding of zeros to the input data in order to make predictions start at zero
         pad_zeros = torch.zeros((self.seq_len-1) * n_elems, x.shape[-1])
-        
+
         x = torch.cat([pad_zeros, x], 0)
+
+        # ep = copy.deepcopy(x)
+        # e_hyd = (0.5*(x[:,0]+x[:,1])).unsqueeze(-1)
+        # ep[:,:2] -= e_hyd
+        # ep = self.rolling_window(ep.reshape(t_pts + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)[:,:,-2:]
+        # dep = torch.diff(ep, dim=2).squeeze(-2)
+        # dep[:,1:] /= dt
 
         if self.transform != None:
             
             x = self.transform(x)
 
-        #x = self.rolling_window(x.reshape(t_pts + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)[:,:-1]
+        #x = self.rolling_window(x.reshape(t_pts + self.seq_len, n_elems,-1), seq_size=self.seq_len)[:,:-1]
         x = self.rolling_window(x.reshape(t_pts + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)
         #x = x.reshape(-1,*x.shape[2:])
         #t = self.rolling_window(t.reshape(t_pts,n_elems,-1), seq_size=self.seq_len)
@@ -130,7 +147,9 @@ class CruciformDataset(torch.utils.data.Dataset):
         y = y.reshape(t_pts,n_elems,-1).permute(1,0,2)
         #y = y.reshape(-1,y.shape[-1])
 
-        f = f.reshape(t_pts,n_elems,-1).permute(1,0,2)[0]
+        index = [idx for idx, s in enumerate(self.f_files) if tag in s][0]
+        f = torch.from_numpy(self.f[index][['fxx','fyy']].dropna().values).float()
+        #f = f.reshape(t_pts,n_elems,-1).permute(1,0,2)[0]
         a = a.reshape(t_pts,n_elems,-1).permute(1,0,2)[:,0]
         
         if self.shuffle:
@@ -235,7 +254,8 @@ def train():
             'ivw': {},
             'evw': {},
             'ivw_ann': {},
-            's_loss': {}
+            'wp_loss': {},
+            'triax_loss': {}
         }
        
         # f_loss = []
@@ -253,6 +273,8 @@ def train():
             X_train = X_train.squeeze(0)
             y_train = y_train.squeeze(0)
             centroids = centroids.squeeze(0)
+
+            #dep = dep.squeeze(0).to(DEVICE)
             area = area.squeeze(0).to(DEVICE)
             
             f = f.squeeze(0).to(DEVICE)
@@ -263,6 +285,7 @@ def train():
 
             x_batches = torch.split(X_train[:,idx_t], t_pts//BATCH_DIVIDER, 1)
             y_batches = torch.split(y_train[:,idx_t], t_pts//BATCH_DIVIDER, 1)
+            #dep_batches = torch.split(dep[:,idx_t], t_pts//BATCH_DIVIDER, 1)
             f_batches = torch.split(f[idx_t], t_pts//BATCH_DIVIDER, 0)
 
             for i, batch in enumerate(x_batches):
@@ -270,6 +293,7 @@ def train():
                 x = batch.reshape([-1,*batch.shape[-2:]]).to(DEVICE)
                 y = y_batches[i]
                 f_ = f_batches[i]
+                #d_ep = dep_batches[i]
 
                 model.init_hidden(x.size(0), DEVICE)
 
@@ -290,6 +314,10 @@ def train():
 
                 w_ext = external_vw(f_, v_disp)
 
+                #w_ep = torch.sum(pred.view_as(y) * d_ep,-1, keepdim=True)
+
+                #triax = (pred[:,0] + pred[:,1])/(3*torch.sqrt(torch.square(pred[:,0]))+torch.square(pred[:,1])-pred[:,0]*pred[:,1]+3*torch.square(pred[:,2]))
+
                 #f_pred = torch.sum((pred.view_as(y)*a_/30.0),0)[:,:2]
 
                 #f_max = torch.max(torch.abs(f_pred),0).values                
@@ -299,8 +327,9 @@ def train():
                     #l_tuples = [(pred[:,0], y_batches[i][:,0].to(device)), (pred[:,1], y_batches[i][:,1].to(device)), (pred[:,1], y_batches[i][:,1].to(device))]
                     
                     #f_loss = (1/(2*torch.tensor(f_pred.size()).prod())) * torch.sum(torch.square(f_pred - f_))
-
-                    loss = l_fn(w_int_ann, w_ext)
+                    #l_wp = torch.sum(torch.square(torch.nn.functional.relu(-w_ep)))
+                    #l_triax = torch.sum(torch.square(torch.nn.functional.relu(-torch.abs(triax)+2/3)))
+                    loss = l_fn(w_int_ann, w_ext)/x.size(0)
                  
                     #loss = l_fn(l_tuples)
                 
@@ -322,7 +351,8 @@ def train():
                 logs['ivw'][i] = torch.sum(w_int.detach())
                 logs['evw'][i] = torch.sum(w_ext.detach())
                 logs['ivw_ann'][i] = torch.sum(w_int_ann.detach())
-                logs['s_loss'][i] = 0
+                logs['wp_loss'][i] = 0
+                logs['triax_loss'][i] = 0
                 # f_loss.append(0.0)
                 # triax_loss.append(0.0)
                 # l_loss.append(0.0  )
@@ -381,9 +411,9 @@ def train():
                     
                     w_ext = external_vw(f_, v_disp)
 
-                    f_pred = torch.sum((pred.reshape_as(y)*a_/30.0),0)[:,:2]
+                    # f_pred = torch.sum((pred.reshape_as(y)*a_/30.0),0)[:,:2]
 
-                    f_max = torch.max(torch.abs(f_pred),0).values
+                    # f_max = torch.max(torch.abs(f_pred),0).values
 
                     with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                         
@@ -391,7 +421,7 @@ def train():
                     
                         #test_loss = l_fn(l_tuples)
                         #f_loss = (1/(2*torch.tensor(f_pred.size()).prod())) * torch.sum(torch.square(f_pred - f_))
-                        test_loss =  l_fn(w_int_ann, w_ext)
+                        test_loss =  l_fn(w_int_ann, w_ext)/x.size(0)
 
                     test_losses[i] = test_loss.item()
 
@@ -450,7 +480,7 @@ def train():
     TRAIN_DIR = 'data/training_multi/crux-plastic/'
 
     # Dataset split
-    TEST_SIZE = 0.3
+    TEST_SIZE = 0.2
 
     # Defining variables of interest
     FEATURES = ['exx_t','eyy_t','exy_t']
@@ -479,28 +509,29 @@ def train():
     N_OUTPUTS = len(OUTPUTS)
     
     # No. hidden neurons - size of list indicates no. of hidden layers
-    HIDDEN_UNITS = [32]
+    HIDDEN_UNITS = [16,8]
 
     # Stacked GRU units
-    GRU_LAYERS = 2
+    GRU_LAYERS = 1
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                               TRAINING SETTINGS
 #-------------------------------------------------------------------------------------------------------------------
 
-    USE_PRETRAINED_MODEL = False
+    USE_PRETRAINED_MODEL = True
 
     if USE_PRETRAINED_MODEL:
         
         PRETRAINED_MODEL_DIR = 'crux-plastic_sbvf_abs_direct'
 
-        PRETRAINED_RUN = 'whole-puddle-134'
+        #PRETRAINED_RUN = 'whole-puddle-134'
+        PRETRAINED_RUN = 'solar-planet-147'
 
         # Loading pre-trained model architecture and overriding some constants
         FEATURES, OUTPUTS, INFO, HIDDEN_UNITS, GRU_LAYERS, SEQ_LEN = load_file(PRETRAINED_RUN, PRETRAINED_MODEL_DIR, 'arch.pkl')
 
     # Learning rate
-    L_RATE = 0.001
+    L_RATE = 0.0005
 
     # Weight decay
     L2_REG = 0.001
@@ -509,7 +540,7 @@ def train():
     EPOCHS = 10000
 
     # No. of warmup steps for cosine annealing scheduler
-    WARM_STEPS = 1920 # 5 epochs
+    WARM_STEPS = 640 #1920 # 5 epochs
 
     # No. of epochs to trigger early-stopping
     ES_PATIENCE = 500
@@ -518,7 +549,7 @@ def train():
     ES_START = 20
 
     # No. of batches to divide training data into (acts upon the time-steps dimension)
-    BATCH_DIVIDER = 32
+    BATCH_DIVIDER = 8
 
     # No. of steps to acumulate gradients
     ITERS_TO_ACCUMULATE = 1
@@ -789,9 +820,9 @@ def train():
         model.load_state_dict(get_ann_model(PRETRAINED_RUN, PRETRAINED_MODEL_DIR))
         
         # # Freezing all layers except last one
-        # for name, param in model.named_parameters():
-        #     if 'hh_l1' or 'fc' not in name:
-        #         param.requires_grad_(False)
+        # for n, p in model.named_parameters():
+        #     if ('l0' in n):
+        #         p.requires_grad_(False)
     else:
         # Initializing dense layer weights
         model.apply(init_weights)
@@ -810,7 +841,7 @@ def train():
     steps_annealing = (EPOCHS - (WARM_STEPS // (len(train_dataloader)*BATCH_DIVIDER // ITERS_TO_ACCUMULATE))) * (len(train_dataloader)*BATCH_DIVIDER // ITERS_TO_ACCUMULATE)
 
     # Initializing cosine annealing with warmup lr scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps_annealing, eta_min=1e-3)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps_annealing, eta_min=1e-7)
     warmup_lr = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=WARM_STEPS, after_scheduler=scheduler)
 
     # Initializing the early_stopping object
@@ -829,7 +860,8 @@ def train():
         'ivw': {},
         'evw': {},
         'ivw_ann': {},
-        's_loss': {}
+        'wp_loss': {},
+        'triax_loss': {}
     }
 
     # Training loop
@@ -844,13 +876,14 @@ def train():
         #--------------------------------------------------------------
         start_t = time.time()
 
-        t_loss, ivw, evw, ivw_ann, s_loss = train_loop(train_dataloader, model, l_fn, optimizer)
+        t_loss, ivw, evw, ivw_ann, wp_loss, l_triax = train_loop(train_dataloader, model, l_fn, optimizer)
     
         log_dict['t_loss'][t] = np.mean(t_loss)
         log_dict['ivw'][t] = np.mean(ivw)
         log_dict['evw'][t] = np.mean(evw)
         log_dict['ivw_ann'][t] = np.mean(ivw_ann)
-        log_dict['s_loss'][t] = np.mean(s_loss)
+        log_dict['wp_loss'][t] = np.mean(wp_loss)
+        log_dict['triax_loss'][t] = np.mean(l_triax)
     
         end_t = time.time()
         delta_t = end_t - start_t
@@ -858,7 +891,7 @@ def train():
 
         # Printing loss to console
         try:
-            print('. t_loss: %.6e -> lr: %.4e | ivw: %.6e | evw: %6e | ivw_ann: %6e | s_loss: %6e -- %.3fs \n' % (log_dict['t_loss'][t], warmup_lr._last_lr[0], log_dict['ivw'][t], log_dict['evw'][t], log_dict['ivw_ann'][t], log_dict['s_loss'][t], delta_t))
+            print('. t_loss: %.4e -> lr: %.3e | ivw: %.4e | evw: %4e | ivw_ann: %4e | wp_loss: %4e | l_triax: %4e -- %.3fs \n' % (log_dict['t_loss'][t], warmup_lr._last_lr[0], log_dict['ivw'][t], log_dict['evw'][t], log_dict['ivw_ann'][t], log_dict['wp_loss'][t], log_dict['triax_loss'][t], delta_t))
         except:
             print('. t_loss: %.6e -- %.3fs' % (log_dict['loss']['train'][t], delta_t))
 
@@ -893,7 +926,8 @@ def train():
                 'int_work': log_dict['ivw'][t],
                 'ext_work': log_dict['evw'][t],
                 'int_work_ann': log_dict['ivw_ann'][t],
-                's_loss': log_dict['s_loss'][t]
+                'wp_loss': log_dict['wp_loss'][t],
+                'triax_loss': log_dict['triax_loss'][t]
                 # 'f_loss': f_loss[t],
                 # 't_loss': triax_loss[t],
                 # 'mse_loss': l_loss[t],
@@ -910,20 +944,8 @@ def train():
     
     print("Done!")
 
-    # # Load the checkpoint with the best model
-    #model.load_state_dict(torch.load(CHECKPOINT_DIR))
-
-    epoch = np.fromiter(log_dict['epoch'].values(), dtype=np.int16).reshape(-1,1)
-    train_loss = np.fromiter(log_dict['t_loss'].values(), dtype=np.float32).reshape(-1,1)
-    val_loss = np.fromiter(log_dict['v_loss'].values(), dtype=np.float32).reshape(-1,1)
-    ivw = np.fromiter(log_dict['ivw'].values(), dtype=np.float32).reshape(-1,1)
-    evw = np.fromiter(log_dict['evw'].values(), dtype=np.float32).reshape(-1,1)
-    ivw_ann = np.fromiter(log_dict['ivw_ann'].values(), dtype=np.float32).reshape(-1,1)
-    s_loss = np.fromiter(log_dict['s_loss'].values(), dtype=np.float32).reshape(-1,1) 
-
-    history = pd.DataFrame(np.concatenate([epoch, train_loss, val_loss, ivw, evw, ivw_ann, s_loss], axis=1), columns=['epoch','loss','val_loss','ivw','evw','ivw_ann', 's_loss'])
-    
-    history.to_csv(os.path.join(DIR_LOSS, MODEL_NAME + '.csv'), sep=',', encoding='utf-8', header='true')
+    # Load the checkpoint with the best model
+    model.load_state_dict(torch.load(CHECKPOINT_DIR))
 
     torch.save(model.state_dict(), os.path.join(DIR_MODELS, MODEL_NAME + '.pt'))
     
@@ -950,6 +972,19 @@ def train():
         WANDB_RUN.log_artifact(model)
         # Call finish if you're in a notebook, to mark the run as done
         WANDB_RUN.finish()
+
+    epoch = np.fromiter(log_dict['epoch'].values(), dtype=np.int16).reshape(-1,1)
+    train_loss = np.fromiter(log_dict['t_loss'].values(), dtype=np.float32).reshape(-1,1)
+    val_loss = np.fromiter(log_dict['v_loss'].values(), dtype=np.float32).reshape(-1,1)
+    ivw = np.fromiter(log_dict['ivw'].values(), dtype=np.float32).reshape(-1,1)
+    evw = np.fromiter(log_dict['evw'].values(), dtype=np.float32).reshape(-1,1)
+    ivw_ann = np.fromiter(log_dict['ivw_ann'].values(), dtype=np.float32).reshape(-1,1)
+    wp_loss = np.fromiter(log_dict['wp_loss'].values(), dtype=np.float32).reshape(-1,1)
+    triax_loss = np.fromiter(log_dict['triax_loss'].values(), dtype=np.float32).reshape(-1,1) 
+
+    history = pd.DataFrame(np.concatenate([epoch, train_loss, val_loss, ivw, evw, ivw_ann, wp_loss, triax_loss], axis=1), columns=['epoch','loss','val_loss','ivw','evw','ivw_ann', 'wp_loss','triax_loss'])
+    
+    history.to_csv(os.path.join(DIR_LOSS, MODEL_NAME + '.csv'), sep=',', encoding='utf-8', header='true')
 
     # Deleting temp folder
     try:

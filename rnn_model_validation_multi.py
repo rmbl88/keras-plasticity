@@ -122,8 +122,9 @@ def get_mises(s_x, s_y, s_xy):
 torch.set_default_dtype(torch.float64)
 
 # Defining ann model to load
+#RUN = 'solar-planet-147'
 #RUN = 'whole-puddle-134'
-RUN = 'hirogen-queen-142'
+RUN = 'fine-rain-207'
 
 # Defining output directory
 #DIR = 'crux-plastic_sbvf_abs_direct'
@@ -139,17 +140,17 @@ NODES, CONNECT = import_mesh(TRAIN_MULTI_DIR)
 FEATURES, OUTPUTS, INFO, N_UNITS, H_LAYERS, SEQ_LEN = load_file(RUN, DIR, 'arch.pkl')
 
 # Loading data scaler
-MIN, MAX = load_file(RUN, DIR, 'scaler_x.pkl')
+SCALER_DICT = load_file(RUN, DIR, 'scaler_x.pkl')
 
 ELEMS_VAL = pd.read_csv(os.path.join(VAL_DIR_MULTI,'elems_val.csv'), header=None)[0].to_list()
 
-MODEL_INFO = {
-    'in': FEATURES,
-    'out': OUTPUTS,
-    'info': INFO,
-    'min': MIN,
-    'max': MAX
-}
+# MODEL_INFO = {
+#     'in': FEATURES,
+#     'out': OUTPUTS,
+#     'info': INFO,
+#     'min': MIN,
+#     'max': MAX
+# }
 
 DRAW_CONTOURS = True
 TAG = 'x15_y15_'
@@ -165,8 +166,8 @@ df_list = load_data(dir=VAL_DIR_MULTI, ftype='parquet')
 cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred',
         'mre_sx','mre_sy','mre_sxy']
 
-std = torch.tensor([0.0283, 0.0319, 0.0240])
-mean = torch.tensor([0.0075, 0.0114, 0.0025])
+MIN = torch.tensor([-0.1471, -0.1452, -0.2304])
+MAX = torch.tensor([0.3186, 0.3231, 0.2908])
 with torch.no_grad():
     last_tag = ''
     for i, df in enumerate(df_list):
@@ -197,13 +198,22 @@ with torch.no_grad():
 
         pad_zeros = torch.zeros((SEQ_LEN-1) * n_elems, X.shape[-1])
         
+        #pad_zeros = torch.zeros(SEQ_LEN * n_elems, X.shape[-1])
+
         X = torch.cat([pad_zeros, torch.from_numpy(X)], 0)
 
-        #x_std = (X - MIN) / (MAX - MIN)
-        #X_scaled = x_std * (MAX - MIN) + MIN
-        X_scaled = (X-mean)/std
+        # x_std = (X - MIN) / (MAX - MIN)
+        # X_scaled = x_std * (MAX - MIN) + MIN
+        if SCALER_DICT['type'] == 'standard':
+            X_scaled = (X-SCALER_DICT['stat_vars'][1])/SCALER_DICT['stat_vars'][0]
+        # else:
+        #     pass
+            #x_std = (X - MIN) / (MAX - MIN)
+            #X_scaled = x_std * (MAX - MIN) + MIN
         
         x = X_scaled.reshape(n_tps + SEQ_LEN-1, n_elems, -1)
+        #x = X_scaled.reshape(n_tps + SEQ_LEN, n_elems, -1)
+        
         #x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)[:,:-1]
         x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)
         x = x.reshape(-1,*x.shape[2:])

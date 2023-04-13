@@ -68,7 +68,7 @@ def set_size(width, fraction=1, subplots=(1, 1)):
 
 df_list = []
 
-RUN = 'generous-surf-100'
+RUN = 'fine-rain-207'
 #RUN = 'whole-puddle-134'
 #DIR = f'outputs/crux-plastic_sbvf_abs_direct/val/{RUN}/'
 DIR = f'outputs/sbvfm_indirect_crux_gru/val/{RUN}/'
@@ -100,13 +100,13 @@ plt.rc('ytick', labelsize='x-small')
 err = torchmetrics.MeanAbsoluteError()
 r2 = torchmetrics.R2Score()
 
-TAG = ''
+TAG = 'x15_y15_'
 
 for k_test, elems in (pbar_1 := tqdm(mech_tests.items(), bar_format=FORMAT_PBAR, leave=False)):
     
     pbar_1.set_description(f'Processing trial - {k_test}')
 
-    if k_test != TAG:
+    if k_test == TAG:
     
         for elem, df in (pbar_2 := tqdm(elems.items(), bar_format=FORMAT_PBAR, leave=False)):
             

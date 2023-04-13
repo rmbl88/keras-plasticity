@@ -137,7 +137,8 @@ def plot_vw(vars):
 torch.set_default_dtype(torch.float64)
 
 # Defining ann model to load
-RUN = 'whole-puddle-134'
+RUN = 'solar-planet-147'
+#RUN = 'whole-puddle-134'
 #RUN = 'rural-rain-45'
 
 # Defining output directory
@@ -166,15 +167,16 @@ V_STRAIN = torch.from_numpy(V_STRAIN)
 FEATURES, OUTPUTS, INFO, N_UNITS, H_LAYERS, SEQ_LEN = load_file(RUN, DIR, 'arch.pkl')
 
 # Loading data scaler
-MIN, MAX = load_file(RUN, DIR, 'scaler_x.pkl')
+#MIN, MAX = load_file(RUN, DIR, 'scaler_x.pkl')
+SCALER_DICT = load_file(RUN, DIR, 'scaler_x.pkl')
 
-MODEL_INFO = {
-    'in': FEATURES,
-    'out': OUTPUTS,
-    'info': INFO,
-    'min': MIN,
-    'max': MAX
-}
+# MODEL_INFO = {
+#     'in': FEATURES,
+#     'out': OUTPUTS,
+#     'info': INFO,
+#     'min': MIN,
+#     'max': MAX
+# }
 
 DRAW_CONTOURS = False
 TAG = 'x05_y05_'
@@ -223,15 +225,20 @@ with torch.no_grad():
         y = df[OUTPUTS].values
         info = df[INFO]
 
+        #pad_zeros = torch.zeros(SEQ_LEN * n_elems, X.shape[-1])
         pad_zeros = torch.zeros(SEQ_LEN * n_elems, X.shape[-1])
         
         X = torch.cat([pad_zeros, torch.from_numpy(X)], 0)
+        if SCALER_DICT['type'] == 'standard':
+            X_scaled = (X-SCALER_DICT['stat_vars'][1])/SCALER_DICT['stat_vars'][0]
 
-        x_std = (X - MIN) / (MAX - MIN)
-        X_scaled = x_std * (MAX - MIN) + MIN
+        # x_std = (X - MIN) / (MAX - MIN)
+        # X_scaled = x_std * (MAX - MIN) + MIN
 
-        x = X_scaled.reshape(n_tps + SEQ_LEN,n_elems,-1)
-        x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)[:,:-1]
+        #x = X_scaled.reshape(n_tps + SEQ_LEN,n_elems,-1)
+        #x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)[:,:-1]
+        x = X_scaled.reshape(n_tps + SEQ_LEN-1, n_elems, -1)
+        x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)
         x = x.reshape(-1,*x.shape[2:])
         
         y = torch.from_numpy(y)
