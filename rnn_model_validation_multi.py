@@ -124,7 +124,7 @@ torch.set_default_dtype(torch.float64)
 # Defining ann model to load
 #RUN = 'solar-planet-147'
 #RUN = 'whole-puddle-134'
-RUN = 'fine-rain-207'
+RUN = 'lilac-snow-215'
 
 # Defining output directory
 #DIR = 'crux-plastic_sbvf_abs_direct'

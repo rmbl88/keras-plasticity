@@ -197,6 +197,19 @@ def inverse_transform(x_scaled, min, max):
     
     return x
 
+class weightConstraint(object):
+    def __init__(self):
+        pass
+    def __call__(self, module):
+
+        if hasattr(module,'weight'):
+
+            w=module.weight.data
+            w=w.clamp(0.0)
+            w[:2,-1]=w[:2,-1].clamp(0.0,0.0)
+            w[-1,:2]=w[:2,-1].clamp(0.0,0.0)
+            module.weight.data=w 
+
         
 # -------------------------------
 #       Method definitions
@@ -316,7 +329,7 @@ def train():
 
                 #w_ep = torch.sum(pred.view_as(y) * d_ep,-1, keepdim=True)
 
-                #triax = (pred[:,0] + pred[:,1])/(3*torch.sqrt(torch.square(pred[:,0]))+torch.square(pred[:,1])-pred[:,0]*pred[:,1]+3*torch.square(pred[:,2]))
+                #triax = (pred[:,0] + pred[:,1])/(1e-12+3*torch.sqrt(torch.square(pred[:,0]))+torch.square(pred[:,1])-pred[:,0]*pred[:,1]+3*torch.square(pred[:,2]))
 
                 #f_pred = torch.sum((pred.view_as(y)*a_/30.0),0)[:,:2]
 
@@ -328,7 +341,7 @@ def train():
                     
                     #f_loss = (1/(2*torch.tensor(f_pred.size()).prod())) * torch.sum(torch.square(f_pred - f_))
                     #l_wp = torch.sum(torch.square(torch.nn.functional.relu(-w_ep)))
-                    #l_triax = torch.sum(torch.square(torch.nn.functional.relu(-torch.abs(triax)+2/3)))
+                    #l_triax = torch.sum((torch.nn.functional.relu(-torch.abs(triax)+2/3)))
                     loss = l_fn(w_int_ann, w_ext)/x.size(0)
                  
                     #loss = l_fn(l_tuples)
@@ -340,11 +353,11 @@ def train():
                     scaler.step(optimizer)
                     scaler.update()
                     
+                    model.fc_layers[-1].apply(W_CONSTRAIN)
+                    
                     warmup_lr.step()
 
                     optimizer.zero_grad(set_to_none=True)
-                    
-                    
 
                 # Saving loss values
                 logs['loss'][i] = loss.item()
@@ -509,16 +522,16 @@ def train():
     N_OUTPUTS = len(OUTPUTS)
     
     # No. hidden neurons - size of list indicates no. of hidden layers
-    HIDDEN_UNITS = [16,8]
+    HIDDEN_UNITS = [16,8,3]
 
     # Stacked GRU units
-    GRU_LAYERS = 1
+    GRU_LAYERS = 2
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                               TRAINING SETTINGS
 #-------------------------------------------------------------------------------------------------------------------
 
-    USE_PRETRAINED_MODEL = True
+    USE_PRETRAINED_MODEL = False
 
     if USE_PRETRAINED_MODEL:
         
@@ -531,7 +544,7 @@ def train():
         FEATURES, OUTPUTS, INFO, HIDDEN_UNITS, GRU_LAYERS, SEQ_LEN = load_file(PRETRAINED_RUN, PRETRAINED_MODEL_DIR, 'arch.pkl')
 
     # Learning rate
-    L_RATE = 0.0005
+    L_RATE = 0.001
 
     # Weight decay
     L2_REG = 0.001
@@ -556,6 +569,9 @@ def train():
 
     # Automatic mixed precision
     USE_AMP = True
+
+    # Weight constraints
+    W_CONSTRAIN=weightConstraint()
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                               VFM CONFIGURATION
@@ -845,7 +861,7 @@ def train():
     warmup_lr = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=WARM_STEPS, after_scheduler=scheduler)
 
     # Initializing the early_stopping object
-    early_stopping = EarlyStopping(patience=ES_PATIENCE, path=CHECKPOINT_DIR, verbose=True)
+    early_stopping = EarlyStopping(patience=ES_PATIENCE, path=CHECKPOINT_DIR, delta=1e-2, verbose=True)
 
     # Preparing Weights & Biases logging
     if WANDB_LOG:

@@ -68,7 +68,7 @@ def set_size(width, fraction=1, subplots=(1, 1)):
 
 df_list = []
 
-RUN = 'fine-rain-207'
+RUN = 'woven-field-208'
 #RUN = 'whole-puddle-134'
 #DIR = f'outputs/crux-plastic_sbvf_abs_direct/val/{RUN}/'
 DIR = f'outputs/sbvfm_indirect_crux_gru/val/{RUN}/'
