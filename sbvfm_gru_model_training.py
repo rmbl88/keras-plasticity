@@ -134,6 +134,9 @@ class CruciformDataset(torch.utils.data.Dataset):
         # ep = self.rolling_window(ep.reshape(t_pts + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)[:,:,-2:]
         # dep = torch.diff(ep, dim=2).squeeze(-2)
         # dep[:,1:] /= dt
+        e = copy.deepcopy(x)
+        e = self.rolling_window(e.reshape(t_pts + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)[:,:,-2:]
+        de = torch.diff(e, dim=2).squeeze(-2)
 
         if self.transform != None:
             
@@ -156,7 +159,7 @@ class CruciformDataset(torch.utils.data.Dataset):
             idx_elem = torch.randperm(x.shape[0])
             #idx_t = torch.randperm(x.shape[1])
 
-            return x[idx_elem], y[idx_elem], f, t, a[idx_elem], self.centroids[idx_elem], t_pts, n_elems, idx_elem
+            return x[idx_elem], y[idx_elem], f, t, a[idx_elem], self.centroids[idx_elem], t_pts, n_elems, idx_elem, de
         else:
             return x, y, f, t, a, self.centroids, t_pts, n_elems
     
@@ -197,18 +200,18 @@ def inverse_transform(x_scaled, min, max):
     
     return x
 
-class weightConstraint(object):
-    def __init__(self):
-        pass
-    def __call__(self, module):
+# class weightConstraint(object):
+#     def __init__(self):
+#         pass
+#     def __call__(self, module):
 
-        if hasattr(module,'weight'):
+#         if hasattr(module,'weight'):
 
-            w=module.weight.data
-            w=w.clamp(0.0)
-            w[:2,-1]=w[:2,-1].clamp(0.0,0.0)
-            w[-1,:2]=w[:2,-1].clamp(0.0,0.0)
-            module.weight.data=w 
+#             w=module.weight.data
+#             w=w.clamp(0.0)
+#             w[:2,-1]=w[:2,-1].clamp(0.0,0.0)
+#             w[-1,:2]=w[:2,-1].clamp(0.0,0.0)
+#             module.weight.data=w 
 
         
 # -------------------------------
@@ -281,24 +284,28 @@ def train():
         for batch_idx in range(len(dataloader)):
 
             # Extracting variables for training
-            X_train, y_train, f, _, area, centroids, t_pts, n_elems, idx_elem = data_iter.__next__()
+            X_train, y_train, f, _, area, centroids, t_pts, n_elems, idx_elem, _ = data_iter.__next__()
             
             X_train = X_train.squeeze(0)
             y_train = y_train.squeeze(0)
+            
             centroids = centroids.squeeze(0)
 
             #dep = dep.squeeze(0).to(DEVICE)
+            #de = de.squeeze(0).to(DEVICE)
             area = area.squeeze(0).to(DEVICE)
             
             f = f.squeeze(0).to(DEVICE)
             
-
             idx_elem = idx_elem.squeeze(0)
             idx_t = torch.randperm(X_train.shape[1])
+
+            idx_t_batches = torch.split(idx_t,t_pts//BATCH_DIVIDER)
 
             x_batches = torch.split(X_train[:,idx_t], t_pts//BATCH_DIVIDER, 1)
             y_batches = torch.split(y_train[:,idx_t], t_pts//BATCH_DIVIDER, 1)
             #dep_batches = torch.split(dep[:,idx_t], t_pts//BATCH_DIVIDER, 1)
+            #de_batches = torch.split(de[:,idx_t], t_pts//BATCH_DIVIDER, 1)
             f_batches = torch.split(f[idx_t], t_pts//BATCH_DIVIDER, 0)
 
             for i, batch in enumerate(x_batches):
@@ -307,6 +314,11 @@ def train():
                 y = y_batches[i]
                 f_ = f_batches[i]
                 #d_ep = dep_batches[i]
+                #de = de_batches[i]
+                # has_refState = bool((idx_t_batches[i]==0).nonzero(as_tuple=True)[0].numel())
+
+                # if has_refState:
+                #     refState_idx = (idx_t_batches[i]==0).nonzero(as_tuple=True)[0]
 
                 model.init_hidden(x.size(0), DEVICE)
 
@@ -317,11 +329,25 @@ def train():
                 #*******************************
                 # ADD OTHER CALCULATIONS HERE!
                 #*******************************
+
+                # s = pred[:,:3]
+                # l = pred[:,3:].reshape(n_elems,batch.size(1),-1)
+                # L = torch.zeros((n_elems,batch.size(1),3, 3)).to(DEVICE)
+                # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+                # L[:,:, tril_indices[0], tril_indices[1]] = l
+
+                # H = L @ L.transpose(2,3)
+
+                pred = pred.view_as(y)
+
                 v_strain =  V_STRAIN[:,idx_elem].unsqueeze(2)
                 v_disp = V_DISP.unsqueeze(1)
                 a_ = area.unsqueeze(2)
+                
+                w_int_ann = internal_vw(pred, v_strain, a_)
 
-                w_int_ann = internal_vw(pred.view_as(y), v_strain, a_)
+                # if has_refState:
+                #     w_int_ann0 = internal_vw(pred[:,refState_idx],v_strain, a_)                    
                 
                 w_int = internal_vw(y.to(DEVICE), v_strain, a_)
 
@@ -342,6 +368,7 @@ def train():
                     #f_loss = (1/(2*torch.tensor(f_pred.size()).prod())) * torch.sum(torch.square(f_pred - f_))
                     #l_wp = torch.sum(torch.square(torch.nn.functional.relu(-w_ep)))
                     #l_triax = torch.sum((torch.nn.functional.relu(-torch.abs(triax)+2/3)))
+                    
                     loss = l_fn(w_int_ann, w_ext)/x.size(0)
                  
                     #loss = l_fn(l_tuples)
@@ -352,8 +379,6 @@ def train():
                     
                     scaler.step(optimizer)
                     scaler.update()
-                    
-                    model.fc_layers[-1].apply(W_CONSTRAIN)
                     
                     warmup_lr.step()
 
@@ -571,7 +596,7 @@ def train():
     USE_AMP = True
 
     # Weight constraints
-    W_CONSTRAIN=weightConstraint()
+    #W_CONSTRAIN=weightConstraint()
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                               VFM CONFIGURATION
@@ -705,7 +730,7 @@ def train():
     PROJ = 'sbvfm_indirect_crux_gru'
     
     # WANDB logging
-    WANDB_LOG = True
+    WANDB_LOG = False
 
     if WANDB_LOG:
 

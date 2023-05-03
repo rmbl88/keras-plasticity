@@ -230,7 +230,7 @@ with torch.no_grad():
         #dt = torch.diff(t,dim=0)
 
         model_1.init_hidden(x.size(0))
-        s, _ = model_1(x) # stress rate.
+        s, h = model_1(x) # stress rate.
         
         # s_princ = torch.zeros(n_tps,n_elems, s_rate.shape[-1])
         

@@ -30,8 +30,8 @@ def get_ud_vfs(centroids, surf_nodes, width, height):
         2: np.stack([zeros_, Y / H],dim),
         3: np.stack([(1 / pi) * np.sin(X * pi / W) * np.sin(Y * pi / H), (1 / pi) * np.sin(X * pi / W) * np.sin(Y * pi / H)],dim),
         4: np.stack([(1 / pi) * np.sin(X * pi / (0.5*W)) * np.sin(Y * pi / (0.5*H)), (1 / pi) * np.sin(X * pi / (0.5*W)) * np.sin(Y * pi / (0.5*H))],dim),
-        # 5: np.stack([(Y / H) * np.sin(X * pi / W), zeros_], dim),
-        # 6: np.stack([zeros_, (X / W) * np.sin(Y * pi / H)], dim)
+        #5: np.stack([(Y / H) * np.sin(X * pi / W), zeros_], dim),
+        #6: np.stack([zeros_, (X / W) * np.sin(Y * pi / H)], dim)
     }
 
     # Defining virtual strain fields
@@ -40,8 +40,8 @@ def get_ud_vfs(centroids, surf_nodes, width, height):
         2:np.stack([zeros, ones / H, zeros],1),
         3:np.stack([(1 / W) * np.cos(CENT_X * pi / W) * np.sin(CENT_Y * pi / H), (1 / H) * np.sin(CENT_X * pi / W) * np.cos(CENT_Y * pi / H), (1 / H) * np.sin(CENT_X * pi / W) * np.cos(CENT_Y * pi / H) + (1 / W) * np.cos(CENT_X * pi / W) * np.sin(CENT_Y * pi / H)],1),
         4:np.stack([(2 / W) * np.cos(CENT_X * pi / (0.5*W)) * np.sin(CENT_Y * pi / (0.5*H)), (2 / H) * np.sin(CENT_X * pi / (0.5*W)) * np.cos(CENT_Y * pi / (0.5*H)), (2 / H) * np.sin(CENT_X * pi / (0.5*W)) * np.cos(CENT_Y * pi / (0.5*H)) + (2 / W) * np.cos(CENT_X * pi / (0.5*W)) * np.sin(CENT_Y * pi / (0.5*H))],1),
-        # 5:np.stack([(CENT_Y*pi/(H*W)) * np.cos(CENT_X*pi/W), zeros, (1/H)*np.sin(CENT_X*pi/W)],1),
-        # 6:np.stack([zeros, (CENT_X*pi/(W*H)) * np.cos(CENT_Y*pi/W), (1/W) * np.sin(CENT_Y*pi/H)],1)
+        #5:np.stack([(CENT_Y*pi/(H*W)) * np.cos(CENT_X*pi/W), zeros, (1/H)*np.sin(CENT_X*pi/W)],1),
+        #6:np.stack([zeros, (CENT_X*pi/(W*H)) * np.cos(CENT_Y*pi/W), (1/W) * np.sin(CENT_Y*pi/H)],1)
     }
 
     # mults = [0.5, 0.625, 0.75, 0.875, 1, 1.25, 1.5, 1.625, 1.75, 1.875]
