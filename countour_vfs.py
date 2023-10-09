@@ -7,6 +7,7 @@ from mesh_utils import (
 import pandas as pd
 import os
 import numpy as np
+import joblib
 
 from vfm import (
     get_ud_vfs
@@ -90,6 +91,14 @@ def plot_fields(nodes, connectivity, fields, out_dir, var):
     
     for i, field in (pbar := tqdm(enumerate(fields[:]), bar_format=FORMAT_PBAR, leave=False)):
         
+        if VFM_TYPE == 'sb':
+            if var == 'disp':
+                v_x = field[-1][::2]
+                v_y = field[-1][1::2]
+                field = torch.stack([v_x,v_y],1).squeeze(-1).numpy()
+            if var == 'strain':
+                field = field[:,-1].numpy()
+
         pbar.set_description(f'Saving countour plot -> v_{var}_{i}')
 
         n_subplots = field.shape[-1]
@@ -100,7 +109,7 @@ def plot_fields(nodes, connectivity, fields, out_dir, var):
         for j in range(field.shape[-1]):    
             
             v = field[:,j]
-
+            
             if var == 'disp':
                 cb_str = r'$\boldsymbol{{u}}_{{{0}}}^{{*({1})}}$'.format(dirs[j],i+1)
             elif var == 'strain':
@@ -178,6 +187,9 @@ if VFM_TYPE == 'ud':  # User-defined VFM
 
     # Computing virtual fields
     TOTAL_VFS, V_DISP, V_STRAIN = get_ud_vfs(CENTROIDS, MESH[:,1:], WIDTH, HEIGHT)
+
+elif VFM_TYPE == 'sb':
+    V_DISP, V_STRAIN = joblib.load('test_vfs.pkl')
 
 vf_dict = {
     'disp': V_DISP,

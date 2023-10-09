@@ -1,6 +1,4 @@
 import glob
-from turtle import forward
-from pytools import T
 from sklearn import preprocessing
 import pandas as pd
 import os
@@ -12,7 +10,7 @@ import copy
 from constants import FORMAT_PBAR, LOOK_BACK
 import torch
 from tqdm import tqdm
-from torch import device, dropout, nn
+from torch import nn
 from io import StringIO
 import math
 import torch.nn.functional as F
@@ -23,85 +21,84 @@ from torch.nn.utils import (
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter
-import dask.dataframe as dd
 import gc
 import pyarrow.parquet as pq
-from time import process_time
+from torch.autograd import Variable
 
 # -------------------------------
 #        Class definitions
 # -------------------------------
-def draw_graph(start, watch=[]):
-    from graphviz import Digraph
+# def draw_graph(start, watch=[]):
+#     from graphviz import Digraph
 
-    node_attr = dict(style='filled',
-                     shape='box',
-                     align='left',
-                     fontsize='12',
-                     ranksep='0.1',
-                     height='0.2')
-    graph = Digraph(node_attr=node_attr, graph_attr=dict(size="12,12"))
+#     node_attr = dict(style='filled',
+#                      shape='box',
+#                      align='left',
+#                      fontsize='12',
+#                      ranksep='0.1',
+#                      height='0.2')
+#     graph = Digraph(node_attr=node_attr, graph_attr=dict(size="12,12"))
 
-    assert(hasattr(start, "grad_fn"))
-    if start.grad_fn is not None:
-        _draw_graph(start.grad_fn, graph, watch=watch)
+#     assert(hasattr(start, "grad_fn"))
+#     if start.grad_fn is not None:
+#         _draw_graph(start.grad_fn, graph, watch=watch)
 
-    size_per_element = 0.15
-    min_size = 12
+#     size_per_element = 0.15
+#     min_size = 12
 
-    # Get the approximate number of nodes and edges
-    num_rows = len(graph.body)
-    content_size = num_rows * size_per_element
-    size = max(min_size, content_size)
-    size_str = str(size) + "," + str(size)
-    graph.graph_attr.update(size=size_str)
-    graph.render(filename='net_graph.jpg')
+#     # Get the approximate number of nodes and edges
+#     num_rows = len(graph.body)
+#     content_size = num_rows * size_per_element
+#     size = max(min_size, content_size)
+#     size_str = str(size) + "," + str(size)
+#     graph.graph_attr.update(size=size_str)
+#     graph.render(filename='net_graph.jpg')
 
 
-def _draw_graph(var, graph, watch=[], seen=[], indent="", pobj=None):
-    ''' recursive function going through the hierarchical graph printing off
-    what we need to see what autograd is doing.'''
-    from rich import print
+# def _draw_graph(var, graph, watch=[], seen=[], indent="", pobj=None):
+#     ''' recursive function going through the hierarchical graph printing off
+#     what we need to see what autograd is doing.'''
+#     from rich import print
     
-    if hasattr(var, "next_functions"):
-        for fun in var.next_functions:
-            joy = fun[0]
-            if joy is not None:
-                if joy not in seen:
-                    label = str(type(joy)).replace(
-                        "class", "").replace("'", "").replace(" ", "")
-                    label_graph = label
-                    colour_graph = ""
-                    seen.append(joy)
+#     if hasattr(var, "next_functions"):
+#         for fun in var.next_functions:
+#             joy = fun[0]
+#             if joy is not None:
+#                 if joy not in seen:
+#                     label = str(type(joy)).replace(
+#                         "class", "").replace("'", "").replace(" ", "")
+#                     label_graph = label
+#                     colour_graph = ""
+#                     seen.append(joy)
 
-                    if hasattr(joy, 'variable'):
-                        happy = joy.variable
-                        if happy.is_leaf:
-                            label += " \U0001F343"
-                            colour_graph = "green"
+#                     if hasattr(joy, 'variable'):
+#                         happy = joy.variable
+#                         if happy.is_leaf:
+#                             label += " \U0001F343"
+#                             colour_graph = "green"
 
-                            for (name, obj) in watch:
-                                if obj is happy:
-                                    label += " \U000023E9 " + \
-                                        "[b][u][color=#FF00FF]" + name + \
-                                        "[/color][/u][/b]"
-                                    label_graph += name
+#                             for (name, obj) in watch:
+#                                 if obj is happy:
+#                                     label += " \U000023E9 " + \
+#                                         "[b][u][color=#FF00FF]" + name + \
+#                                         "[/color][/u][/b]"
+#                                     label_graph += name
                                     
-                                    colour_graph = "blue"
-                                    break
+#                                     colour_graph = "blue"
+#                                     break
 
-                            vv = [str(obj.shape[x])
-                                  for x in range(len(obj.shape))]
-                            label += " [["
-                            label += ', '.join(vv)
-                            label += "]]"
-                            label += " " + str(happy.var())
+#                             vv = [str(obj.shape[x])
+#                                   for x in range(len(obj.shape))]
+#                             label += " [["
+#                             label += ', '.join(vv)
+#                             label += "]]"
+#                             label += " " + str(happy.var())
 
-                    graph.node(str(joy), label_graph, fillcolor=colour_graph)
-                    print(indent + label)
-                    _draw_graph(joy, graph, watch, seen, indent + ".", joy)
-                    if pobj is not None:
-                        graph.edge(str(pobj), str(joy))
+#                     graph.node(str(joy), label_graph, fillcolor=colour_graph)
+#                     print(indent + label)
+#                     _draw_graph(joy, graph, watch, seen, indent + ".", joy)
+#                     if pobj is not None:
+#                         graph.edge(str(pobj), str(joy))
 
 class weightConstraint(object):
     def __init__(self, cond='plastic'):
@@ -411,15 +408,17 @@ class NeuralNetwork(nn.Module):
 #         return out
 
 class GRUModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim, drop_prob=0.2):
+    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim, fc_bias=True, gru_bias=True):
         super(GRUModel, self).__init__()
 
         # Defining the number of layers and the nodes in each layer
+        self.gru_bias = gru_bias
+        self.fc_bias = fc_bias  
         self.layer_dim = layer_dim
         self.hidden_dim = hidden_dim if type(hidden_dim) is list else [hidden_dim]
 
         # GRU layers
-        self.gru = nn.GRU(input_dim, self.hidden_dim[0], layer_dim, batch_first=True)
+        self.gru = nn.GRU(input_dim, self.hidden_dim[0], layer_dim, batch_first=True, bias=self.gru_bias)
 
         if len(self.hidden_dim)>1:
             self.fc_layers = nn.ModuleList()
@@ -427,27 +426,30 @@ class GRUModel(nn.Module):
             for i in range(len(self.hidden_dim)-1):
                 in_ = self.hidden_dim[i]
                 out_ = self.hidden_dim[i+1]
-                self.fc_layers.append(nn.Linear(in_, out_, bias=True))
+                self.fc_layers.append(nn.Linear(in_, out_, bias=self.fc_bias))
 
-            self.fc_layers.append(nn.Linear(self.hidden_dim[-1], output_dim))
+            self.fc_layers.append(nn.Linear(self.hidden_dim[-1], output_dim, bias=True))
         else:
-            self.fc = nn.Linear(self.hidden_dim[0], output_dim)
+            self.fc = nn.Linear(self.hidden_dim[0], output_dim, bias=True)
 
         self.relu = nn.ReLU()
 
-    def init_hidden(self, batch_size, device=None):
+    def init_hidden(self, batch_size):
         # Initializing hidden state for first input with zeros
-        if device != None:
-            self.h0 = torch.zeros(self.layer_dim, batch_size, self.hidden_dim[0]).requires_grad_().to(device)
+        if torch.cuda.is_available() and self.training:
+            self.h0 = Variable(torch.zeros(self.layer_dim, batch_size, self.hidden_dim[0]).cuda())
         else:
-            self.h0 = torch.zeros(self.layer_dim, batch_size, self.hidden_dim[0]).requires_grad_()
+            self.h0 = Variable(torch.zeros(self.layer_dim, batch_size, self.hidden_dim[0]))
         # weight = next(self.parameters()).data
         # self.h0 = weight.new(self.n_layers, batch_size, self.hidden_dim).zero_().to(device)
 
     def forward(self, x):
 
+        #self.init_hidden(x.size(0))
+        self.h0 = Variable(torch.zeros(self.layer_dim, x.size(0), self.hidden_dim[0]))
         # Forward propagation by passing in the input and hidden state into the model   
-        out, hidden = self.gru(x, self.h0.detach())
+        #out, hidden = self.gru(x, self.h0.detach())
+        out, hidden = self.gru(x,self.h0.detach())
 
         # Reshaping the outputs in the shape of (batch_size, seq_length, hidden_size)
         # so that it can fit into the fully connected layer
@@ -459,10 +461,34 @@ class GRUModel(nn.Module):
                     
                 out = self.relu(layer(out))
                     
-            return self.fc_layers[-1](out), hidden
+            return self.fc_layers[-1](out)
         else:
-            return self.fc(self.relu(out)), hidden
+            return self.fc(self.relu(out))
+            #return self.fc(out), hidden
 
+class GRUModelJit(nn.Module):
+    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim, fc_bias=True, gru_bias=True):
+        super(GRUModelJit, self).__init__()
+        # Defining the number of layers and the nodes in each layer
+        self.gru_bias = gru_bias
+        self.fc_bias = fc_bias  
+        self.layer_dim = layer_dim
+        self.hidden_dim = hidden_dim[0]
+
+        # GRU layers
+        self.gru = nn.GRU(input_dim, self.hidden_dim, layer_dim, batch_first=True)
+        self.fc = nn.Linear(self.hidden_dim, output_dim)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        #h0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim).detach()
+        x = torch.nn.utils.rnn.pack_sequence(x)
+        out, _ = self.gru(x)
+        out = out[0][-1,:]
+        out = self.relu(out)
+        out = self.fc(out)
+        
+        return out
 # EarlyStopping class as in: https://github.com/Bjarten/early-stopping-pytorch/
 class EarlyStopping:
     """Early stops the training if validation loss doesn't improve after a given patience."""
@@ -489,6 +515,7 @@ class EarlyStopping:
         self.delta = delta
         self.path = path
         self.trace_func = trace_func
+
     def __call__(self, val_loss, model):
 
         score = -val_loss
@@ -496,9 +523,9 @@ class EarlyStopping:
         if self.best_score is None:
             self.best_score = score
             self.save_checkpoint(val_loss, model)
-        elif score < self.best_score + self.delta:
+        elif score <= self.best_score + self.delta:
             self.counter += 1
-            self.trace_func(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            self.trace_func(f'\nEarlyStopping counter: {self.counter} out of {self.patience} | Best: {self.val_loss_min:.6e}')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
@@ -509,7 +536,7 @@ class EarlyStopping:
     def save_checkpoint(self, val_loss, model):
         '''Saves model when validation loss decrease.'''
         if self.verbose:
-            self.trace_func(f'Validation loss decreased ({self.val_loss_min:.5e} --> {val_loss:.5e}).  Saving model ...')
+            self.trace_func(f'\nValidation loss decreased ({self.val_loss_min:.5e} --> {val_loss:.5e}).  Saving model ...')
         torch.save(model.state_dict(), self.path)
         self.val_loss_min = val_loss
 
@@ -1396,3 +1423,15 @@ def load_dataframes(directory, preproc=True, cols=None):
         df_list = pre_process(df_list)    
 
     return df_list, file_list
+
+def batch_jacobian(y,x):
+    
+    batch = x.size(0)
+    inp_dim = x.size(-1)
+    out_dim = y.size(-1)
+
+    grad_output = torch.eye(out_dim).unsqueeze(1).repeat(1,batch,1).requires_grad_(True)
+    gradient = torch.autograd.grad(y,x[:,-1],grad_output,retain_graph=True, is_grads_batched=True)
+    J = gradient[0][:,:,-1].permute(1,0,2)
+    
+    return J

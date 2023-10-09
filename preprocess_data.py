@@ -54,6 +54,7 @@ def preprocess_vars(var_list, df):
     new_df = copy.deepcopy(df)
     
     vars = [
+        'dt',
         'ep_1','ep_2',
         'dep_1','dep_2',
         'ep_1_dir','ep_2_dir', 
@@ -90,9 +91,10 @@ def preprocess_vars(var_list, df):
     de_princ_dir = np.vstack((de_princ_dir, np.array([np.NaN,np.NaN])))
     dot_s_princ = np.vstack(((dot_s_princ, np.array([np.NaN,np.NaN]))))
     dot_e_princ = np.vstack(((dot_e_princ, np.array([np.NaN,np.NaN]))))
+    dt = np.vstack((0.0, dt))
     
     princ_vars = pd.DataFrame(
-        np.concatenate([eps_princ,dot_e_princ,de_princ_dir,ep_angles.reshape(-1,1),s_princ,dot_s_princ,sp_angles.reshape(-1,1)],1),
+        np.concatenate([dt,eps_princ,dot_e_princ,de_princ_dir,ep_angles.reshape(-1,1),s_princ,dot_s_princ,sp_angles.reshape(-1,1)],1),
         columns=vars
     )
 

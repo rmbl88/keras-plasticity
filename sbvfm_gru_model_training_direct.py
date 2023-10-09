@@ -1,17 +1,19 @@
 # ---------------------------------
 #    Library and function imports
 # ---------------------------------
+
 import cProfile, pstats
 from glob import glob
 from msvcrt import kbhit
 import os
 import shutil
 import joblib
-from pytools import F
+# from pytools import F
 from constants import *
 from functions import (
     CoVWeightingLoss,
     GRUModel,
+    batch_jacobian,
     global_dof,
     layer_wise_lr,
     standardize_data,
@@ -23,7 +25,6 @@ from functions import (
     NeuralNetwork
     )
 
-import tensorflow as tf
 import pandas as pd
 import random
 import numpy as np
@@ -43,7 +44,7 @@ import pyarrow.parquet as pq
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from torchvision import transforms
-import pytorch_warmup as warmup
+# import pytorch_warmup as warmup
 from warmup_scheduler import GradualWarmupScheduler
 import math
 import glob
@@ -73,7 +74,7 @@ class CruciformDataset(torch.utils.data.Dataset):
         self.info = info
         self.transform = transform
         self.files = [os.path.join(self.root_dir, self.data_dir , trial + '.parquet') for trial in self.trials]
-        self.data = [pq.ParquetDataset(file).read_pandas(columns=self.features+self.outputs+['tag','t','id','s1','s2','fxx_t','fyy_t','area','sxx_t','syy_t']).to_pandas() for file in self.files]
+        self.data = [pq.ParquetDataset(file).read_pandas(columns=self.features+self.outputs+['t','id']).to_pandas() for file in self.files]
 
     def __len__(self):
         return len(self.trials)
@@ -81,12 +82,10 @@ class CruciformDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         
         x = torch.from_numpy(self.data[idx][self.features].dropna().values).float()
+        e = torch.from_numpy(self.data[idx][self.features].dropna().values).float()
         y = torch.from_numpy(self.data[idx][self.outputs].dropna().values).float()
         t = torch.from_numpy(self.data[idx]['t'].values).float()
-        #e = torch.from_numpy(self.data[idx][['dep_1','dep_2']].dropna().values).float()
-        # f = torch.from_numpy(self.data[idx][['fxx_t','fyy_t']].values).float()
-        # a = torch.from_numpy(self.data[idx]['area'].values).reshape(-1,1).float()
-
+        
         t_pts = len(list(set(t.numpy())))
         n_elems = len(set(self.data[idx]['id'].values))
 
@@ -103,17 +102,24 @@ class CruciformDataset(torch.utils.data.Dataset):
             
         #x = self.rolling_window(x.reshape(t_pts + self.seq_len,n_elems,-1), seq_size=self.seq_len)[:,:-1]
         x = self.rolling_window(x.reshape(t_pts + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)
+        e = e.reshape(t_pts,n_elems,-1).permute(1,0,2)
+        de = torch.zeros_like(e)
+        de[:,1:] = torch.diff(e,dim=1)
         x = x.reshape(-1,*x.shape[2:])
+        de = de.reshape(-1,de.shape[-1])
         #t = self.rolling_window(t.reshape(t_pts,n_elems,-1), seq_size=self.seq_len)
 
         #y = y.reshape(t_pts-1,n_elems,-1)[self.seq_len-1:].reshape(-1,y.shape[-1])
         #y = y.reshape(t_pts,n_elems,-1)[self.seq_len-1:].permute(1,0,2)
         y = y.reshape(t_pts,n_elems,-1).permute(1,0,2)
+        dy = torch.zeros_like(y)
+        dy[:,1:] = torch.diff(y, dim=1)
         y = y.reshape(-1,y.shape[-1])
+        dy = dy.reshape(-1,dy.shape[-1])
 
         idx_ = torch.randperm(x.shape[0])
 
-        return x[idx_], y[idx_], t, t_pts, n_elems      
+        return x[idx_], y[idx_], t, t_pts, n_elems, de[idx_], dy[idx_]     
     
     def rolling_window(self, x, seq_size, step_size=1):
     # unfold dimension to make our rolling window
@@ -147,9 +153,9 @@ class Normalize(object):
 #       Method definitions
 # -------------------------------
 
-def batch_jacobian(f, x):
-    f_sum = lambda x: torch.sum(f(x[:,-1]), axis=0)
-    return jacobian(f_sum, x[:,-1],create_graph=True).permute(1,0,2)
+# def batch_jacobian(f, x):
+#     f_sum = lambda x: torch.sum(f(x[:,-1]), axis=0)
+#     return jacobian(f_sum, x[:,-1],create_graph=True).permute(1,0,2)
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -187,124 +193,66 @@ def train():
         Custom loop for neural network training, using mini-batches
 
         '''
-
         data_iter = iter(dataloader)
-
-        # next_batch = data_iter.__next__()  # start loading the first batch
-        # next_batch = [_.cuda(non_blocking=True) for _ in next_batch]
 
         num_batches = len(dataloader)
         
-        losses = []
-        f_loss = []
-        triax_loss = []
-        l_loss = []
+        logs = {
+            'loss': {},
+            'jac_loss': {},
+            's_loss': {},
+            'xy_loss': {}
+        }
                
         model.train()
-        #l_fn.to_train()
-        
+               
         for batch_idx in range(len(dataloader)):
-    
-            # batch = next_batch
-
-            # if batch_idx + 1 != len(dataloader): 
-            #     # start copying data of next batch
-            #     next_batch = data_iter.__next__()
-            #     next_batch = [_.cuda(non_blocking=True) for _ in next_batch]
 
             # Extracting variables for training
-            X_train, y_train, _, t_pts, n_elems = data_iter.__next__()
+            X_train, y_train, _, t_pts, n_elems, de, dy = data_iter.__next__()
             
-            X_train = X_train.squeeze(0)
-            y_train = y_train.squeeze(0)
+            X_train = X_train.squeeze(0).to(device)
+            y_train = y_train.squeeze(0).to(device)
+            de = de.squeeze(0).to(device)
+            dy = dy.squeeze(0).to(device)
 
             x_batches = X_train.split(X_train.shape[0]//32)
             y_batches = y_train.split(y_train.shape[0]//32)
-            #t = t.squeeze(0).to(device)
-            #e = e.squeeze(0).to(device)
-            #f = f.squeeze(0).to(device)
-            #a = a.squeeze(0).to(device)
+            de_batches = de.split(de.shape[0]//32)
+            dy_batches = dy.split(dy.shape[0]//32)
 
-            for i, batch in enumerate(x_batches):
-                model.init_hidden(batch.size(0),device)
-                #batch.requires_grad_(True)
-                with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                    pred, _ = model(batch.to(device)) # stress rate
-                
-                
-
-                # J = torch.zeros(pred.shape[0],3,3)
-                # for i in range(3):
-                #     v = torch.ones_like(pred).cuda()
-                #     v[:,i] *= 0.
-                #     pred.backward(v, retain_graph=True)
-                #     J[:,:,i] = batch.grad[:,-1]
-                #     batch.grad.zero_()
-                
-
-                #jac = torch.stack([torch.autograd.grad(pred[:, j].sum(), batch, create_graph=True)[0][:,-1] for j in range(3)],-1)
-                # J = torch.zeros(pred.shape[0],3,3).cuda()
-                # for j in range(3):
-                #     output = torch.zeros(pred.shape[0],3).cuda()
-                #     output[:,j] = 1.
-                #     J[:,:,j:j+1] = torch.autograd.grad(pred, batch, grad_outputs=output, create_graph=True)[0][:,-1].unsqueeze(-1)
-
-            #dt = torch.diff(t.reshape(t_pts,n_elems,1),dim=0)
-            #s_princ_ = torch.zeros([t_pts,n_elems,2]).to(device)
-            #s_princ_[1:,:,:] = pred.reshape(t_pts-1,n_elems,pred.shape[-1])*dt
-            #s_princ_ = torch.cumsum(s_princ_,0)
-
-            #f_ = (torch.sum(s_princ_*a.reshape([t_pts,n_elems,1]),1)/30.0).unsqueeze(1).repeat(1,n_elems,1).reshape(-1,s_princ_.shape[-1])
-
+            running_loss = 0.0
+            jac_loss = 0.0
+            s_loss = 0.0
+            xy_loss = 0.0
             
-            #s_princ_ord = torch.sort(s_princ_,-1,descending=True).values
-            #triax = (math.sqrt(2)/3)*(s_princ_ord[:,:,0]+s_princ_ord[:,:,1])/(s_princ_ord[:,:,0]-s_princ_ord[:,:,1]+1e-12)
-            #l_triax = torch.nn.functional.relu(torch.abs(triax.reshape(-1,1))-2/3)
-            #de_p = e-((1/3)*torch.sum(e,1)).reshape(-1,1).repeat(1,e.shape[-1])
-            #wm = torch.sum(s_princ_*de_p,1).reshape(-1)
-
-
-            # y_scaler = preprocessing.MinMaxScaler(feature_range=(-1, 1))
-            # y_scaler.fit(y_train.cpu())
-            # dot_y_princ = torch.from_numpy(y_scaler.scale_).to(device)*y_train
-            # s = torch.from_numpy(y_scaler.scale_).to(device)*pred
-                
-                # rot_mat = torch.zeros_like(s_princ_mat)
-                # rot_mat[:,:,0,0] = torch.cos(angles[:,:])
-                # rot_mat[:,:,0,1] = torch.sin(angles[:,:])
-                # rot_mat[:,:,1,0] = -torch.sin(angles[:,:])
-                # rot_mat[:,:,1,1] = torch.cos(angles[:,:])
-
-                # s = torch.transpose(rot_mat,2,3) @ s_princ_mat @ rot_mat
-                # s_vec = s[:,:,[0,1,1],[0,1,0]].reshape([-1,3])
-                
-
-                # l = torch.reshape(pred,[t_pts,n_elems,6])
-
-                # # Cholesky decomposition
-                # L = torch.zeros([t_pts, n_elems, 3, 3])
-                # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-                # L[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
-                # # Tangent matrix
-                # H = L @torch.transpose(L,2,3)
-
-                # # Stress increment
-                # d_s = (H @ d_e).squeeze()
-                # s = torch.cumsum(d_s,0).reshape([-1,3])
-                
+            for i, batch in enumerate(x_batches):
+                x = batch.requires_grad_(True)
                 with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                    #l_triaxiality = torch.mean(torch.nn.functional.relu(torch.abs(triaxiality)-2/3)
-                    #l_tuples = [(pred[:,0], y_batches[i][:,0].to(device)), (pred[:,1], y_batches[i][:,1].to(device)), (pred[:,1], y_batches[i][:,1].to(device))]
-                    
-                    #l_jac = torch.sum(torch.square(torch.cat([jac[:,2,[0,1]],jac[:,[0,1],2]],1)))
-                    loss = l_fn(pred, y_batches[i].to(device))
-                    #loss = l_fn(l_tuples)
-                
+                    pred = model(x)
+
+                a = batch_jacobian(pred.cpu(),x.cpu())
+                s = pred[:,:3]  # stress
+                # l = pred[:,3:]  # cholesky factors
+                # L = torch.zeros(l.size(0),3,3).to(device)
+                # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+                # L[:,tril_indices[0], tril_indices[1]] = l  # vector to lower triangular matrix
+
+                # J = L@L.transpose(2,1)  # Jacobian
+                # ds = (J@de_batches[i].unsqueeze(-1)).squeeze(-1)          
+                                
+                # a = J[:,[0,1,2,2],[2,2,0,1]]
+                with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
+
+                    l_jac = l_fn(ds,dy_batches[i])
+
+                    l_j = l_fn(a, torch.zeros_like(a))
+
+                    l_s = l_fn(s, y_batches[i])
+
+                    loss = l_s + l_jac + l_j
+                                    
                 scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
-
-                # scaler.unscale_(optimizer)
-
-                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2)
             
                 if ((i + 1) % ITERS_TO_ACCUMULATE == 0) or (i + 1 == len(x_batches)):    
                     
@@ -316,96 +264,64 @@ def train():
                     warmup_lr.step()
             
                 # Saving loss values
-                losses.append(loss.item())
-                f_loss.append(0.0)
-                triax_loss.append(0.0)
-                l_loss.append(0.0  )
+                running_loss += loss.detach()
+                jac_loss += l_jac.detach()
+                s_loss += l_s.detach()
+                xy_loss += l_j.detach()
 
-            print('\r>Train: %d/%d' % (batch_idx + 1, num_batches), end='')
-              
+                torch.cuda.empty_cache()
+
+            logs['loss'][batch_idx] = running_loss / len(x_batches)
+            logs['jac_loss'][batch_idx] = jac_loss / len(x_batches)
+            logs['s_loss'][batch_idx] = s_loss / len(x_batches)
+            logs['xy_loss'][batch_idx] = xy_loss / len(x_batches)
+
+            print('\r> Train: %d/%d' % (batch_idx + 1, num_batches), end='')
+
+        logs = [np.fromiter(v.values(),dtype=np.float32) for k,v in logs.items()]      
         #-----------------------------
-        return losses, f_loss, l_loss, triax_loss
+        return logs
 
     def test_loop(dataloader, model, l_fn):
 
         data_iter = iter(dataloader)
 
-        # next_batch = data_iter.__next__()  # start loading the first batch
-        # next_batch = [_.cuda(non_blocking=True) for _ in next_batch]
-
         num_batches = len(dataloader)
         test_losses = []
 
         model.eval()
-        #l_fn.to_eval()
 
         with torch.no_grad():
 
             for batch_idx in range(len(dataloader)):
-
-                # if batch_idx + 1 != len(dataloader): 
-                #     # start copying data of next batch
-                #     next_batch = data_iter.__next__()
-                #     next_batch = [_.cuda(non_blocking=True) for _ in next_batch]
             
-                X_test, y_test, _, t_pts, n_elems = data_iter.__next__()
+                X_test, y_test, _, t_pts, n_elems, de, dy = data_iter.__next__()
             
                 X_test = X_test.squeeze(0).to(device)
                 y_test = y_test.squeeze(0).to(device)
-                # t = t.squeeze(0).to(device)
-                # e = e.squeeze(0).to(device)
-                # f = f.squeeze(0).to(device)
-                # a = a.squeeze(0).to(device)
+                de = de.squeeze(0).to(device)
+                dy = dy.squeeze(0).to(device)
 
                 x_batches = X_test.split(X_test.shape[0]//32)
                 y_batches = y_test.split(y_test.shape[0]//32)
+                de_batches = de.split(de.shape[0]//32)
+                dy_batches = dy.split(dy.shape[0]//32)
+
+                running_loss = 0.0
 
                 for i, batch in enumerate(x_batches):
-                    model.init_hidden(batch.size(0),device)
+                    #model.init_hidden(batch.size(0),device)
                     with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                        pred, _ = model(batch) # stress rate
+                        pred = model(batch) # stress rate
                     
-                # dt = torch.diff(t.reshape(t_pts,n_elems,1),dim=0)
-                # s_princ_ = torch.zeros([t_pts,n_elems,2]).to(device)
-                # s_princ_[1:,:,:] = pred.reshape(t_pts-1,n_elems,pred.shape[-1])*dt
-                # s_princ_ = torch.cumsum(s_princ_,0)
+                    s = pred[:,:3]  # stress
+                    l = pred[:,3:]  # cholesky factors
+                    L = torch.zeros(l.size(0),3,3).to(device)
+                    tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+                    L[:,tril_indices[0], tril_indices[1]] = l  # lower triangular matrix to full matrix
 
-                # f_ = (torch.sum(s_princ_*a.reshape([t_pts,n_elems,1]),1)/30.0).unsqueeze(1).repeat(1,n_elems,1).reshape(-1,s_princ_.shape[-1])
-                # s_princ_ord = torch.sort(s_princ_,-1,descending=True).values
-                # triax = (math.sqrt(2)/3)*(s_princ_ord[:,:,0]+s_princ_ord[:,:,1])/(s_princ_ord[:,:,0]-s_princ_ord[:,:,1]+1e-12)
-                # l_triax = torch.nn.functional.relu(torch.abs(triax.reshape(-1,1))-2/3)
-                
-                
-                # y_scaler = preprocessing.MinMaxScaler(feature_range=(-1, 1))
-                # y_scaler.fit(y_test.cpu().detach().numpy())
-                # dot_y_princ = torch.from_numpy(y_scaler.scale_).to(device)*y_test
-                # s = torch.from_numpy(y_scaler.scale_).to(device)*pred
-        
-                # s_princ = torch.reshape(pred,[t_pts,n_elems,2])
-                # s_princ_mat = torch.zeros([t_pts,n_elems,2,2])
-                
-                # s_princ_mat[:,:,0,0] = s_princ[:,:,0]
-                # s_princ_mat[:,:,1,1] = s_princ[:,:,1]
-
-                
-                # rot_mat = torch.zeros_like(s_princ_mat)
-                # rot_mat[:,:,0,0] = torch.cos(angles[:,:])
-                # rot_mat[:,:,0,1] = torch.sin(angles[:,:])
-                # rot_mat[:,:,1,0] = -torch.sin(angles[:,:])
-                # rot_mat[:,:,1,1] = torch.cos(angles[:,:])
-
-                # s = torch.transpose(rot_mat,2,3) @ s_princ_mat @ rot_mat
-                # s_vec = s[:,:,[0,1,1],[0,1,0]].reshape([-1,3])
-                
-                # l = torch.reshape(pred,[t_pts,n_elems,6])
-
-                # L = torch.zeros([t_pts, n_elems, 3, 3])
-                # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-                # L[:, :, tril_indices[0], tril_indices[1]] = l[:,:]
-                # H = L @torch.transpose(L,2,3)
-
-                # d_s = (H @ d_e).squeeze()
-                # s = torch.cumsum(d_s,0).reshape([-1,3])
+                    J = L@L.transpose(2,1)  # Jacobian
+                    ds = (J@de_batches[i].unsqueeze(-1)).squeeze(-1)
                 
                     with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                         
@@ -413,14 +329,13 @@ def train():
                     
                         #test_loss = l_fn(l_tuples)
                         # test_loss = l_fn(pred[:,0], y_test[:,0]) + l_fn(pred[:,1], y_test[:,1])
-                        test_loss = l_fn(pred, y_batches[i].to(device))
+                        test_loss = l_fn(s, y_batches[i]) + l_fn(ds, dy_batches[i])
                 
-                    test_losses.append(test_loss.item())
-                    
-                    # del X_test, y_test
-                    # gc.collect()
+                    running_loss += test_loss.item()
 
-                print('\r>Test: %d/%d' % (batch_idx + 1, num_batches), end='')
+                print('\r> Test: %d/%d' % (batch_idx + 1, num_batches), end='')
+
+            test_losses.append(running_loss / len(x_batches))
 
         return test_losses
 #----------------------------------------------------
@@ -464,14 +379,9 @@ def train():
 
     # Gathering statistics on training dataset
 
-    #file_list = []
     df_list = []
 
     dir = os.path.join(TRAIN_MULTI_DIR,'processed/')
-    # for r, d, f in os.walk(dir):
-    #     for file in f:
-    #         if '.csv' or '.parquet' in file:
-    #             file_list.append(dir + file)
 
     file_list = glob.glob(os.path.join(dir, f'*.parquet'))
 
@@ -480,9 +390,9 @@ def train():
     raw_data = pd.concat(df_list)
     input_data = raw_data[raw_data['tag'].isin(train_trials)].drop('tag',1).dropna()
 
-    min = torch.min(torch.from_numpy(input_data.values).float(),0).values
-    max = torch.max(torch.from_numpy(input_data.values).float(),0).values
-    std, mean = torch.std_mean(torch.from_numpy(input_data.values),0)
+    #min = torch.min(torch.from_numpy(input_data.values).float(),0).values
+    #max = torch.max(torch.from_numpy(input_data.values).float(),0).values
+    std, mean = torch.std_mean(torch.from_numpy(input_data.values.astype(np.float32)),0)
 
     # Cleaning workspace from useless variables
     del df_list
@@ -519,16 +429,12 @@ def train():
     USE_AMP = True
 
     # WANDB logging
-    WANDB_LOG = True
+    WANDB_LOG = False
 
     model_1 = GRUModel(input_dim=N_INPUTS, hidden_dim=N_UNITS, layer_dim=H_LAYERS, output_dim=N_OUTPUTS)
 
     model_1.apply(init_weights)
     model_1.to(device)
-
-    # clip_value = 100
-    # for p in model_1.parameters():
-    #     p.register_hook(lambda grad: torch.clamp(grad, -clip_value, clip_value))
 
     # Training variables
     epochs = 10000
@@ -553,25 +459,19 @@ def train():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps_annealing, eta_min=1e-3)
     warmup_lr = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=steps_warmup, after_scheduler=scheduler)
     
-    #scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,base_lr=0.002, max_lr=0.007, mode='exp_range',gamma=0.99994,cycle_momentum=False,step_size_up=len(train_generator)*20,step_size_down=len(train_generator)*200)
-    #constraints=weightConstraint(cond='plastic')
-
     # Creates a GradScaler once at the beginning of training.
     scaler = torch.cuda.amp.GradScaler()
 
     # Container variables for history purposes
-    train_loss = []
-    val_loss = []
-    epochs_ = []
-
-    f_loss = []
-    l_loss = []
-    triax_loss = []
-
-    alpha1 = []
-    alpha2 = []
-    alpha3 = []
-    alpha4 = []
+    log_dict = {
+        'epoch': {},
+        't_loss': {},
+        'v_loss': {},
+        'jac_loss': {},
+        's_loss': {},
+        'xy_loss': {},
+        'grad_norm': {}
+    }
 
     if WANDB_LOG:
         config = {
@@ -606,65 +506,61 @@ def train():
 
     for t in range(epochs):
 
-        print('\r--------------------\nEpoch [%d/%d]' % (t + 1, epochs))
+        print('\r--------------------\nEpoch [%d/%d]\n' % (t + 1, epochs))
 
-        epochs_.append(t+1)
+        log_dict['epoch'][t] = t + 1
 
         # Train loop
         start_train = time.time()
 
         #--------------------------------------------------------------
-        batch_losses, f_l, l_, t_l = train_loop(train_dataloader, model_1, l_fn, optimizer,t)
+        t_loss, jac_loss, s_loss, xy_loss = train_loop(train_dataloader, model_1, l_fn, optimizer,t)
         #--------------------------------------------------------------
 
-        train_loss.append(np.mean(batch_losses))
-        f_loss.append(np.mean(f_l))
-        l_loss.append(np.mean(l_))
-        triax_loss.append(np.mean(t_l))
-        
-        alpha1.append(0.0)
-        alpha2.append(0.0)
-        alpha3.append(0.0)
-        alpha4.append(0.0)
+        log_dict['t_loss'][t] = np.mean(t_loss) 
+        log_dict['jac_loss'][t] = np.mean(jac_loss)
+        log_dict['s_loss'][t] = np.mean(s_loss)
+        log_dict['xy_loss'][t] = np.mean(xy_loss)
+        #train_loss.append(np.mean(batch_losses))
+        # f_loss.append(np.mean(f_l))
+        # l_loss.append(np.mean(l_))
+        # triax_loss.append(np.mean(t_l))
 
         end_train = time.time()
 
         #Apply learning rate scheduling if defined
-        try:
+        #try:
             #scheduler.step(train_loss[t])
-            print('. t_loss: %.6e -> lr: %.4e -- %.3fs \n\nl_mse: %.4e | f_l: %.4e | t_l: %.4e \na1: %.3e | a2: %.3e | a3: %.3e | a4: %.3e\n' % (train_loss[t], warmup_lr._last_lr[0], end_train - start_train, l_loss[t], f_loss[t], triax_loss[t], alpha1[t], alpha2[t], alpha3[t], alpha4[t]))
-        except:
-            print('. t_loss: %.6e -> | wm_l: %.4e -- %.3fs' % (train_loss[t], f_loss[t], end_train - start_train))
+        print('. t_loss: %.6e -> lr: %.4e -- %.3fs \n\nl_stress: %.4e | l_jac: %.4e | l_xy: %.4e\n' % (log_dict['t_loss'][t], warmup_lr._last_lr[0], end_train - start_train, log_dict['s_loss'][t], log_dict['jac_loss'][t], log_dict['xy_loss'][t]))
+        # except:
+        #     print('. t_loss: %.6e -> | wm_l: %.4e -- %.3fs' % (train_loss[t], f_loss[t], end_train - start_train))
 
         # Test loop
         start_test = time.time()
 
         #-----------------------------------------------------------------------------------
-        batch_val_losses = test_loop(test_dataloader, model_1, l_fn)
+        v_loss = test_loop(test_dataloader, model_1, l_fn)
         #-----------------------------------------------------------------------------------
 
-        val_loss.append(np.mean(batch_val_losses))
+        log_dict['v_loss'][t] = np.mean(v_loss)
+        #val_loss.append(np.mean(batch_val_losses))
 
         end_test = time.time()
 
-        print('. v_loss: %.6e -- %.3fs' % (val_loss[t], end_test - start_test))
+        print('. v_loss: %.6e -- %.3fs' % (log_dict['v_loss'][t], end_test - start_test))
 
         if t > 200:
-            early_stopping(val_loss[t], model_1)
+            early_stopping(log_dict['v_loss'][t], model_1)
 
         if WANDB_LOG:
             wandb.log({
                 'epoch': t,
                 'l_rate': warmup_lr._last_lr[0],
-                'train_loss': train_loss[t],
-                'test_loss': val_loss[t],
-                'l_jac': f_loss[t],
-                't_loss': triax_loss[t],
-                'mse_loss': l_loss[t],
-                'alpha_1': alpha1[t],
-                'alpha_2': alpha2[t],
-                'alpha_3': alpha3[t],
-                'alpha_4': alpha4[t]
+                'train_loss': log_dict['t_loss'][t],
+                'test_loss': log_dict['v_loss'][t],
+                'l_jac': log_dict['jac_loss'][t],
+                'l_stress': log_dict['s_loss'][t],
+                'l_xy': log_dict['xy_loss'][t]
             })
 
         if  early_stopping.early_stop:
@@ -674,13 +570,13 @@ def train():
     print("Done!")
 
     # load the last checkpoint with the best model
-    model_1.load_state_dict(torch.load(f'temp/{run.name}/checkpoint.pt'))
+    model_1.load_state_dict(torch.load(path))
 
-    epochs_ = np.reshape(np.array(epochs_), (len(epochs_),1))
-    train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
-    val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
+    # epochs_ = np.reshape(np.array(epochs_), (len(epochs_),1))
+    # train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
+    # val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
 
-    history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
+    # history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
 
     task = f"{run.name}-[{N_INPUTS}-GRUx{H_LAYERS}-{*N_UNITS,}-{N_OUTPUTS}]-{TRAIN_MULTI_DIR.split('/')[-2]}-{count_parameters(model_1)}-VFs"
     #task = r'%s-[%i-%ix%i-%i]-%s-%i-VFs' % (run.name,N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
@@ -700,7 +596,7 @@ def train():
         except FileExistsError:
             pass
 
-    history.to_csv(output_loss + task + '.csv', sep=',', encoding='utf-8', header='true')
+    #history.to_csv(output_loss + task + '.csv', sep=',', encoding='utf-8', header='true')
 
     #plot_history(history, output_loss, True, task)
 
@@ -717,7 +613,7 @@ def train():
     if WANDB_LOG:
         # 3️⃣ At the end of training, save the model artifact
         # Name this artifact after the current run
-        task_ = f"{run.name}-[{N_INPUTS}-GRUx{H_LAYERS}-{*N_UNITS,}-{N_OUTPUTS}]-{TRAIN_MULTI_DIR.split('/')[-2]}-direct"
+        task_ = f"{run.id}_{run.name}"
         #task_ = r'__%i-%ix%i-%i__%s-direct' % (N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2])
         model_artifact_name = run.id + '_' + run.name + task_
         # Create a new artifact, which is a sample dataset

@@ -12,6 +12,9 @@ class SBVFLoss(torch.nn.Module):
 
         res = wi - we
 
+        # Getting number of elements in tensor
+        m = torch.tensor(res.size()).prod()
+
         if self.res_scale:
             ivw_sort = torch.sort(torch.abs(res.detach()),1,descending=True).values
             #ivw_sort = torch.max(torch.abs(res.detach()),1).values
@@ -49,8 +52,14 @@ class UDVFLoss(torch.nn.Module):
             
             # Normalizing the residual by the internal virtual work
             wi_max = torch.max(torch.abs(wi.detach()))
+            #wi_max = torch.max(wi.detach())
+            #wi_min = torch.min(wi.detach())
+
+            #wi_range = (wi_max-wi_min) 
+
 
             res = res / wi_max
+            #res = res / wi_range
             
         elif self.normalize == 'wext':
 

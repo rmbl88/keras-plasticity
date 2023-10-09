@@ -1,16 +1,12 @@
-from dask import get
 import matplotlib
 import numpy as np
 import matplotlib.pyplot as plt
 import torchmetrics
 from constants import *
-from mpl_toolkits import mplot3d
-import math
 import os
 import pandas as pd
 from cycler import cycler
 from matplotlib.ticker import MaxNLocator
-import torch
 from matplotlib.offsetbox import AnchoredText
 import glob
 from tqdm import tqdm
@@ -19,7 +15,7 @@ def get_stats(var):
     return (np.mean(var),np.median(var),max(var),min(var))
 
 def set_anchored_text(mean_e,median_e,max_e,min_e,frameon=True,loc='upper right'):
-    at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=5.5))
+    at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=6.5))
     at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
     at.patch.set_linewidth(0.55)
     return at
@@ -61,17 +57,17 @@ def set_size(width, fraction=1, subplots=(1, 1)):
     # Figure width in inches
     fig_width_in = fig_width_pt * inches_per_pt
     # Figure height in inches
-    fig_height_in = fig_width_in * golden_ratio * (subplots[0] / subplots[1]) * 1.5
+    fig_height_in = fig_width_in * golden_ratio * (subplots[0] / subplots[1]) * 1.75
 
     return (fig_width_in, fig_height_in)
 
 
 df_list = []
 
-RUN = 'woven-field-208'
+RUN = 'solar-planet-147'
 #RUN = 'whole-puddle-134'
-#DIR = f'outputs/crux-plastic_sbvf_abs_direct/val/{RUN}/'
-DIR = f'outputs/sbvfm_indirect_crux_gru/val/{RUN}/'
+DIR = f'outputs/crux-plastic_sbvf_abs_direct/val/{RUN}/'
+#DIR = f'outputs/sbvfm_indirect_crux_gru/val/{RUN}/'
 
 mech_tests = []
 for r, d, f in os.walk(DIR):
@@ -115,7 +111,11 @@ for k_test, elems in (pbar_1 := tqdm(mech_tests.items(), bar_format=FORMAT_PBAR,
             TRIAL = k_test
             ELEM = elem
 
-            TITLE = r'' + TRIAL.replace('_','\_') + ' - element \#' + ELEM
+            ux = TRIAL.split('_')[0][1:]
+            uy = TRIAL.split('_')[1][1:]
+
+            #TITLE = r'' + TRIAL.replace('_','\_') + ' - element \#' + ELEM
+            TITLE = f'$u_x={{{ux}}}$, $u_y={{{uy}}}$ - element {ELEM}'
             
             ex_var_abaqus = df['e_xx'].values
             ey_var_abaqus = df['e_yy'].values
@@ -155,9 +155,9 @@ for k_test, elems in (pbar_1 := tqdm(mech_tests.items(), bar_format=FORMAT_PBAR,
 
             fig , axs = plt.subplots(1,3)
             #fig.set_size_inches(16, 9)
-            fig.set_size_inches(set_size('esaform',subplots=(1, 3)))
-            fig.subplots_adjust(bottom=0.28, wspace=0.35)
-            fig.suptitle(TITLE, fontsize=9)
+            fig.set_size_inches(set_size(468.0,subplots=(1, 3)))
+            fig.subplots_adjust(bottom=0.35, wspace=0.4)
+            fig.suptitle(TITLE, fontsize=8)
             
             axs[0].plot(ex_var_abaqus, sx_var_abaqus, label='ABAQUS', color='k', marker='.', markersize=0.75)
             axs[0].plot(ex_var_abaqus, sx_pred_var, label='ANN', color='r', marker='.', markersize=0.9, alpha=0.65)
@@ -183,15 +183,15 @@ for k_test, elems in (pbar_1 := tqdm(mech_tests.items(), bar_format=FORMAT_PBAR,
                 ax.xaxis.set_major_locator(MaxNLocator(6))
                 ax.yaxis.set_major_locator(MaxNLocator(6)) 
         
-            plt.savefig(os.path.join(DIR,k_test,'plots', f'{TRIAL}_el-{ELEM}_a.png'), format="png", dpi=600, bbox_inches='tight')
+            plt.savefig(os.path.join(DIR,k_test,'plots', f'{TRIAL}_el-{ELEM}_a.pdf'), format="pdf", dpi=600, bbox_inches='tight')
             plt.clf()
             plt.close(fig)
             
             fig , axs = plt.subplots(1,3)
             #fig.set_size_inches(16, 9)
-            fig.set_size_inches(set_size('esaform',subplots=(1, 3)))
-            fig.subplots_adjust(bottom=0.28, wspace=0.3)
-            fig.suptitle(TITLE, fontsize=9)
+            fig.set_size_inches(set_size(468.0,subplots=(1, 3)))
+            fig.subplots_adjust(bottom=0.2, wspace=0.4)
+            fig.suptitle(TITLE, fontsize=8)
             
             colors = ['lightgray'] * err_x.shape[0]
 
@@ -251,7 +251,7 @@ for k_test, elems in (pbar_1 := tqdm(mech_tests.items(), bar_format=FORMAT_PBAR,
             #     ax.xaxis.set_major_locator(MaxNLocator(6))
             #     ax.yaxis.set_major_locator(MaxNLocator(6)) 
             
-            plt.savefig(os.path.join(DIR,k_test,'plots', f'{TRIAL}_el-{ELEM}_b.png'), format="png", dpi=600, bbox_inches='tight')
+            plt.savefig(os.path.join(DIR,k_test,'plots', f'{TRIAL}_el-{ELEM}_b.pdf'), format="pdf", dpi=600, bbox_inches='tight')
             plt.clf()
             plt.close(fig)
 

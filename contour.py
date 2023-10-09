@@ -1,5 +1,3 @@
-import pathlib
-import shutil
 import matplotlib
 import numpy as np
 from functions import *
@@ -7,11 +5,7 @@ from constants import *
 import matplotlib.cm as mcm
 import matplotlib.collections as mc
 import matplotlib.pyplot as plt
-import pyarrow.parquet as pq
-import pandas as pd
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.offsetbox import AnchoredText
-from matplotlib import ticker
 import matplotlib.tri as tri
 from tqdm import tqdm
 import gc
@@ -62,7 +56,7 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
         return pc
     
     def set_anchored_text(mean_e,median_e,max_e,min_e,frameon=True,loc='upper right'):
-        at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['font.size']))
+        at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['legend.fontsize']))
         at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
         at.patch.set_linewidth(0.55)
         return at
@@ -81,7 +75,7 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
             n_subplots = len(vars[var].keys())
             fig, axs = plt.subplots(1,n_subplots)
             fig.set_size_inches(19.2,10.8)
-            fig.subplots_adjust(wspace=0.275)
+            fig.subplots_adjust(wspace=0.30)
             
             if var == 'sxx_t':
                 cb_str = r'$\boldsymbol{\sigma}_{xx}~[\mathrm{MPa}]$'
@@ -94,7 +88,7 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
             elif var == 's2':
                 cb_str = r'$\boldsymbol{\sigma}_{22}~[\mathrm{MPa}]$'
             elif var == 'mises':
-                cb_str = r'$\boldsymbol{\sigma}_{Mises}~[\mathrm{MPa}]$'
+                cb_str = r'$\boldsymbol{\sigma}_{vM}~[\mathrm{MPa}]$'
             elif var == 'ivw_xx':
                 cb_str = r'$\boldsymbol{W}^{int}_{xx}~[\mathrm{J}]$'
             elif var == 'ivw_yy':
@@ -142,7 +136,7 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                     axs[i].axis('off')
                     axs[i].set_aspect('equal')
                     
-                    cbarlabels = np.linspace(cbar_min, cbar_max, num=13, endpoint=True)
+                    cbarlabels = np.linspace(cbar_min, cbar_max, num=10, endpoint=True)
 
                     #fmt ='%.3e'
                     fmt = '%.3f'
@@ -152,7 +146,7 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                         cb_str_ = r'\textbf{ANN}' + '\n' + cb_str
                     elif k == 'err':
                         f_var = cb_str.split('~')[0][1:]
-                        cb_str_ = r'\textbf{Abs. error}' + '\n' + r'$\boldsymbol{\delta}_{%s}~[\mathrm{MPa}]$' % (f_var)
+                        cb_str_ = r'\textbf{Abs. error}' + '\n' + r'$\boldsymbol{\delta}{%s}~[\mathrm{MPa}]$' % (f_var)
                         fmt = '%.3f'
 
                         v_mean = np.mean(var_avg)
@@ -165,12 +159,12 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                     cb = fig.colorbar(pc, cax=axs[i].inset_axes((-0.05, 0.025, 0.02, 0.8)),ticks=cbarlabels,format=fmt)
                     cb.ax.set_title(cb_str_, pad=15, horizontalalignment='right')
                     cb.outline.set_linewidth(1)
-                    cb.ax.yaxis.set_tick_params(pad=7.5, colors='black', width=1,labelsize=PARAMS_CONTOUR['font.size'])
+                    cb.ax.yaxis.set_tick_params(pad=7.5, colors='black', width=1,labelsize=PARAMS_CONTOUR['axes.labelsize'])
                     cb.ax.yaxis.set_ticks_position('left')
 
             #fig.tight_layout()
             #plt.show()
-            fig.savefig(os.path.join(out_dir,f'{tag}_t{t}_{var}_cont.png'), format="png", dpi=200, bbox_inches='tight')
+            fig.savefig(os.path.join(out_dir,f'{tag}_t{t}_{var}_cont.png'), format="png", dpi=600, bbox_inches='tight')
             plt.clf()
             # plt.close(fig)
             del pc, cb, axs, fig, var_nodal, var_avg

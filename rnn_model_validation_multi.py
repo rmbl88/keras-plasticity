@@ -1,6 +1,6 @@
 import constants
 import joblib
-from functions import (GRUModel, read_mesh)
+from functions import (GRUModel, GRUModelJit, read_mesh)
 from contour import plot_fields
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -12,6 +12,8 @@ from constants import *
 import glob
 import pyarrow.parquet as pq
 from tqdm import tqdm
+
+from gru_nn import customGRU
 
 #-------------------------------------------------------------------------
 #                          METHOD DEFINITIONS
@@ -111,6 +113,27 @@ def get_re(pred,real):
 def get_mises(s_x, s_y, s_xy):
     return np.sqrt(np.square(s_x)+np.square(s_y)-s_x*s_y+3*np.square(s_xy))
 
+def batch_jacobian(y,x, mean, var):
+    
+    batch = x.size(0)
+    inp_dim = x.size(-1)
+    out_dim = y.size(-1)
+
+    grad_output = torch.eye(out_dim).unsqueeze(1).repeat(1,batch,1)
+    gradient = torch.autograd.grad(y,x,grad_output,retain_graph=True, create_graph=True, is_grads_batched=True)
+    J = gradient[0][:,:,-1].permute(1,0,2)
+    
+    # for i in range(out_dim):
+    #     grad_output = torch.zeros([batch,out_dim])
+    #     grad_output[:,i] = 1
+
+    #     gradient = torch.autograd.grad(y,x,grad_output,retain_graph=True, create_graph=True)
+    #     J[:,i,:] = gradient[0][:,-1]
+    #     #print("hey")
+    
+    return J*(1-mean)/var
+
+
 #--------------------------------------------------------------------------
 
 # Initializing Matplotlib settings
@@ -123,8 +146,10 @@ torch.set_default_dtype(torch.float64)
 
 # Defining ann model to load
 #RUN = 'solar-planet-147'
+RUN = 'fine-rain-207'
+#RUN = 'summer-water-157'
 #RUN = 'whole-puddle-134'
-RUN = 'lilac-snow-215'
+#RUN = 'lemon-star-431'
 
 # Defining output directory
 #DIR = 'crux-plastic_sbvf_abs_direct'
@@ -156,18 +181,26 @@ DRAW_CONTOURS = True
 TAG = 'x15_y15_'
 
 # Setting up ANN model
+#model_1 = GRUModelJit(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=len(OUTPUTS)+6)
 model_1 = GRUModel(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=len(OUTPUTS))
-model_1.load_state_dict(get_ann_model(RUN, DIR))    
-model_1.eval()
+#model_1 = customGRU(input_dim=len(FEATURES), hidden_dim=N_UNITS, layer_dim=H_LAYERS, output_dim=len(OUTPUTS), layer_norm=False)
+model_1.load_state_dict(get_ann_model(RUN, DIR))   
+#model_1.to(torch.device('cpu')) 
+#model_1.eval()
+# model_1(torch.ones(1,4,3))
+# traced_model = torch.jit.trace(model_1,torch.ones(1,4,3).to(torch.device('cpu')))
 
-# Loading validation data
+# traced_model.eval()
+# traced_model.save('jit_model.pt')
+
+#Loading validation data
 df_list = load_data(dir=VAL_DIR_MULTI, ftype='parquet')
 
 cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred',
         'mre_sx','mre_sy','mre_sxy']
 
-MIN = torch.tensor([-0.1471, -0.1452, -0.2304])
-MAX = torch.tensor([0.3186, 0.3231, 0.2908])
+# MIN = torch.tensor([-0.1471, -0.1452, -0.2304])
+# MAX = torch.tensor([0.3186, 0.3231, 0.2908])
 with torch.no_grad():
     last_tag = ''
     for i, df in enumerate(df_list):
@@ -206,6 +239,9 @@ with torch.no_grad():
         # X_scaled = x_std * (MAX - MIN) + MIN
         if SCALER_DICT['type'] == 'standard':
             X_scaled = (X-SCALER_DICT['stat_vars'][1])/SCALER_DICT['stat_vars'][0]
+        elif SCALER_DICT['type'] == 'minmax':
+            x_std = (X - SCALER_DICT['stat_vars'][0]) / (SCALER_DICT['stat_vars'][1] - SCALER_DICT['stat_vars'][0])
+            X_scaled = x_std * (SCALER_DICT['stat_vars'][2][1] - SCALER_DICT['stat_vars'][2][0]) + SCALER_DICT['stat_vars'][2][0]
         # else:
         #     pass
             #x_std = (X - MIN) / (MAX - MIN)
@@ -228,10 +264,21 @@ with torch.no_grad():
 
         t = torch.from_numpy(info['t'].values).reshape(n_tps, n_elems, 1)
         #dt = torch.diff(t,dim=0)
+        # x_jac = x[:2,:].requires_grad_(True)
+        # s_jac = model_1(x_jac)
 
-        model_1.init_hidden(x.size(0))
-        s, h = model_1(x) # stress rate.
+        # J = batch_jacobian(s_jac,x_jac, SCALER_DICT['stat_vars'][1], SCALER_DICT['stat_vars'][0])
+        #model_1.init_hidden(x.size(0))
+        s = model_1(x) # stress rate.
         
+        #l = s[:,3:]
+        #s = s[:,:3]
+
+        # L = torch.zeros(l.size(0),3,3)
+        # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
+        # L[:,tril_indices[0], tril_indices[1]] = l  # vector to lower triangular matrix
+
+        # J = L@L.transpose(2,1)  # Jacobian
         # s_princ = torch.zeros(n_tps,n_elems, s_rate.shape[-1])
         
         # s_princ[1:,:,:] = s_rate.reshape(n_tps-1,n_elems,s_rate.shape[-1])*dt
@@ -342,6 +389,6 @@ with torch.no_grad():
             
             results = pd.DataFrame(res, columns=cols)
             
-            results.to_csv(os.path.join(DATA_DIR, f'{tag}_el-{elem}.csv'), header=True, sep=',', float_format='%.6f')
+            results.to_csv(os.path.join(DATA_DIR, f'{tag}_el-{elem}.csv'), header=True, sep=',', float_format='%.10f')
 
             last_tag = tag

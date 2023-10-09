@@ -893,7 +893,6 @@ def train(q):
     # Initializing the early_stopping object
     #early_stopping = EarlyStopping(patience=1000, path='temp/checkpoint.pt', verbose=True)
 
-    
     VFs_train = {key: {k: None for k in ['u','e','v_u']} for key in train_trials}
     VFs_test = {key: {k: None for k in ['u','e','v_u']} for key in test_trials}
 

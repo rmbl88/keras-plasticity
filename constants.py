@@ -17,14 +17,14 @@ ELEM_AREA = LENGTH**2 / 9
 ELEM_THICK = 0.1
 
 FORMAT_PBAR='{l_bar}{bar:50}{r_bar}{bar:-50b}'
-
+FORMAT_PBAR_SUB='{l_bar}{bar:20}{r_bar}{bar:-20b}'
 
 PRE_TRAINING = False
 
 # Customizing matplotlib
 PARAMS = {'text.usetex' : True,
           'text.latex.preamble' : r"\usepackage{amsmath,newpxtext,newpxmath}",
-          'font.size' : 10,
+          'font.size' : 11,
           'font.family' : 'serif',
           'font.serif' : ['Palatino Linotype'],
           'lines.linewidth' : 0.75,
@@ -47,9 +47,9 @@ PARAMS = {'text.usetex' : True,
           'ytick.color': '000000',
           'xtick.major.width': 0.1,
           'ytick.major.width': 0.1,
-          'legend.fontsize': 7,
-          'xtick.labelsize': 7,
-          'ytick.labelsize': 7
+          'legend.fontsize': 8,
+          'xtick.labelsize': 9,
+          'ytick.labelsize': 9
           
 }
 
@@ -57,7 +57,7 @@ PARAMS = {'text.usetex' : True,
 PARAMS_CONTOUR = {
         'text.usetex' : True,
         'text.latex.preamble' : r"\usepackage{amsmath,newpxtext,newpxmath}",
-        'font.size' : 12,
+        'font.size' : 14,
         'font.family' : 'serif',
         'font.serif' : ['Palatino Linotype'],
         'axes.labelpad' : 6.5,
@@ -65,5 +65,9 @@ PARAMS_CONTOUR = {
         'xtick.direction' : 'out',
         'ytick.direction': 'out',
         'xtick.color': '#000000',
-        'ytick.color': '#000000',  
+        'ytick.color': '#000000',
+        'legend.fontsize': 17,
+        'xtick.labelsize': 17,
+        'ytick.labelsize': 17,
+        'axes.labelsize': 17  
 }
