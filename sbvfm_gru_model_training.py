@@ -5,7 +5,6 @@ import glob
 import os
 import shutil
 import joblib
-import math
 import pandas as pd
 import random
 import numpy as np
@@ -26,10 +25,9 @@ from warmup_scheduler import GradualWarmupScheduler
 import copy
 from functions import (
     
-    CoVWeightingLoss,
+    
     GRUModel,
-    EarlyStopping,
-    SparsityLoss,    
+    EarlyStopping   
 
     )
 from gru_nn import customGRU
@@ -148,8 +146,9 @@ class CruciformDataset(torch.utils.data.Dataset):
         y = y.reshape(t_pts,n_elems,-1).permute(1,0,2)
         #y = y.reshape(-1,y.shape[-1])
 
-        #index = [idx for idx, s in enumerate(self.f_files) if tag in s][0]
-        #f = torch.from_numpy(self.f[index][['fxx','fyy']].dropna().values).float()
+        # index = [idx for idx, s in enumerate(self.f_files) if tag in s][0]
+        # f = torch.from_numpy(self.f[index][['fxx','fyy']].dropna().values).float()
+        
         f = f.reshape(t_pts,n_elems,-1).permute(1,0,2)[0]
         a = a.reshape(t_pts,n_elems,-1).permute(1,0,2)[:,0]
         
@@ -222,13 +221,10 @@ def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 def grad_norm(model):
-    grads = [
-        param.grad.detach().flatten()
-        for param in model.parameters()
-        if param.grad is not None
-    ]
-    norm = torch.cat(grads).norm()
-    return norm
+   
+    norm = torch.sqrt(torch.as_tensor([p.grad.data.norm(2).item()**2 for p in model.parameters() if p.grad is not None]).sum())
+        
+    return norm.item()
 
 def disp_ratio(tag):
 
@@ -254,15 +250,6 @@ def disp_ratio(tag):
 
 def main():
 
-    # def get_grad_norm(model):
-    #     total_norm = 0
-    #     for p in model.parameters():
-    #         if p.grad is not None:
-    #             param_norm = p.grad.data.norm(2)
-    #             total_norm += param_norm.item() ** 2
-    #     total_norm = total_norm ** (1. / 2)
-    #     return total_norm
-
     def init_weights(m):
         '''
         Performs the weight initialization of a neural network
@@ -277,7 +264,7 @@ def main():
             #torch.nn.init.xavier_normal(m.weight)
             #torch.nn.init.zeros_(m.bias)
             #torch.nn.init.ones_(m.bias)
-            m.bias.data.fill_(0.0)
+            m.bias.data.fill_(0.01)
         # elif isinstance(m, torch.nn.GRU) or isinstance(m, torch.nn.GRUCell):
         #     for param in m.parameters():
         #         if len(param.shape) >= 2:
@@ -291,30 +278,28 @@ def main():
 
         '''
 
+        steps = 0.0
+
         data_iter = iter(dataloader)
 
         num_batches = len(dataloader)
-
-        # min_ = dataloader.dataset.transform.transforms[0].min
-        # max_ = dataloader.dataset.transform.transforms[0].max
         
         logs = {
             'loss': {},
             'ivw': {},
             'evw': {},
             'ivw_ann': {},
-            'f_loss': {},
-            'triax_loss': {},
             'grad_norm': {}
         }
        
         model.train()
-        #l_fn.to_train()
                 
         for batch_idx in range(len(dataloader)):
 
             # Extracting variables for training
-            X_train, y_train, f, _, area, _, t_pts, n_elems, idx_elem, _, tag = data_iter.__next__()
+            #X_train, y_train, f, _, area, _, t_pts, n_elems, idx_elem, _, tag = data_iter.__next__()
+            X_train, y_train, f, _, area, _, t_pts, n_elems, tag = data_iter.__next__()
+            
             
             X_train = X_train.squeeze(0).to(DEVICE)
             y_train = y_train.squeeze(0).to(DEVICE)
@@ -322,32 +307,17 @@ def main():
             area = area.squeeze(0).to(DEVICE)
             f = f.squeeze(0).to(DEVICE)
             
-            #centroids = centroids.squeeze(0)
-
-            #dep = dep.squeeze(0).to(DEVICE)
-            #de = de.squeeze(0).to(DEVICE)
-            
             idx_elem = idx_elem.squeeze(0)
-            idx_t = torch.randperm(X_train.shape[1])
-            #idx_t = torch.as_tensor(list(range(X_train.shape[1])))
-            #idx_t = idx_t[idx_t!=0]
-
-            
+            idx_t = torch.randperm(X_train.shape[1])            
             
             #if VFM_TYPE=='sb':
             idx_t_batches = torch.split(idx_t, t_pts//BATCH_DIVIDER)
 
             x_batches = torch.split(X_train[:,idx_t], t_pts//BATCH_DIVIDER, 1)
             y_batches = torch.split(y_train[:,idx_t], t_pts//BATCH_DIVIDER, 1)
-            #dep_batches = torch.split(dep[:,idx_t], t_pts//BATCH_DIVIDER, 1)
-            #de_batches = torch.split(de[:,idx_t], t_pts//BATCH_DIVIDER, 1)
             f_batches = torch.split(f[idx_t], t_pts//BATCH_DIVIDER, 0)
-            #de_batches = torch.split(de[:,idx_t], t_pts//BATCH_DIVIDER, 1)
-
 
             idx_batches = torch.randperm(len(x_batches))
-
-            k, l = disp_ratio(tag)
             
             # Defining virtual fields
             if VFM_TYPE == 'sb':
@@ -356,27 +326,14 @@ def main():
             else:
                 v_strain = copy.deepcopy(v_fields['v_e'][:,idx_elem]).unsqueeze(2)
                 v_disp = copy.deepcopy(v_fields['v_u']).unsqueeze(1)
-                # if l == 'y':
-                #     v_disp[0][0] *= k
-                #     v_strain[0][:,:,0] *= k
-                # elif l == 'x':
-                #     v_disp[1][0] *= k
-                #     v_strain[1][:,:,1] *= k
-
-
-            #n=torch.as_tensor([1,1,0]).to(DEVICE)
-            # v_strain =  V_STRAIN[:,idx_elem].unsqueeze(2)
-            # v_disp = V_DISP.unsqueeze(1)
 
             running_loss = 0.0
             l_wint_ann = 0.0
             l_wint = 0.0
             l_wext = 0.0
-            l_f = 0.0
-            l_trx = 0.0
             g_norm = 0.0
-            data_pts = 0.0        
-
+            data_pts = 0.0
+            
             #for i, batch in enumerate(x_batches):
             for i in idx_batches:
 
@@ -387,44 +344,21 @@ def main():
 
                 #x = batch.reshape([-1,*batch.shape[-2:]]).to(DEVICE)
                 x = batch.reshape([-1,*batch.shape[-2:]])
-                #x0 = X_train[:,0].to(DEVICE)
-                #x0 = x0.reshape_as(x).to(DEVICE)
                 
                 y = y_batches[i]
                 f_ = f_batches[i]
-                #d_ep = dep_batches[i]
-                #de = de_batches[i]
-                has_refState = bool((idx_t_batches[i]==0).nonzero(as_tuple=True)[0].numel())
-
-                if has_refState:
-                    refState_idx = (idx_t_batches[i]==0).nonzero(as_tuple=True)[0]
-            
+                       
                 with torch.cuda.amp.autocast(dtype=torch.float32):
-                #with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                     
-                    pred, _ = model(x) # stress
-                    #pred_0, _ = model(x0)
+                    pred = model(x) # stress
 
                 #*******************************
                 # ADD OTHER CALCULATIONS HERE!
                 #*******************************
 
-                # s = pred[:,:3]
-                # l = pred[:,3:].reshape(n_elems,batch.size(1),-1)
-                # L = torch.zeros((n_elems,batch.size(1),3, 3)).to(DEVICE)
-                # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-                # L[:,:, tril_indices[0], tril_indices[1]] = l
-
-                # H = L @ L.transpose(2,3)
                 pred = pred.view_as(y)
-                
-
-
-                # v_strain =  V_STRAIN[:,idx_elem].unsqueeze(2)
-                # v_disp = V_DISP.unsqueeze(1)
 
                 a_ = area.unsqueeze(2)
-                f_pred = torch.sum((pred*a_/30.0),0)[:,:2]
                 
                 if VFM_TYPE=='sb':
                     w_int_ann = internal_vw(pred, v_strain[:, :, idx_t_batches[i]], a_)
@@ -434,64 +368,29 @@ def main():
                     w_int_ann = internal_vw(pred, v_strain, a_)
                     w_int = internal_vw(y, v_strain, a_)
                     w_ext = external_vw(f_, v_disp)
-            
-                if has_refState:
-                    
-                    pred_0 = pred[:,refState_idx]
-                    pass
-                    #w_int_ann0 = internal_vw(pred_0, v_strain, a_)
-                    #w_ext_0 = external_vw(f_[refState_idx], v_disp)
-                
-                #w = pred * batch[:,:,-1]
-                
-                    #w_int_ann0 = internal_vw(pred_0, v_strain, a_)   
-                
-                #w_ep = torch.sum(pred.view_as(y) * d_ep,-1, keepdim=True)
-
-                triax = (pred[:,:,0] + pred[:,:,1])/(1e-12 + 3 * torch.sqrt(torch.square(pred[:,:,0])) + torch.square(pred[:,:,1]) - pred[:,:,0] * pred[:,:,1] + 3 * torch.square(pred[:,:,2]))
-
-                f_max = torch.max(f_,0).values
-                f_min = torch.min(f_,0).values
-                
-                f_range = (f_max-f_min) if len(f_) > 1 else f_max
-
+        
                 with torch.cuda.amp.autocast(dtype=torch.float32):
-                #with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
                     
-                    #l_tuples = [(pred[:,0], y_batches[i][:,0].to(device)), (pred[:,1], y_batches[i][:,1].to(device)), (pred[:,1], y_batches[i][:,1].to(device))]
-                    
-                    #f_loss = torch.sum(torch.square((f_pred-f_) / f_range))
-                    f_loss = torch.sum(torch.square((w_int_ann[:2].permute(1,0,2).squeeze(-1)-f_) / f_range))
-                    #l_wp = torch.sum(torch.square(torch.nn.functional.relu(-w_ep)))
-                    l_triax = torch.sum(torch.square(torch.nn.functional.relu(torch.abs(triax)-2/3))) * (2*triax.numel())
+                    loss = l_fn(w_int_ann, w_ext)
 
-                    # if has_refState:   
-                    #     l_refState = torch.sum(torch.abs(w_int_ann0).pow(1/3))/x.size(0)
-                    #     loss = l_fn(w_int_ann, w_ext)/x.size(0) + 0.1*l_refState
-                    # else:
-                    #w_loss = torch.linalg.norm(torch.nn.functional.relu(-w))*((1/(2*pred.numel())))
-                    loss = l_fn(w_int_ann, w_ext) + 0.001 * f_loss
-
-                    #loss = l_fn(l_tuples)
                 
-                scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
+                #scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
             
                 if ((i + 1) % ITERS_TO_ACCUMULATE == 0) or (i + 1 == len(x_batches)):    
                     
                     # Unscales the gradients of optimizer's assigned params in-place
                     scaler.unscale_(optimizer)
 
-                    #g_norm += grad_norm(model)
-                    # torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
-                    clipper.step()
+                    #clipper.step()
                     g_norm += grad_norm(model)
 
-                    scaler.step(optimizer)
-                    scaler.update()
+                    #scaler.step(optimizer)
+                    #scaler.update()
                     
-                    warmup_lr.step()
+                    #warmup_lr.step()
 
                     optimizer.zero_grad(set_to_none=True)
+                    steps += 1
 
                 running_loss += loss.detach()
                 data_pts += w_ext.numel()
@@ -499,32 +398,15 @@ def main():
                 l_wext += torch.sum(w_ext.detach())
                 l_wint_ann += torch.sum(w_int_ann.detach())
                 
-                l_trx += l_triax.detach() * 2*triax.numel()
-                l_f += f_loss.detach()
-                
                 torch.cuda.empty_cache()
-                # Saving loss values
-                # batch_logs['loss'][i] = loss.item()
-                # batch_logs['ivw'][i] = torch.sum(w_int.detach())
-                # batch_logs['evw'][i] = torch.sum(w_ext.detach())
-                # batch_logs['ivw_ann'][i] = torch.sum(w_int_ann.detach())
-                # if has_refState:
-                #     batch_logs['refState_loss'][i] = l_refState.item()
-                # else:
-                #     batch_logs['refState_loss'][i] = logs['refState_loss'][i-1] if i > 0 else 0.0
-                # f_loss.append(0.0)
-                # triax_loss.append(0.0)
-                # l_loss.append(0.0  )
 
-            logs['loss'][batch_idx] = running_loss / len(idx_batches)
-            logs['ivw'][batch_idx] = l_wint / len(idx_batches)
-            logs['evw'][batch_idx] = l_wext / len(idx_batches)
-            logs['ivw_ann'][batch_idx] = l_wint_ann / len(idx_batches)
-            logs['f_loss'][batch_idx] = l_f / len(idx_batches)
-            logs['triax_loss'][batch_idx] = l_trx / len(idx_batches)
-            logs['grad_norm'][batch_idx] = g_norm / len(idx_batches)
+            logs['loss'][batch_idx] = running_loss
+            logs['ivw'][batch_idx] = l_wint
+            logs['evw'][batch_idx] = l_wext
+            logs['ivw_ann'][batch_idx] = l_wint_ann
+            logs['grad_norm'][batch_idx] = g_norm
 
-            print('\r>Train: %d/%d' % (batch_idx + 1, num_batches), end='')
+            print('\r>Train: %d/%d - steps: %i' % (batch_idx + 1, num_batches, steps), end='')
              
         #-----------------------------
         logs = [np.fromiter(v.values(),dtype=np.float32) for k,v in logs.items()]
@@ -540,7 +422,6 @@ def main():
         test_losses = {}
 
         model.eval()
-        #l_fn.to_eval()
 
         with torch.no_grad():
 
@@ -554,8 +435,6 @@ def main():
                 area = area.squeeze(0).to(DEVICE)
                 f = f.squeeze(0).to(DEVICE)
 
-                k, l = disp_ratio(tag)
-
                 # Defining virtual fields
                 if VFM_TYPE == 'sb':
                     v_strain = v_fields_test[tag[0]]['v_e'].to(DEVICE)
@@ -563,20 +442,8 @@ def main():
                     idx_t = torch.as_tensor(range(0, X_test.shape[1]))
                     idx_t_batches = torch.split(idx_t, t_pts//BATCH_DIVIDER)
                 else:
-                    # v_strain = v_fields['v_e'].unsqueeze(2)
-                    # v_disp = v_fields['v_u'].unsqueeze(1)
                     v_strain = copy.deepcopy(v_fields['v_e']).unsqueeze(2)
                     v_disp = copy.deepcopy(v_fields['v_u']).unsqueeze(1)
-                    # if l == 'y':
-                    #     v_disp[0][0] *= k
-                    #     v_strain[0][:,:,0] *= k
-                    # elif l == 'x':
-                    #     v_disp[1][0] *= k
-                    #     v_strain[1][:,:,1] *= k
-                
-                # # Defining virtual fields
-                # v_strain =  V_STRAIN.unsqueeze(2)
-                # v_disp = V_DISP.unsqueeze(1)
 
                 x_batches = torch.split(X_test, t_pts//BATCH_DIVIDER, 1)
                 y_batches = torch.split(y_test, t_pts//BATCH_DIVIDER, 1)
@@ -590,9 +457,8 @@ def main():
                     y = y_batches[i]
                     f_ = f_batches[i]
 
-                    with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                        #model.init_hidden(x.size(0), DEVICE)
-                        pred, _ = model(x) # stress
+                    with torch.cuda.amp.autocast(dtype=torch.float32):
+                        pred = model(x) # stress
 
                     #*******************************
                     # ADD OTHER CALCULATIONS HERE!
@@ -600,7 +466,6 @@ def main():
                     pred = pred.view_as(y)
                     
                     a_ = area.unsqueeze(2)
-                    f_pred = torch.sum((pred*a_/30.0),0)[:,:2]
 
                     if VFM_TYPE=='sb':
                         w_int_ann = internal_vw(pred, v_strain[:, :, idx_t_batches[i]], a_)
@@ -608,32 +473,12 @@ def main():
                     else:
                         w_int_ann = internal_vw(pred, v_strain, a_)
                         w_ext = external_vw(f_, v_disp)
-                        
-                    #f_pred = torch.sum((pred.reshape_as(y)*a_/30.0),0)[:,:2]
 
-                    # f_max = torch.max(torch.abs(f_pred),0).values
-
-                    triax = (pred[:,:,0] + pred[:,:,1])/(1e-12 + 3 * torch.sqrt(torch.square(pred[:,:,0])) + torch.square(pred[:,:,1]) - pred[:,:,0] * pred[:,:,1] + 3 * torch.square(pred[:,:,2]))
-
-                    f_max = torch.max(f_,0).values
-                    f_min = torch.min(f_,0).values
+                    with torch.cuda.amp.autocast(dtype=torch.float32):
                     
-                    f_range = (f_max-f_min) if len(f_)>1 else f_max
-
-                    with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                        
-                        #l_tuples = [(pred[:,0], y_test[:,0]), (pred[:,1], y_test[:,1]), (l_triax,)]
-                    
-                        #test_loss = l_fn(l_tuples)
-                        #f_loss = torch.sum(torch.square((f_pred-f_)/f_range))
-                        f_loss = torch.sum(torch.square((w_int_ann[:2].permute(1,0,2).squeeze(-1)-f_) / f_range))
-                        # l_triax = torch.sum(torch.square(torch.nn.functional.relu(torch.abs(triax)-2/3))) / (triax.numel())
-
-                        # test_loss =  0.9*l_fn(w_int_ann, w_ext) + 0.1 * f_loss
-                    
-                        running_loss += (l_fn(w_int_ann, w_ext) + 0.001 * f_loss).item()
+                        running_loss += l_fn(w_int_ann, w_ext).item()
                 
-                test_losses[batch_idx] = running_loss / len(x_batches)
+                test_losses[batch_idx] = running_loss
 
                 print('\r>Test: %d/%d' % (batch_idx + 1, num_batches), end='')
 
@@ -671,7 +516,8 @@ def main():
         dev = "cpu"  
         KWARGS = {'num_workers': 0}
     
-    DEVICE = torch.device(dev)
+    #DEVICE = torch.device(dev)
+    DEVICE = torch.device("cpu")
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                                  RANDOM SEED SETUP
@@ -690,23 +536,23 @@ def main():
 #-------------------------------------------------------------------------------------------------------------------
 
     # Data directories
-    TRAIN_DIR = 'data/training_multi/crux-plastic/'
+    TRAIN_DIR = 'data/training_multi/crux-vfm-test/'
 
     # Dataset split
-    TEST_SIZE = 0.2
+    TEST_SIZE = 0.3
 
     # Defining variables of interest
-    FEATURES = ['dt','exx_t','eyy_t','exy_t']
+    FEATURES = ['exx_t','eyy_t','exy_t']
     OUTPUTS = ['sxx_t','syy_t','sxy_t']
     INFO = ['tag','inc','t','cent_x','cent_y','fxx_t','fyy_t']
 
-    SHUFFLE_DATA = True
+    SHUFFLE_DATA = False
 
     # Selecting VFM formulation:
     #   minmax - scale data to a range
     #   standard - scale data to zero mean and unit variance 
-    #NORMALIZE_DATA = 'standard'
-    NORMALIZE_DATA = 'minmax'
+    NORMALIZE_DATA = 'standard'
+    #NORMALIZE_DATA = 'minmax'
     #NORMALIZE_DATA = False
 
     if NORMALIZE_DATA == 'minmax':
@@ -726,13 +572,13 @@ def main():
     HIDDEN_UNITS = [32]
 
     # Stacked GRU units
-    GRU_LAYERS = 3
+    GRU_LAYERS = 2
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                               TRAINING SETTINGS
 #-------------------------------------------------------------------------------------------------------------------
 
-    USE_PRETRAINED_MODEL = False
+    USE_PRETRAINED_MODEL = True
 
     if USE_PRETRAINED_MODEL:
         
@@ -745,34 +591,35 @@ def main():
         FEATURES, OUTPUTS, INFO, HIDDEN_UNITS, GRU_LAYERS, SEQ_LEN = load_file(PRETRAINED_RUN, PRETRAINED_MODEL_DIR, 'arch.pkl')
 
     # Learning rate
-    L_RATE = 0.001
+    L_RATE = 0.0005
 
     # Weight decay
-    L2_REG = 0.01
+    L2_REG = 0.001
 
     # No. epochs
     EPOCHS = 10000
 
     # No. of warmup steps for cosine annealing scheduler
-    WARM_STEPS = 640 #1920 # 5 epochs
+    WARM_STEPS = 1920 # 5 epochs
 
     # No. of epochs to trigger early-stopping
     ES_PATIENCE = 500
 
     # No. of epochs after which to start early-stopping check
-    ES_START = 20
+    ES_START = 1
 
     # No. of batches to divide training data into (acts upon the time-steps dimension)
-    BATCH_DIVIDER = 8
+    BATCH_DIVIDER = 32
 
     # No. of steps to acumulate gradients
     ITERS_TO_ACCUMULATE = 1
 
-    # Automatic mixed precision
-    USE_AMP = True
+    GRAD_CLIPPING = True
 
-    # Weight constraints
-    #W_CONSTRAIN=weightConstraint()
+    if GRAD_CLIPPING:
+        # Parameters for AutoClip as in: https://arxiv.org/pdf/2007.14469.pdf
+        QUANTILE = 0.25
+        HIST_LENGTH = 10000
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                               VFM CONFIGURATION
@@ -782,6 +629,7 @@ def main():
     #   ud - user-defined vf's
     #   sb - sensitivity-based
     VFM_TYPE = 'ud'
+    #VFM_TYPE = 'sb'
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                                   LOSS FUNCTIONS
@@ -789,7 +637,6 @@ def main():
     # Normalize loss residual by:
     #   wint - internal virtual work
     #   wext - external virtual work
-    #NORMALIZE_LOSS = 'wint'
     NORMALIZE_LOSS = 'wint'
 
     # Type of loss:
@@ -810,8 +657,6 @@ def main():
     elif VFM_TYPE == 'ud':
 
         l_fn = UDVFLoss(normalize=NORMALIZE_LOSS, type=LOSS_TYPE, reduction=LOSS_REDUCTION)
-
-    l_mse = torch.nn.MSELoss(reduction='mean')
 
     # Initializing GradScaler object
     scaler = torch.cuda.amp.GradScaler()
@@ -899,18 +744,16 @@ def main():
             'v_u': torch.from_numpy(V_DISP).to(DEVICE),
             'v_e': torch.from_numpy(V_STRAIN).to(DEVICE)
         }
-        # V_DISP = torch.from_numpy(V_DISP).to(DEVICE)
-        # V_STRAIN = torch.from_numpy(V_STRAIN).to(DEVICE)
 
 #-------------------------------------------------------------------------------------------------------------------
 #                                               WANDB CONFIGURATIONS
 #-------------------------------------------------------------------------------------------------------------------
     
     # Project name
-    PROJ = 'sbvfm_indirect_crux_gru'
+    PROJ = 'indirect_crux_gru'
     
     # WANDB logging 
-    WANDB_LOG = True
+    WANDB_LOG = False
 
     if WANDB_LOG:
 
@@ -989,8 +832,10 @@ def main():
     trials = list(trials['0'])
     trials = random.sample(trials,len(trials))
 
-    test_trials = random.sample(trials, math.ceil(len(trials)*TEST_SIZE))
-    train_trials = list(set(trials).difference(test_trials))    
+    #test_trials = random.sample(trials, math.ceil(len(trials)*TEST_SIZE))
+    #train_trials = list(set(trials).difference(test_trials))
+    train_trials = trials
+    test_trials = trials
 
     # Gathering statistics on training dataset
     dir = os.path.join(TRAIN_DIR,'processed/')
@@ -1001,24 +846,41 @@ def main():
 
     raw_data = pd.concat(df_list)
 
-    min_ = torch.min(torch.from_numpy(raw_data.values).float(),0).values
-    max_ = torch.max(torch.from_numpy(raw_data.values).float(),0).values
-    std, mean = torch.std_mean(torch.from_numpy(raw_data.values),0)
+    if NORMALIZE_DATA != False:
+    
+        if NORMALIZE_DATA == 'minmax':
+            min_ = torch.min(torch.from_numpy(raw_data.values).float(),0).values
+            max_ = torch.max(torch.from_numpy(raw_data.values).float(),0).values
+
+            input_scaler = MinMaxScaler(min_, max_, feature_range=FEATURE_RANGE)
+        else:
+            if USE_PRETRAINED_MODEL:
+                scaler_dict = load_file(PRETRAINED_RUN, PRETRAINED_MODEL_DIR, 'scaler_x.pkl')
+                std = scaler_dict['stat_vars'][0]
+                mean = scaler_dict['stat_vars'][1]
+            else:
+                std, mean = torch.std_mean(torch.from_numpy(raw_data.values),0)
+
+            input_scaler = Normalize(mean.tolist(), std.tolist())
+        
+        # Data transform
+        transform = transforms.Compose([input_scaler])
 
     # Cleaning workspace from useless variables
     del df_list
     del file_list
+    del raw_data
     gc.collect()
     
-    if NORMALIZE_DATA:
-        # Defining data transforms
-        transform = transforms.Compose([
-            # Data transform
-            MinMaxScaler(min_, max_, feature_range=FEATURE_RANGE) if NORMALIZE_DATA == 'minmax' else Normalize(mean.tolist(), std.tolist()),
-        ])
+    # if NORMALIZE_DATA:
+    #     # Defining data transforms
+    #     transform = transforms.Compose([
+    #         # Data transform
+    #         MinMaxScaler(min_, max_, feature_range=FEATURE_RANGE) if NORMALIZE_DATA == 'minmax' else Normalize(mean.tolist(), std.tolist()),
+    #     ])
     
-    else:
-        transform = None
+    # else:
+    #     transform = None
 
     # Preparing dataloaders for mini-batch training
     train_dataset = CruciformDataset(
@@ -1028,29 +890,29 @@ def main():
             shuffle=SHUFFLE_DATA
         )
 
-    test_dataset = CruciformDataset(test_trials, TRAIN_DIR, 'processed', FEATURES, OUTPUTS, INFO, CENTROIDS, transform=transform, seq_len=SEQ_LEN)
+    #test_dataset = CruciformDataset(test_trials, TRAIN_DIR, 'processed', FEATURES, OUTPUTS, INFO, CENTROIDS, transform=transform, seq_len=SEQ_LEN)
     
     train_dataloader = DataLoader(train_dataset, shuffle=True, **KWARGS)
-    test_dataloader = DataLoader(test_dataset, **KWARGS)
+    #test_dataloader = DataLoader(test_dataset, **KWARGS)
     
     # Initializing neural network model
-    #model = GRUModel(input_dim=N_INPUTS, hidden_dim=HIDDEN_UNITS, layer_dim=GRU_LAYERS, output_dim=N_OUTPUTS)
+    model = GRUModel(input_dim=N_INPUTS, hidden_dim=HIDDEN_UNITS, layer_dim=GRU_LAYERS, output_dim=N_OUTPUTS)
 
-    model = customGRU(input_dim=N_INPUTS, hidden_dim=HIDDEN_UNITS, layer_dim=GRU_LAYERS, output_dim=N_OUTPUTS, layer_norm=False, pre_train=False)
+    #model = customGRU(input_dim=N_INPUTS, hidden_dim=HIDDEN_UNITS, layer_dim=GRU_LAYERS, output_dim=N_OUTPUTS, layer_norm=False, pre_train=False)
     
     if USE_PRETRAINED_MODEL:
         # Importing pretrained weights
         #model.load_state_dict(get_ann_model(PRETRAINED_RUN, PRETRAINED_MODEL_DIR))
-        model_pre = GRUModel(input_dim=N_INPUTS, hidden_dim=HIDDEN_UNITS, layer_dim=GRU_LAYERS, output_dim=N_OUTPUTS)
-        model_pre.load_state_dict(get_ann_model(PRETRAINED_RUN, PRETRAINED_MODEL_DIR))
+        #model_pre = GRUModel(input_dim=N_INPUTS, hidden_dim=HIDDEN_UNITS, layer_dim=GRU_LAYERS, output_dim=N_OUTPUTS)
+        model.load_state_dict(get_ann_model(PRETRAINED_RUN, PRETRAINED_MODEL_DIR))
         
         # # Freezing all layers except last one
         # for n, p in model.named_parameters():
         #     if ('l0' in n):
         #         p.requires_grad_(False)
-    # else:
-    #     # Initializing model weights
-    #     model.apply(init_weights)
+    else:
+        # Initializing model weights
+        model.apply(init_weights)
     
     # Transfering model to current device
     model.to(DEVICE)
@@ -1062,7 +924,8 @@ def main():
     # Initializing optimizer
     optimizer = torch.optim.AdamW(params=model.parameters(), weight_decay=L2_REG, lr=L_RATE)
 
-    clipper = QuantileClip(model.parameters(), quantile=0.9, history_length=150)
+    if GRAD_CLIPPING:
+        optimizer = QuantileClip.as_optimizer(optimizer=optimizer, quantile=QUANTILE, history_length=HIST_LENGTH)
     
     # Defining cosine annealing steps
     steps_annealing = (EPOCHS - (WARM_STEPS // (len(train_dataloader)*BATCH_DIVIDER // ITERS_TO_ACCUMULATE))) * (len(train_dataloader)*BATCH_DIVIDER // ITERS_TO_ACCUMULATE)
@@ -1076,8 +939,8 @@ def main():
 
     if VFM_TYPE == 'sb':
         #v_fields_train, v_fields_test = joblib.load('debug_v_fields.pkl')
-        v_fields_train = get_sbvfs(copy.deepcopy(model_pre), copy.deepcopy(train_dataloader), B_GLOB, B_INV, BC_SETTINGS, ACTIVE_DOF)
-        v_fields_test = get_sbvfs(copy.deepcopy(model_pre), copy.deepcopy(test_dataloader), B_GLOB, B_INV, BC_SETTINGS, ACTIVE_DOF)
+        v_fields_train = get_sbvfs(copy.deepcopy(model), copy.deepcopy(train_dataloader), B_GLOB, B_INV, BC_SETTINGS, ACTIVE_DOF)
+        v_fields_test = get_sbvfs(copy.deepcopy(model), copy.deepcopy(test_dataloader), B_GLOB, B_INV, BC_SETTINGS, ACTIVE_DOF)
 
     # Preparing Weights & Biases logging
     if WANDB_LOG:
@@ -1092,8 +955,6 @@ def main():
         'ivw': {},
         'evw': {},
         'ivw_ann': {},
-        'f_loss': {},
-        'triax_loss': {},
         'grad_norm': {}
     }
 
@@ -1127,14 +988,12 @@ def main():
         #--------------------------------------------------------------
         start_t = time.time()
 
-        t_loss, ivw, evw, ivw_ann, f_loss, l_trx, g_norm = train_loop(train_dataloader, model, l_fn, optimizer)
+        t_loss, ivw, evw, ivw_ann, g_norm = train_loop(train_dataloader, model, l_fn, optimizer)
     
         log_dict['t_loss'][t] = np.mean(t_loss)
         log_dict['ivw'][t] = np.mean(ivw)
         log_dict['evw'][t] = np.mean(evw)
         log_dict['ivw_ann'][t] = np.mean(ivw_ann)
-        log_dict['f_loss'][t] = np.mean(f_loss)
-        log_dict['triax_loss'][t] = np.mean(l_trx)
         log_dict['grad_norm'][t] = np.mean(g_norm)
         
     
@@ -1144,7 +1003,7 @@ def main():
 
         # Printing loss to console
         try:
-            print('. t_loss: %.4e -> lr: %.3e | ivw: %.4e | evw: %.4e | ivw_ann: %.4e | f_loss: %.4e | trx_loss: %.4e | g_norm: %.4e -- %.3fs \n' % (log_dict['t_loss'][t], warmup_lr._last_lr[0], log_dict['ivw'][t], log_dict['evw'][t], log_dict['ivw_ann'][t], log_dict['f_loss'][t], log_dict['triax_loss'][t], log_dict['grad_norm'][t], delta_t))
+            print('. t_loss: %.4e -> lr: %.3e | ivw: %.4e | evw: %.4e | ivw_ann: %.4e | g_norm: %.4e -- %.3fs \n' % (log_dict['t_loss'][t], warmup_lr._last_lr[0], log_dict['ivw'][t], log_dict['evw'][t], log_dict['ivw_ann'][t], log_dict['grad_norm'][t], delta_t))
         except:
             print('. t_loss: %.6e -- %.3fs' % (log_dict['loss']['train'][t], delta_t))
 
@@ -1171,6 +1030,12 @@ def main():
         if t > ES_START:
             early_stopping(log_dict['v_loss'][t], model)
 
+        if t==0:
+            avg_norm = 0.0
+        else:
+            avg_norm = np.array(list(log_dict['grad_norm'].values())[1:])
+            avg_norm = np.mean(avg_norm[np.isfinite(avg_norm)])
+
         if WANDB_LOG:
             wandb.log({
                 'epoch': t,
@@ -1180,17 +1045,8 @@ def main():
                 'int_work': log_dict['ivw'][t],
                 'ext_work': log_dict['evw'][t],
                 'int_work_ann': log_dict['ivw_ann'][t],
-                'f_loss': log_dict['f_loss'][t],
-                'triax_loss': log_dict['triax_loss'][t],
                 'grad_norm': log_dict['grad_norm'][t],
-                'avg_gnorm': np.mean(list(log_dict['grad_norm'].values()))
-                # 'f_loss': f_loss[t],
-                # 't_loss': triax_loss[t],
-                # 'mse_loss': l_loss[t],
-                # 'alpha_1': alpha1[t],
-                # 'alpha_2': alpha2[t],
-                # 'alpha_3': alpha3[t],
-                # 'alpha_4': alpha4[t]
+                'avg_gnorm': avg_norm
             })
 
         # Triggering early-stopping
@@ -1235,9 +1091,8 @@ def main():
     ivw = np.fromiter(log_dict['ivw'].values(), dtype=np.float32).reshape(-1,1)
     evw = np.fromiter(log_dict['evw'].values(), dtype=np.float32).reshape(-1,1)
     ivw_ann = np.fromiter(log_dict['ivw_ann'].values(), dtype=np.float32).reshape(-1,1)
-    refState_loss = np.fromiter(log_dict['f_loss'].values(), dtype=np.float32).reshape(-1,1)
     
-    history = pd.DataFrame(np.concatenate([epoch, train_loss, val_loss, ivw, evw, ivw_ann, refState_loss], axis=1), columns=['epoch','loss','val_loss','ivw','evw','ivw_ann', 'refState_loss'])
+    history = pd.DataFrame(np.concatenate([epoch, train_loss, val_loss, ivw, evw, ivw_ann], axis=1), columns=['epoch','loss','val_loss','ivw','evw','ivw_ann'])
     
     history.to_csv(os.path.join(DIR_LOSS, MODEL_NAME + '.csv'), sep=',', encoding='utf-8', header='true')
 

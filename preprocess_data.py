@@ -185,13 +185,20 @@ if __name__ == '__main__':
 
     # Getting trial tags     
     #trials = [list(set(df['tag']))[0] for df in data_by_tag]
-    trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'raw','trials.csv'),header=None)[0].to_list()
+    
+    #trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'raw','trials.csv'),header=None)[0].to_list()
 
-    random.shuffle(trials)
+    #random.shuffle(trials)
     #val_trials = random.sample(trials, math.ceil(len(trials)*0.35))
     #train_trials = list(set(trials).difference(val_trials))
-    val_trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'v_trials.csv'), header=0)['0'].to_list()
-    train_trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'t_trials.csv'), header=0)['0'].to_list()
+    
+    # val_trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'v_trials.csv'), header=0)['0'].to_list()
+    # train_trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'t_trials.csv'), header=0)['0'].to_list()
+
+    trials = ['crux-2121']
+    ##
+    val_trials = []
+    train_trials = ['crux-2121']
 
     with tqdm(total=len(trials), desc='Processing dataset', bar_format=FORMAT_PBAR) as pbar:
         

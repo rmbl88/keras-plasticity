@@ -1,3 +1,4 @@
+import csv
 import constants
 import joblib
 from functions import (GRUModel, GRUModelJit, read_mesh)
@@ -14,6 +15,7 @@ import pyarrow.parquet as pq
 from tqdm import tqdm
 
 from gru_nn import customGRU
+from io_funcs import load_config
 
 #-------------------------------------------------------------------------
 #                          METHOD DEFINITIONS
@@ -23,9 +25,9 @@ def load_pkl(file: str):
 
 def scan_ann_files(run: str, dir: str, key: str):
 
-    SCAN_DIR = os.path.join('outputs', dir, 'models')
+    SCAN_DIR = os.path.join('outputs', dir, 'models', run)
     
-    for f in glob.glob(os.path.join(SCAN_DIR, f'*{run}*')):
+    for f in glob.glob(os.path.join(SCAN_DIR, f'*{key}*')):
     
         if key in f:
             file = f           
@@ -102,16 +104,32 @@ def import_mesh(dir: str):
 
     return nodes, connectivity
 
-def get_re(pred,real):
+def get_abs_err(pred,real):
 
-    '''Calculates the Relative error between a prediction and a real value.'''
+    '''Calculates the absolute error between a prediction and a real value.'''
     
-    re = np.abs(pred-real)*100/(1+np.abs(real))
+    abs_err = np.abs(pred-real)
 
-    return re
+    return abs_err
+
+def get_rmse(pred,real):
+
+    rmse = np.sqrt(np.mean(np.square(pred-real)))
+
+    return rmse
 
 def get_mises(s_x, s_y, s_xy):
     return np.sqrt(np.square(s_x)+np.square(s_y)-s_x*s_y+3*np.square(s_xy))
+
+def dict_to_csv(out_path, file_name, header_template, dict_):
+    with open(os.path.join(out_path, file_name), 'w', newline='') as csv_file:  
+        writer = csv.writer(csv_file)
+        writer.writerow(header_template)
+        for key, value in dict_.items():
+            if hasattr(value,'items'):
+                writer.writerow([key]+[v for _,v in value.items()])
+            else:
+                writer.writerow([key,value])
 
 def batch_jacobian(y,x, mean, var):
     
@@ -136,55 +154,55 @@ def batch_jacobian(y,x, mean, var):
 
 #--------------------------------------------------------------------------
 
-# Initializing Matplotlib settings
-# plt.rcParams.update(constants.PARAMS)
-# default_cycler = (cycler(color=["#ef476f","#118ab2","#073b4c"]))
-# plt.rc('axes', prop_cycle=default_cycler)
-
 # Setting Pytorch floating point precision
 torch.set_default_dtype(torch.float64)
 
 # Defining ann model to load
 #RUN = 'solar-planet-147'
-RUN = 'fine-rain-207'
+#RUN = 'glowing-tree-54'
+#RUN = 'radiant-capybara-3'
+#RUN = 'fine-rain-207'
 #RUN = 'summer-water-157'
 #RUN = 'whole-puddle-134'
 #RUN = 'lemon-star-431'
+RUN = 'silver-leaf-60'
 
 # Defining output directory
+#DIR = 'indirect_crux_gru'
+#DIR = 'crux-plastic-jm_sbvf_abs_direct'
 #DIR = 'crux-plastic_sbvf_abs_direct'
-DIR = 'sbvfm_indirect_crux_gru'
+#DIR = 'sbvfm_indirect_crux_gru'
 
-# Creting output directories
-RUN_DIR = create_dir(dir=RUN, root_dir=os.path.join('outputs', DIR, 'val'))
+PROJ = 'direct_training_gru'
 
-# Importing mesh
-NODES, CONNECT = import_mesh(TRAIN_MULTI_DIR)
+# Creating output directories
+VAL_DIR = create_dir(dir=RUN, root_dir=os.path.join('outputs', PROJ, 'val'))
 
-# Loading model architecture
-FEATURES, OUTPUTS, INFO, N_UNITS, H_LAYERS, SEQ_LEN = load_file(RUN, DIR, 'arch.pkl')
+# Loading configuration file
+config = load_config(scan_ann_files(RUN, PROJ,'config'))
+
+# Importing mesh information
+NODES, CONNECT = import_mesh(config.dirs.mesh)
+
+# # Loading model architecture
+# FEATURES, OUTPUTS, INFO, N_UNITS, H_LAYERS, SEQ_LEN = load_file(RUN, DIR, 'arch.pkl')
 
 # Loading data scaler
-SCALER_DICT = load_file(RUN, DIR, 'scaler_x.pkl')
+SCALER_DICT = load_file(RUN, PROJ,'scaler')
 
 ELEMS_VAL = pd.read_csv(os.path.join(VAL_DIR_MULTI,'elems_val.csv'), header=None)[0].to_list()
 
-# MODEL_INFO = {
-#     'in': FEATURES,
-#     'out': OUTPUTS,
-#     'info': INFO,
-#     'min': MIN,
-#     'max': MAX
-# }
-
-DRAW_CONTOURS = True
+DRAW_CONTOURS = False
 TAG = 'x15_y15_'
 
 # Setting up ANN model
 #model_1 = GRUModelJit(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=len(OUTPUTS)+6)
-model_1 = GRUModel(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=len(OUTPUTS))
+model_1 = GRUModel(input_dim=len(config.data.inputs),
+                   hidden_dim=config.model.hidden_size,
+                   layer_dim=config.model.num_layers,
+                   output_dim=len(config.data.outputs))
 #model_1 = customGRU(input_dim=len(FEATURES), hidden_dim=N_UNITS, layer_dim=H_LAYERS, output_dim=len(OUTPUTS), layer_norm=False)
-model_1.load_state_dict(get_ann_model(RUN, DIR))   
+model_1.load_state_dict(get_ann_model(RUN, PROJ))   
 #model_1.to(torch.device('cpu')) 
 #model_1.eval()
 # model_1(torch.ones(1,4,3))
@@ -197,10 +215,11 @@ model_1.load_state_dict(get_ann_model(RUN, DIR))
 df_list = load_data(dir=VAL_DIR_MULTI, ftype='parquet')
 
 cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred',
-        'mre_sx','mre_sy','mre_sxy']
+        'abs_err_sx','abs_err_sy','abs_err_sxy']
 
-# MIN = torch.tensor([-0.1471, -0.1452, -0.2304])
-# MAX = torch.tensor([0.3186, 0.3231, 0.2908])
+stats_rmse = {}
+stats_rmse_elems = []
+
 with torch.no_grad():
     last_tag = ''
     for i, df in enumerate(df_list):
@@ -211,7 +230,7 @@ with torch.no_grad():
         #------------------------------------------------------------------------------------
         #                       CREATING OUTPUT DIRECTORIES
         #------------------------------------------------------------------------------------
-        TRIAL_DIR = create_dir(dir=tag,root_dir=RUN_DIR)
+        TRIAL_DIR = create_dir(dir=tag,root_dir=VAL_DIR)
         
         DATA_DIR = create_dir(dir='data',root_dir=TRIAL_DIR)
 
@@ -225,72 +244,33 @@ with torch.no_grad():
         n_tps = len(list(set(df['t'])))
         n_elems = len(list(set(df['id'])))
         
-        X = df[FEATURES].values
-        y = df[OUTPUTS].values
-        info = df[INFO]
+        X = df[config.data.inputs].values
+        y = df[config.data.outputs].values
+        info = df[config.data.info]
 
-        pad_zeros = torch.zeros((SEQ_LEN-1) * n_elems, X.shape[-1])
-        
-        #pad_zeros = torch.zeros(SEQ_LEN * n_elems, X.shape[-1])
+        pad_zeros = torch.zeros((config.data.seq_len-1) * n_elems, X.shape[-1])
 
         X = torch.cat([pad_zeros, torch.from_numpy(X)], 0)
 
-        # x_std = (X - MIN) / (MAX - MIN)
-        # X_scaled = x_std * (MAX - MIN) + MIN
         if SCALER_DICT['type'] == 'standard':
-            X_scaled = (X-SCALER_DICT['stat_vars'][1])/SCALER_DICT['stat_vars'][0]
+            X_scaled = (X-SCALER_DICT['mean'])/SCALER_DICT['std']
         elif SCALER_DICT['type'] == 'minmax':
             x_std = (X - SCALER_DICT['stat_vars'][0]) / (SCALER_DICT['stat_vars'][1] - SCALER_DICT['stat_vars'][0])
             X_scaled = x_std * (SCALER_DICT['stat_vars'][2][1] - SCALER_DICT['stat_vars'][2][0]) + SCALER_DICT['stat_vars'][2][0]
-        # else:
-        #     pass
-            #x_std = (X - MIN) / (MAX - MIN)
-            #X_scaled = x_std * (MAX - MIN) + MIN
+        elif SCALER_DICT['type'] == 'preserve_zero':
+            X_scaled = X / SCALER_DICT['stat_vars'][0]
         
-        x = X_scaled.reshape(n_tps + SEQ_LEN-1, n_elems, -1)
-        #x = X_scaled.reshape(n_tps + SEQ_LEN, n_elems, -1)
-        
-        #x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)[:,:-1]
-        x = x.unfold(0,SEQ_LEN,1).permute(1,0,3,2)
+        x = X_scaled.reshape(n_tps + config.data.seq_len-1, n_elems, -1)
+        x = x.unfold(0,config.data.seq_len,1).permute(1,0,3,2)
         x = x.reshape(-1,*x.shape[2:])
         
         y = torch.from_numpy(y)
-        #y = y.reshape(n_tps,n_elems,-1)[SEQ_LEN-1:].permute(1,0,2)
         y = y.reshape(n_tps,n_elems,-1).permute(1,0,2)
         y = y.reshape(-1,y.shape[-1])
 
-        # theta_ep = torch.from_numpy(info[['theta_ep']].values)
-        # theta_sp = torch.from_numpy(info[['theta_sp']].values)
-
         t = torch.from_numpy(info['t'].values).reshape(n_tps, n_elems, 1)
-        #dt = torch.diff(t,dim=0)
-        # x_jac = x[:2,:].requires_grad_(True)
-        # s_jac = model_1(x_jac)
-
-        # J = batch_jacobian(s_jac,x_jac, SCALER_DICT['stat_vars'][1], SCALER_DICT['stat_vars'][0])
-        #model_1.init_hidden(x.size(0))
-        s = model_1(x) # stress rate.
-        
-        #l = s[:,3:]
-        #s = s[:,:3]
-
-        # L = torch.zeros(l.size(0),3,3)
-        # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-        # L[:,tril_indices[0], tril_indices[1]] = l  # vector to lower triangular matrix
-
-        # J = L@L.transpose(2,1)  # Jacobian
-        # s_princ = torch.zeros(n_tps,n_elems, s_rate.shape[-1])
-        
-        # s_princ[1:,:,:] = s_rate.reshape(n_tps-1,n_elems,s_rate.shape[-1])*dt
-        # s_princ = torch.cumsum(s_princ,0).reshape(-1, s_rate.shape[-1])
-
-        # s_princ_mat = torch.zeros([s_princ.shape[0],2,2])        
-        # s_princ_mat[:,0,0] = s_princ[:,0]
-        # s_princ_mat[:,1,1] = s_princ[:,1]
-
-        # s = rotate_tensor(s_princ_mat.numpy(),theta_sp.reshape(-1).numpy(),is_reverse=True)
-        # s = torch.from_numpy(s[:,[0,1,1],[0,1,0]])
-
+    
+        s = model_1(x)
         #------------------------------------------------------------------------------------
         #                       PREPARING FIELD DATA FOR CONTOUR PLOT
         #------------------------------------------------------------------------------------
@@ -308,15 +288,19 @@ with torch.no_grad():
         #                              RESHAPING DATA
         #------------------------------------------------------------------------------------
 
+        stats_rmse[tag] = get_rmse(s.numpy(),y.numpy())
+
         s = s.reshape(n_elems,n_tps,-1)
         y = y.reshape(n_elems,n_tps,-1)
+
+        elems_dict = {elem: {'sx': None, 'sy': None, 'sxy': None} for elem in ELEMS_VAL}
 
         for elem in ELEMS_VAL:
             idx = elem - 1
             # Strain values - Abaqus
             ex_abaqus = df[df['id']==elem]['exx_t'].values.reshape(-1,1)
             ey_abaqus = df[df['id']==elem]['eyy_t'].values.reshape(-1,1)
-            exy_abaqus = 0.5*df[df['id']==elem]['exy_t'].values.reshape(-1,1)
+            exy_abaqus = df[df['id']==elem]['exy_t'].values.reshape(-1,1)
 
             # Stress values - Abaqus
             sx_abaqus = df[df['id']==elem]['sxx_t'].values.reshape(-1,1)
@@ -328,67 +312,48 @@ with torch.no_grad():
             sy_pred = s[idx,:,1].reshape(-1,1)
             sxy_pred= s[idx,:,2].reshape(-1,1)
 
-            ###################################################################################
-            #                             RELATIVE ERRORS
-            ###################################################################################
-
-            mre_sx = get_re(sx_pred, sx_abaqus).numpy().reshape(-1,1)
-            mre_sy = get_re(sy_pred, sy_abaqus).numpy().reshape(-1,1)
-            mre_sxy = get_re(sxy_pred, sxy_abaqus).numpy().reshape(-1,1)
-
-            ###################################################################################
-
-            # # Principal strain - Abaqus
-            # e1_abaqus = df[df['id']==elem]['ep_1'].values.reshape(-1,1)
-            # e2_abaqus = df[df['id']==elem]['ep_2'].values.reshape(-1,1)
-        
-            # # Principal stress - Abaqus
-            # y_princ = torch.from_numpy(df[df['id']==elem][['s1','s2']].values)
-            # y1_abaqus = y_princ[:,0].numpy().reshape(-1,1)
-            # y2_abaqus = y_princ[:,1].numpy().reshape(-1,1)
-
-            # # Principal stress predictions - ANN
-            # s1_pred = s_princ[:,idx,0].numpy().reshape(-1,1)
-            # s2_pred = s_princ[:,idx,1].numpy().reshape(-1,1)
+            s_0_pred = s[idx,0]
+            s_0 = y[idx,0]
 
             ###################################################################################
             #                             RELATIVE ERRORS
             ###################################################################################
 
-            # mre_s1 = get_re(s1_pred, y1_abaqus).reshape(-1,1)
-            # mre_s2 = get_re(s2_pred, y2_abaqus).reshape(-1,1)
+            abs_err_sx = get_abs_err(sx_pred, sx_abaqus).numpy().reshape(-1,1)
+            abs_err_sy = get_abs_err(sy_pred, sy_abaqus).numpy().reshape(-1,1)
+            abs_err_sxy = get_abs_err(sxy_pred, sxy_abaqus).numpy().reshape(-1,1)
 
-            ###################################################################################
+            rmse_sx = get_rmse(sx_pred.numpy(), sx_abaqus)
+            rmse_sy = get_rmse(sy_pred.numpy(), sy_abaqus)
+            rmse_sxy = get_rmse(sxy_pred.numpy(), sxy_abaqus)
+            rmse_s0 = get_rmse(s_0_pred.numpy(), s_0.numpy())
 
-            # # Principal strain rate - Abaqus
-            # de1_abaqus = df[df['id']==elem]['dep_1'].values.reshape(-1,1)
-            # de2_abaqus = df[df['id']==elem]['dep_2'].values.reshape(-1,1)
-
-            # # Principal stress rate - Abaqus
-            # dy_1 = y[:,idx,0].reshape(-1,1).numpy()
-            # dy_1 = np.vstack((dy_1,np.array([np.NaN])))
-            # dy_2 = y[:,idx,1].reshape(-1,1).numpy()
-            # dy_2 = np.vstack((dy_2,np.array([np.NaN])))
-
-            # # Principal stress rate - ANN
-            # ds1_pred = s_rate[:,idx,0].numpy().reshape(-1,1)
-            # ds1_pred = np.vstack((ds1_pred,np.array([np.NaN])))
-            # ds2_pred = s_rate[:,idx,1].numpy().reshape(-1,1)
-            # ds2_pred = np.vstack((ds2_pred,np.array([np.NaN])))
+            stats_rmse_elems.append([elem,rmse_sx,rmse_sy,rmse_sxy, rmse_s0])
+            # elems_dict[elem]['sx'] = rmse_sx
+            # elems_dict[elem]['sy'] = rmse_sy
+            # elems_dict[elem]['sxy'] = rmse_sxy    
 
             if tag != last_tag:
-                print("\n%s\t\tSxx\tSyy\tSxy\tS1\tS2\n" % (tag))
+                print("\n%s\t\tSxx\tSyy\tSxy\tS_0\n" % (tag))
             
-            print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f" % (elem, np.mean(mre_sx), np.mean(mre_sy), np.mean(mre_sxy)))
+            print("Elem #%i\t\t%0.3f\t%0.3f\t%0.3f\t%0.3f" % (elem, rmse_sx, rmse_sy, rmse_sxy, rmse_s0))
 
-            # cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred',
-            #         'e_1','e_2','s_1','s_2','s_1_pred','s_2_pred','de_1','de_2','ds_1','ds_2',
-            #         'dy_1','dy_2','mre_sx','mre_sy','mre_sxy','mre_s1','mre_s2']
-
-            res = np.concatenate([ex_abaqus,ey_abaqus,exy_abaqus,sx_abaqus,sy_abaqus,sxy_abaqus,sx_pred,sy_pred,sxy_pred, mre_sx, mre_sy, mre_sxy], axis=1)
+            res = np.concatenate([ex_abaqus,ey_abaqus,exy_abaqus,sx_abaqus,sy_abaqus,sxy_abaqus,sx_pred,sy_pred,sxy_pred, abs_err_sx, abs_err_sy, abs_err_sxy], axis=1)
             
             results = pd.DataFrame(res, columns=cols)
             
             results.to_csv(os.path.join(DATA_DIR, f'{tag}_el-{elem}.csv'), header=True, sep=',', float_format='%.10f')
 
             last_tag = tag
+    
+    #dict_to_csv(VAL_DIR, 'stats_elems.csv', ['tag','elem','rmse_sx','rmse_sy','rmse_sxy'], stats_rmse_elems)
+
+a = pd.DataFrame(stats_rmse_elems,columns=['elem','rmse_sx','rmse_sy','rmse_sxy','rmse_s0'])
+a.to_csv(os.path.join(VAL_DIR,'stats_elems.csv'), header=True, sep=',',float_format='%.6f', index=False) 
+
+dict_to_csv(VAL_DIR,'stats.csv',['Run','RMSE'],stats_rmse)        
+# with open(os.path.join(VAL_DIR,'stats.csv'), 'w', newline='') as csv_file:  
+#     writer = csv.writer(csv_file)
+#     writer.writerow(['Run','RMSE'])
+#     for key, value in stats_rmse.items():
+#         writer.writerow([key, value])

@@ -1,3 +1,5 @@
+import matplotlib
+from matplotlib.offsetbox import AnchoredText
 import constants
 import joblib
 from functions import (GRUModel, read_mesh)
@@ -69,7 +71,7 @@ def load_data(dir: str, ftype: str):
 
 def get_field_data(abaqus, vars: dict, pred_vars: dict, n_elems: int, n_tps: int):
 
-    T_STEPS = [19,20,21,22,23]
+    T_STEPS = [n_tps-1]
 
     KEYS = sum([[v for k,v in var.items()] for k_,var in vars.items()],[])
 
@@ -111,20 +113,63 @@ def get_re(pred,real):
 def get_mises(s_x, s_y, s_xy):
     return np.sqrt(np.square(s_x)+np.square(s_y)-s_x*s_y+3*np.square(s_xy))
 
-def plot_vw(vars):
-    n_subplots = len(vars.keys())
-    fig, axs = plt.subplots(1,n_subplots)
-    fig.set_size_inches(19.2,10.8)
+def plot_vw(vars, out_dir, vf=None):
+
+    def set_anchored_text(mean_e,median_e,max_e,min_e,frameon=True,loc='lower right'):
+        at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=6.5))
+        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        at.patch.set_linewidth(0.55)
+        return at
+
+    matplotlib.use('Agg')
+    plt.rcParams.update(PARAMS)
+
+    n_subplots = len(vars.keys())*2
+    fig, axs = plt.subplots(2,n_subplots//2)
+    fig.set_size_inches(9.6,5.4)
     fig.subplots_adjust(wspace=0.275)
 
     for i, (k, v) in enumerate(vars.items()):
-        axs[i].plot(v['ivw'][0], label=v['ivw'][1])
-        axs[i].plot(v['evw'][0], label=v['evw'][1])
-        axs[i].legend(loc='best')
+        axs[0,i].plot(v['ivw'][0], label=v['ivw'][1])
+        axs[0,i].plot(v['evw'][0], label=v['evw'][1])
+        axs[0,i].legend(loc='best')
+        
+        err = torch.abs(v['ivw'][0]-v['evw'][0])
+        axs[1,i].plot(err,color='k')
+        axs[1,i].add_artist(set_anchored_text(torch.mean(err),torch.median(err),torch.max(err),torch.min(err)))
 
-    plt.show()
-    print('hey')
-       
+    plt.savefig(os.path.join(out_dir, f'v_work_VF-{vf}.pdf'), format="pdf", dpi=600, bbox_inches='tight')
+    
+    #plt.show()
+    #print('hey')
+
+def plot_vw_elem(vars, out_dir, vf=None):
+
+    def set_anchored_text(mean_e,median_e,max_e,min_e,frameon=True,loc='lower right'):
+        at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=6.5))
+        at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
+        at.patch.set_linewidth(0.55)
+        return at
+
+    matplotlib.use('Agg')
+    plt.rcParams.update(PARAMS)
+
+    n_subplots = 3
+    fig, axs = plt.subplots(2,3)
+    fig.set_size_inches(9.6,5.4)
+    fig.subplots_adjust(wspace=0.275)
+
+    for i, (k, v) in enumerate(vars.items()):
+        for j in range(3):
+            axs[0,j].plot(v['ann'][0][:,j], label=v['ann'][1])
+            axs[0,j].plot(v['abaqus'][0][:,j], label=v['abaqus'][1])
+            axs[0,j].legend(loc='best')
+        
+            err = torch.abs(v['ann'][0][:,j]-v['abaqus'][0][:,j])
+            axs[1,j].plot(err,color='k')
+            axs[1,j].add_artist(set_anchored_text(torch.mean(err),torch.median(err),torch.max(err),torch.min(err)))
+    elem = v['ann'][1].split('_')[-1]
+    plt.savefig(os.path.join(out_dir, f'v_work_VF-{vf}_elem-{elem}.pdf'), format="pdf", dpi=600, bbox_inches='tight')       
 
 #--------------------------------------------------------------------------
 
@@ -137,7 +182,8 @@ def plot_vw(vars):
 torch.set_default_dtype(torch.float64)
 
 # Defining ann model to load
-RUN = 'solar-planet-147'
+#RUN = 'solar-planet-147'
+RUN = 'distinctive-shape-42'
 #RUN = 'whole-puddle-134'
 #RUN = 'rural-rain-45'
 
@@ -179,7 +225,7 @@ SCALER_DICT = load_file(RUN, DIR, 'scaler_x.pkl')
 # }
 
 DRAW_CONTOURS = False
-TAG = 'x05_y05_'
+TAG = 'vfm_test_crux'
 
 # Setting up ANN model
 model_1 = GRUModel(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=len(OUTPUTS))
@@ -199,9 +245,9 @@ with torch.no_grad():
         # Identifying mechanical test
         tag = df['tag'][0]
 
-        f_ann = pq.ParquetDataset(os.path.join(TRAIN_MULTI_DIR,'processed','global_force_ann', RUN, tag + '_force.parquet')).read_pandas(columns=['fxx','fyy']).to_pandas()
+        #f_ann = pq.ParquetDataset(os.path.join(TRAIN_MULTI_DIR,'processed','global_force_ann', RUN, tag + '_force.parquet')).read_pandas(columns=['fxx','fyy']).to_pandas()
 
-        f_ann = torch.from_numpy(f_ann.values)
+        #f_ann = torch.from_numpy(f_ann.values)
 
         f = torch.from_numpy(df[['fxx_t','fyy_t']].values)
         #------------------------------------------------------------------------------------
@@ -226,9 +272,10 @@ with torch.no_grad():
         info = df[INFO]
 
         #pad_zeros = torch.zeros(SEQ_LEN * n_elems, X.shape[-1])
-        pad_zeros = torch.zeros(SEQ_LEN * n_elems, X.shape[-1])
+        pad_zeros = torch.zeros((SEQ_LEN-1) * n_elems, X.shape[-1])
         
         X = torch.cat([pad_zeros, torch.from_numpy(X)], 0)
+        
         if SCALER_DICT['type'] == 'standard':
             X_scaled = (X-SCALER_DICT['stat_vars'][1])/SCALER_DICT['stat_vars'][0]
 
@@ -252,8 +299,7 @@ with torch.no_grad():
         t = torch.from_numpy(info['t'].values).reshape(n_tps, n_elems, 1)
         #dt = torch.diff(t,dim=0)
 
-        model_1.init_hidden(x.size(0))
-        s, h = model_1(x) # stress rate.
+        s = model_1(x) # stress rate.
         
         # s_princ = torch.zeros(n_tps,n_elems, s_rate.shape[-1])
         
@@ -285,6 +331,7 @@ with torch.no_grad():
 
         w_int_ = y*V_STRAIN.unsqueeze(2)*a.unsqueeze(1)
 
+        f_ann = torch.sum(s*a.unsqueeze(1)/30,0)[:,:2]
         w_ext_ann = torch.sum(f_ann*V_DISP.unsqueeze(1),-1,keepdim=True)
 
         w_ext = torch.sum(f*V_DISP.unsqueeze(1),-1,keepdim=True)
@@ -296,69 +343,38 @@ with torch.no_grad():
 
             vars = {'ivw': {0: 'ivw_xx', 1:'ivw_yy', 2:'ivw_xy', 3: 'ivw'}}
             
-            pred_vars = {'ivw': w_int_ann_[-1].numpy()}
-            abaqus = {'ivw': w_int_[-1].numpy()}
+            for vf in range(w_int_ann_.shape[0]):
+                pred_vars = {'ivw': w_int_ann_[vf].numpy()}
+                abaqus = {'ivw': w_int_[vf].numpy()}
 
-            fields = get_field_data(abaqus, vars, pred_vars, n_elems, n_tps)
-
-            plot_fields(NODES, CONNECT, fields, out_dir=COUNTOUR_DIR, tag=tag)
-
-        vars_dict = {
-            0: {
-                'ann': {
-                    'ivw': (w_int_ann[0],'w_int_ann_vf_0'),
-                    'evw': (w_ext_ann[0], 'w_ext_ann_vf_0')
-                },
-                'abaqus': {
-                    'ivw': (w_int[0],'w_int_abaqus_vf_0'),
-                    'evw': (w_ext[0], 'w_ext_abaqus_vf_0')
-                }
-            },
-            1: {
-                'ann': {
-                    'ivw': (w_int_ann[1],'w_int_ann_vf_1'),
-                    'evw': (w_ext_ann[1], 'w_ext_ann_vf_1')
-                },
-                'abaqus': {
-                    'ivw': (w_int[1],'w_int_abaqus_vf_1'),
-                    'evw': (w_ext[1], 'w_ext_abaqus_vf_1')
-                }
-            },
-            2: {
-                'ann': {
-                    'ivw': (w_int_ann[2],'w_int_ann_vf_2'),
-                    'evw': (w_ext_ann[2], 'w_ext_ann_vf_2')
-                },
-                'abaqus': {
-                    'ivw': (w_int[2],'w_int_abaqus_vf_2'),
-                    'evw': (w_ext[2], 'w_ext_abaqus_vf_2')
-                }
-            },
-            3: {
-                'ann': {
-                    'ivw': (w_int_ann[3],'w_int_ann_vf_3'),
-                    'evw': (w_ext_ann[3], 'w_ext_ann_vf_3')
-                },
-                'abaqus': {
-                    'ivw': (w_int[3],'w_int_abaqus_vf_3'),
-                    'evw': (w_ext[3], 'w_ext_abaqus_vf_3')
-                }
-            },
-            4: {
-                'ann': {
-                    'ivw': (w_int_ann[4],'w_int_ann_vf_4'),
-                    'evw': (w_ext_ann[4], 'w_ext_ann_vf_4')
-                },
-                'abaqus': {
-                    'ivw': (w_int[4],'w_int_abaqus_vf_4'),
-                    'evw': (w_ext[4], 'w_ext_abaqus_vf_4')
-                }
-            }
+                fields = get_field_data(abaqus, vars, pred_vars, n_elems, n_tps)
             
+                plot_fields(NODES, CONNECT, fields, out_dir=COUNTOUR_DIR, tag=tag, vf=vf)
+
+        vars_dict = {vf: {
+            'ann':{
+                'ivw':(w_int_ann[vf],f'w_int_ann_vf_{vf}'),
+                'evw':(w_ext_ann[vf], f'w_ext_ann_vf_{vf}')
+                }, 
+            'abaqus':{
+                'ivw':(w_int[vf], f'w_int_abaqus_vf_{vf}'),
+                'evw':(w_ext[vf], f'w_ext_abaqus_vf_{vf}')}} for vf in range(w_ext.shape[0])
         }
 
         for vf, vars in vars_dict.items():
-            plot_vw(vars)
+            plot_vw(vars, out_dir=PLOT_DIR, vf=vf)
+
+        elem=10
+        vars_dict = {vf: {
+            'ivw':{
+                'ann':(w_int_ann_[vf][elem-1],f'w_int_ann_vf_{vf}_elem-{elem}'),
+                'abaqus':(w_int_[vf][elem-1], f'w_int_abaqus_vf_{vf}_elem-{elem}')
+                }
+            } for vf in range(w_ext.shape[0])
+        }
+
+        for vf, vars in vars_dict.items():
+            plot_vw_elem(vars, out_dir=PLOT_DIR, vf=vf)
         
     print('hey')
 

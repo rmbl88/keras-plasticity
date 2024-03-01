@@ -39,41 +39,42 @@ class UDVFLoss(torch.nn.Module):
         self.normalize = normalize
         self.type_ = type
         self.reduction = reduction
+
+        self.init_loss()
+
+    def init_loss(self):
+        if self.type_ == 'L2':
+            self.l_mse = torch.nn.MSELoss(reduction=self.reduction)
+        else:
+            self.l_l1 = torch.nn.L1Loss(reduction=self.reduction)
     
     def forward(self, wi, we):
         
         # Calculating residual
-        res = wi - we
-
-        # Getting number of elements in tensor
-        m = torch.tensor(res.size()).prod()
+        #res = wi - we
 
         if self.normalize == 'wint':
             
             # Normalizing the residual by the internal virtual work
             wi_max = torch.max(torch.abs(wi.detach()))
-            #wi_max = torch.max(wi.detach())
-            #wi_min = torch.min(wi.detach())
-
-            #wi_range = (wi_max-wi_min) 
-
-
-            res = res / wi_max
-            #res = res / wi_range
+            self.res_scale = wi_max
+            #res = res / wi_max
             
         elif self.normalize == 'wext':
 
             # Normalizing the residual by the external virtual work
             we_max = torch.max(torch.abs(we.detach()))
-            
-            res = res / we_max
+            self.res_scale = we_max
+            #res = res / we_max
 
         if self.type_ == 'L2':
 
             # Loss based on the mean squared residuals
-            return (1/(2*m)) * torch.sum(torch.square(res)) if self.reduction == 'mean' else torch.sum(torch.square(res))
+            #return (1/m) * torch.sum(torch.square(res)) if self.reduction == 'mean' else torch.sum(torch.square(res))
+            return self.l_mse(wi/self.res_scale, we/self.res_scale)
             
         elif self.type_ == 'L1':
 
             # Loss based on the mean of the absolute value of the residuals
-            return (1/m) * torch.sum(torch.abs(res)) if self.reduction == 'mean' else torch.sum(torch.abs(res))
+            #return (1/m) * torch.sum(torch.abs(res)) if self.reduction == 'mean' else torch.sum(torch.abs(res))
+            return self.l_l1(wi/self.res_scale, we/self.res_scale)

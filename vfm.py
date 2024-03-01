@@ -31,16 +31,16 @@ def get_ud_vfs(centroids, surf_nodes, width, height):
     ones = np.ones_like(CENT_X)
     zeros = np.zeros_like(CENT_X)
 
-    zeros_ = np.zeros(surf_nodes.shape[0]) if type(surf_nodes) is not list else 0.
+    zeros_ = np.zeros(surf_nodes.shape[0]) if type(surf_nodes) is not list else 0.0
     dim = 1 if type(surf_nodes) is not list else 0 
-
+    
 
     # Virtual displacement fields
     v_disp = {
         1: np.stack([X / W, zeros_],dim),
         2: np.stack([zeros_, Y / H],dim),
-        3: np.stack([np.sin(X * pi / W) * np.sin(Y * pi / H), np.sin(X * pi / W) * np.sin(Y * pi / H)],dim),
-        #4: np.stack([(1 / pi) * np.sin(X * pi / (0.5*W)) * np.sin(Y * pi / (0.5*H)), (1 / pi) * np.sin(X * pi / (0.5*W)) * np.sin(Y * pi / (0.5*H))],dim),
+        3: np.stack([(1/pi)*np.sin(X * pi / W) * np.sin(Y * pi / H), (1/pi)*np.sin(X * pi / W) * np.sin(Y * pi / H)],dim),
+        #4: np.stack([(1/pi) * np.sin(pi*X/W) * np.cos(0.5*pi*Y/H), (1/pi) * np.sin(pi*Y/H) * np.cos(0.5*pi*X/W)],dim)
         #5: np.stack([(Y / H) * np.sin(X * pi / W), zeros_], dim),
         #6: np.stack([zeros_, (X / W) * np.sin(Y * pi / H)], dim)
        
@@ -50,8 +50,8 @@ def get_ud_vfs(centroids, surf_nodes, width, height):
     v_strain = {
         1:np.stack([ones / W, zeros, zeros],1),
         2:np.stack([zeros, ones / H, zeros],1),
-        3:np.stack([(pi / W) * np.cos(CENT_X * pi / W) * np.sin(CENT_Y * pi / H), (pi / H) * np.sin(CENT_X * pi / W) * np.cos(CENT_Y * pi / H), (pi / H) * np.sin(CENT_X * pi / W) * np.cos(CENT_Y * pi / H) + (pi / W) * np.cos(CENT_X * pi / W) * np.sin(CENT_Y * pi / H)],1),
-        #4:np.stack([(2 / W) * np.cos(CENT_X * pi / (0.5*W)) * np.sin(CENT_Y * pi / (0.5*H)), (2 / H) * np.sin(CENT_X * pi / (0.5*W)) * np.cos(CENT_Y * pi / (0.5*H)), (2 / H) * np.sin(CENT_X * pi / (0.5*W)) * np.cos(CENT_Y * pi / (0.5*H)) + (2 / W) * np.cos(CENT_X * pi / (0.5*W)) * np.sin(CENT_Y * pi / (0.5*H))],1),
+        3:np.stack([(1 / W) * np.cos(CENT_X * pi / W) * np.sin(CENT_Y * pi / H), (1 / H) * np.sin(CENT_X * pi / W) * np.cos(CENT_Y * pi / H), (1 / H) * np.sin(CENT_X * pi / W) * np.cos(CENT_Y * pi / H) + (1 / W) * np.cos(CENT_X * pi / W) * np.sin(CENT_Y * pi / H)],1),
+        #4:np.stack([(1/W) * np.cos(pi*CENT_X/W) * np.cos(0.5*pi*CENT_Y/H), (1/H) * np.cos(pi*CENT_Y/H) * np.cos(0.5*pi*CENT_X/W),(-(0.5/H) * np.sin(pi*CENT_X/W) * np.sin(0.5*pi*CENT_Y/H)-(0.5/W) * np.sin(pi*CENT_Y/H) * np.sin(0.5*pi*CENT_X/W))],1),
         #5:np.stack([(CENT_Y*pi/(H*W)) * np.cos(CENT_X*pi/W), zeros, (1/H)*np.sin(CENT_X*pi/W)],1),
         #6:np.stack([zeros, (CENT_X*pi/(W*H)) * np.cos(CENT_Y*pi/W), (1/W) * np.sin(CENT_Y*pi/H)],1)
         

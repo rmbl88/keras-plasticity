@@ -9,8 +9,9 @@ from matplotlib.offsetbox import AnchoredText
 import matplotlib.tri as tri
 from tqdm import tqdm
 import gc
+import matplotlib.gridspec as gridspec
 
-def plot_fields(nodes, connectivity, fields, out_dir, tag):
+def plot_fields(nodes, connectivity, fields, out_dir, tag, vf=None):
     
     def get_tri_mesh(nodes: np.array, connectivity: np.array):
 
@@ -39,6 +40,12 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
 
         if not ax: ax = plt.gca()
         pc = ax.tricontourf(triangulation, field.flatten(), **kwargs)
+
+        # This is the fix for the white lines between contour levels
+        for c in pc.collections:
+            #c.set_edgecolor("face")
+            c.set_rasterized(True)
+
         #ax.autoscale()
 
         return pc
@@ -55,13 +62,16 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
 
         return pc
     
-    def set_anchored_text(mean_e,median_e,max_e,min_e,frameon=True,loc='upper right'):
-        at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['legend.fontsize']))
+    def set_anchored_text(mean_e,median_e,max_e,min_e,vf=None,frameon=True,loc='upper right'):
+        if vf == None:
+            at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['legend.fontsize']))
+        else:
+            at = AnchoredText(f'VF - {vf}\nMean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['legend.fontsize']))
         at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
         at.patch.set_linewidth(0.55)
         return at
     
-    matplotlib.use('TkAgg')
+    #matplotlib.use('TkAgg')
     plt.ioff()
     plt.rcParams.update(PARAMS_CONTOUR)  
 
@@ -73,9 +83,25 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
             pbar.set_description(f'Saving countour plot -> {tag}t{t}_{var}')
             
             n_subplots = len(vars[var].keys())
-            fig, axs = plt.subplots(1,n_subplots)
+            #fig, axs = plt.subplots(1,n_subplots)
+            fig = plt.figure()
             fig.set_size_inches(19.2,10.8)
-            fig.subplots_adjust(wspace=0.30)
+
+            # create a 1-row 3-column container as the left container
+            gs_left = gridspec.GridSpec(1, 2)
+
+            # create a 1-row 1-column grid as the right container
+            gs_right = gridspec.GridSpec(1, 1)
+
+            axs = [fig.add_subplot(gs_left[0,0]), fig.add_subplot(gs_left[0,1]), fig.add_subplot(gs_right[0,0])]
+
+            gs_left.update(right=0.61)
+            gs_right.update(left=0.672)
+            
+            gs_left.update(wspace=0.12)
+            #gs_right.update(wspace=0.1)
+
+            #fig.subplots_adjust(wspace=0.15)
             
             if var == 'sxx_t':
                 cb_str = r'$\boldsymbol{\sigma}_{xx}~[\mathrm{MPa}]$'
@@ -109,17 +135,24 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                     # Average values at nodes
                     var_avg = np.array([np.mean(var_nodal[np.isin(connectivity,j)],0) for j in range(len(nodes))])
 
-                    if i == 0 and k == 'abaqus':
+                    # if i == 0 and k == 'abaqus':
+                    #     # Defining contour levels
+                    #     cbar_min = np.min(var_avg)
+                    #     cbar_max = np.max(var_avg)
+                    # elif i > 1 and k!= 'ann':
+                    #     cbar_min = np.min(var_avg)
+                    #     cbar_max = np.max(var_avg)
+
+                    if i != 1 and k != 'ann':
                         # Defining contour levels
                         cbar_min = np.min(var_avg)
                         cbar_max = np.max(var_avg)
-                    elif i > 1 and k!= 'ann':
-                        cbar_min = np.min(var_avg)
-                        cbar_max = np.max(var_avg)
+                   
                         
                     cmap = copy.copy(mcm.jet)
 
-                    if k == 'ann':
+                    #if k == 'ann':
+                    if k=='abaqus':
                         cmap.set_under('white')
                         cmap.set_over('black')
                         CB_EXTEND = 'both'
@@ -129,7 +162,12 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                     levels  = np.linspace(cbar_min, cbar_max,256)
                     norm = matplotlib.colors.BoundaryNorm(levels, 256)
 
-                    pc = contour_plot(triangulation, var_avg, ax=axs[i], cmap=cmap, levels=levels, norm=norm, vmin=cbar_min, vmax=cbar_max, extend=CB_EXTEND)
+                    if not np.all(var_avg==0):
+                        pc = contour_plot(triangulation, var_avg, ax=axs[i], cmap=cmap, levels=levels, norm=norm, vmin=cbar_min, vmax=cbar_max, extend=CB_EXTEND)
+                    else:
+                        pc = 0
+                        cb = 0
+                        continue
 
                     # pc = quatplot(nodes[:,0], nodes[:,1], connectivity, v.reshape(-1), ax=axs[i], edgecolor="face", linewidths=0.1, cmap=cmap,snap=True, norm=norm)
             
@@ -143,7 +181,8 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                     if k == 'abaqus':
                         cb_str_ = r'\textbf{Abaqus}' + '\n' + cb_str
                     elif k == 'ann':
-                        cb_str_ = r'\textbf{ANN}' + '\n' + cb_str
+                        cb_str_ = r'\textbf{Dir-RNN}' + '\n' + cb_str
+                        axs[i].text(-0.045, 0.91, cb_str_, horizontalalignment='right', verticalalignment='center', transform=axs[i].transAxes,fontsize=PARAMS_CONTOUR['legend.fontsize'])
                     elif k == 'err':
                         f_var = cb_str.split('~')[0][1:]
                         cb_str_ = r'\textbf{Abs. error}' + '\n' + r'$\boldsymbol{\delta}{%s}~[\mathrm{MPa}]$' % (f_var)
@@ -154,17 +193,23 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag):
                         v_max = np.max(var_avg)
                         v_min = np.min(var_avg)
 
-                        axs[i].add_artist(set_anchored_text(v_mean,v_median,v_max,v_min))
+                        axs[i].add_artist(set_anchored_text(v_mean,v_median,v_max,v_min,vf))
 
-                    cb = fig.colorbar(pc, cax=axs[i].inset_axes((-0.05, 0.025, 0.02, 0.8)),ticks=cbarlabels,format=fmt)
-                    cb.ax.set_title(cb_str_, pad=15, horizontalalignment='right')
-                    cb.outline.set_linewidth(1)
-                    cb.ax.yaxis.set_tick_params(pad=7.5, colors='black', width=1,labelsize=PARAMS_CONTOUR['axes.labelsize'])
-                    cb.ax.yaxis.set_ticks_position('left')
+                    if i!=1:
+                        cb = fig.colorbar(pc, cax=axs[i].inset_axes((-0.05, 0.025, 0.02, 0.8)),ticks=cbarlabels,format=fmt)
+                        cb.ax.set_title(cb_str_, pad=15, horizontalalignment='right')
+                        cb.outline.set_linewidth(1)
+                        cb.minorticks_off()
+                        cb.ax.yaxis.set_tick_params(pad=7.5, colors='black', width=1,labelsize=PARAMS_CONTOUR['axes.labelsize'])
+                        cb.ax.yaxis.set_ticks_position('left')
 
             #fig.tight_layout()
             #plt.show()
-            fig.savefig(os.path.join(out_dir,f'{tag}_t{t}_{var}_cont.png'), format="png", dpi=600, bbox_inches='tight')
+            #fig.savefig(os.path.join(out_dir,f'{tag}_t{t}_{var}_cont.png'), format="png", dpi=600, bbox_inches='tight')
+            if vf == None:
+                fig.savefig(os.path.join(out_dir,f'{tag}_t{t}_{var}_cont.pdf'), format="pdf", dpi=600, bbox_inches='tight')
+            else:
+                fig.savefig(os.path.join(out_dir,f'{tag}_t{t}_{var}_vf-{vf}_cont.pdf'), format="pdf", dpi=600, bbox_inches='tight')
             plt.clf()
             # plt.close(fig)
             del pc, cb, axs, fig, var_nodal, var_avg

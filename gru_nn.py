@@ -21,7 +21,7 @@ class GRUCell(nn.Module):
 
         # Inputs:
         #       input: of shape (batch_size, input_size)
-        #       hx: of shape (batch_size, hidden_size)
+        #       hx: of shape (batch_size, hidden_size) 
         # Output:
         #       hy: of shape (batch_size, hidden_size)
         if hx is None:
@@ -182,7 +182,7 @@ class customGRU(nn.Module):
             elif 'bias' in n:
                 #init.zeros_(w.data)
                 #torch.nn.init.uniform_(w.data, a=0.1)
-                w.data.fill_(0.1)
+                w.data.fill_(0.01)
             else:
                 init.normal_(w.data)
 
@@ -213,31 +213,21 @@ class customGRU(nn.Module):
         else:
             h0 = hx
 
-        outs = []
+        #outs = []
 
         hidden = [h0[layer, :, :] for layer in range(self.num_layers)]
 
         for t in range(x.size(1)):
 
-            # for layer in range(self.num_layers):
-
-            #     if layer == 0:
-            #         hidden_l = self.rnn_cell_list[layer](x[:, t, :], hidden[layer])
-            #     else:
-            #         hidden_l = self.rnn_cell_list[layer](hidden[layer - 1], hidden[layer])
-                
-            #     hidden[layer] = hidden_l
-
-            # outs.append(hidden_l)
             hidden = [
                 self.rnn_cell_list[layer](x[:, t, :], hidden[layer]) if layer == 0 
                 else self.rnn_cell_list[layer](hidden[layer - 1], hidden[layer]) for layer in range(self.num_layers)
             ]
             
-            outs.append(hidden[-1])
+            #outs.append(hidden[-1])
 
         # Take last time step
-        out = outs[-1].squeeze()
+        out = hidden[-1].squeeze()
 
         if len(self.hidden_size) > 1:
 
@@ -250,8 +240,8 @@ class customGRU(nn.Module):
 
                 out = self.relu(out)
                     
-            return self.fc_layers[-1](out), hidden
+            return self.fc_layers[-1](out)
 
         else:
         
-            return self.fc(self.relu(out)), hidden 
+            return self.fc(self.relu(out)) 

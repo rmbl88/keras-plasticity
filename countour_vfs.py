@@ -59,6 +59,11 @@ def plot_fields(nodes, connectivity, fields, out_dir, var):
 
         if not ax: ax = plt.gca()
         pc = ax.tricontourf(triangulation, field.flatten(),**kwargs)
+
+        # This is the fix for the white lines between contour levels
+        for c in pc.collections:
+            #c.set_edgecolor("face")
+            c.set_rasterized(True)
         #ax.autoscale()
 
         return pc
@@ -103,8 +108,8 @@ def plot_fields(nodes, connectivity, fields, out_dir, var):
 
         n_subplots = field.shape[-1]
         fig, axs = plt.subplots(1,n_subplots)
-        fig.set_size_inches(19.2 if n_subplots==3 else 12.8,10.8)
-        fig.subplots_adjust(wspace=0.275)    
+        fig.set_size_inches(19.2 if n_subplots==3 else 4,2)
+        fig.subplots_adjust(wspace=0.15)    
 
         for j in range(field.shape[-1]):    
             
@@ -149,17 +154,22 @@ def plot_fields(nodes, connectivity, fields, out_dir, var):
                 axs[j].axis('off')
                 axs[j].set_aspect('equal')
                 
-                cbarlabels = np.linspace(cbar_min, cbar_max, num=13, endpoint=True)
-                fmt = '%.3f'
-                cb = fig.colorbar(pc, cax=axs[j].inset_axes((-0.05, 0.025, 0.02, 0.8)),ticks=cbarlabels,format=fmt)
-                cb.ax.set_title(cb_str, pad=15, horizontalalignment='right')
-                cb.outline.set_linewidth(1)
-                cb.ax.yaxis.set_tick_params(pad=7.5, colors='black', width=1,labelsize=PARAMS_CONTOUR['font.size'])
-                cb.ax.yaxis.set_ticks_position('left')
+                if(j==0):
+                    cbarlabels = np.linspace(cbar_min, cbar_max, num=6, endpoint=True)
+                    fmt = '%.3f'
+                    cb = fig.colorbar(pc, cax=axs[j].inset_axes((-0.075, 0.025, 0.03, 0.8)),ticks=cbarlabels,format=fmt)
+                    cb.ax.set_title(cb_str, pad=11, horizontalalignment='right',size=10)
+                    cb.outline.set_linewidth(0.45)
+                    cb.minorticks_off()
+                    cb.ax.yaxis.set_tick_params(pad=2.5, colors='black', width=0.45, labelsize=10, length=1.75)
+                    cb.ax.yaxis.set_ticks_position('left')
+                else:
+                    axs[j].text(-0.13, 0.97, cb_str, horizontalalignment='center', verticalalignment='center', transform=axs[j].transAxes,fontsize=10)
 
         # fig.tight_layout()
         # plt.show()
-        fig.savefig(os.path.join(out_dir,f'v_{var}_{i}.png'), format="png", dpi=200, bbox_inches='tight')
+        #fig.savefig(os.path.join(out_dir,f'v_{var}_{i}.png'), format="png", dpi=200, bbox_inches='tight')
+        fig.savefig(os.path.join(out_dir,f'v_{var}_{i}.pdf'), format="pdf", dpi=600, bbox_inches='tight')
         plt.clf()
         # plt.close(fig)
         del pc, cb, axs, fig, var_avg

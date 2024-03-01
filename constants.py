@@ -2,6 +2,7 @@
 # Defining model training constants
 #SEED = 70988
 SEED = 9567
+
 VAL_DIR = 'data/validation/'
 VAL_DIR_MULTI = 'data/validation_multi/crux-plastic/'
 TRAIN_DIR = 'data/training/'
@@ -27,10 +28,9 @@ PARAMS = {'text.usetex' : True,
           'font.size' : 11,
           'font.family' : 'serif',
           'font.serif' : ['Palatino Linotype'],
-          'lines.linewidth' : 0.75,
+          'lines.linewidth' : 0.85,
           'axes.labelsize': 8,
-          'axes.labelpad' : 6.5,
-          'lines.linewidth' : 0.6,
+          'axes.labelpad' : 6,
           'legend.loc' : 'best',
           'legend.frameon' : False,
           'patch.force_edgecolor' : True,
@@ -45,8 +45,10 @@ PARAMS = {'text.usetex' : True,
           'ytick.direction': 'in',
           'xtick.color': '000000',
           'ytick.color': '000000',
-          'xtick.major.width': 0.1,
-          'ytick.major.width': 0.1,
+          'xtick.major.width': 0.125,
+          'ytick.major.width': 0.125,
+          'xtick.major.size': 3,
+          'ytick.major.size': 3,
           'legend.fontsize': 8,
           'xtick.labelsize': 9,
           'ytick.labelsize': 9

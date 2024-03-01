@@ -1,344 +1,310 @@
 # ---------------------------------
 #    Library and function imports
 # ---------------------------------
-
-import cProfile, pstats
-from glob import glob
-from msvcrt import kbhit
 import os
 import shutil
 import joblib
-# from pytools import F
-from constants import *
 from functions import (
-    CoVWeightingLoss,
     GRUModel,
-    batch_jacobian,
-    global_dof,
-    layer_wise_lr,
-    standardize_data,
-    plot_history
-    )
-from functions import (
-    weightConstraint,
     EarlyStopping,
-    NeuralNetwork
+    get_data_stats,
+    get_data_transform,
+    train_test_split,
     )
 
-import pandas as pd
+from io_funcs import (
+    load_config,
+    save_config
+)
+
 import random
 import numpy as np
-import math
 import torch
 import time
 import wandb
-from torch.autograd.functional import jacobian
-import time
-from sklearn import preprocessing
 import time
 import random
-from tkinter import *
-import matplotlib.pyplot as plt
-import gc
+
 import pyarrow.parquet as pq
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 from torchvision import transforms
-# import pytorch_warmup as warmup
 from warmup_scheduler import GradualWarmupScheduler
-import math
-import glob
+
 # ----------------------------------------
 #        Class definitions
 # ----------------------------------------
-class AddGaussianNoise(object):
-    def __init__(self, mean=0., std=1.):
-        self.std = std
-        self.mean = mean
-        
-    def __call__(self, tensor):
-        return tensor + torch.randn(tensor.size()) * self.std + self.mean
-    
-    def __repr__(self):
-        return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
 
 class CruciformDataset(torch.utils.data.Dataset):
-    def __init__(self, trials, root_dir, data_dir, features, outputs, info, scaler_x=None, transform=None, seq_len=1):
-        self.seq_len = seq_len
+    def __init__(self, trials, data_dir, features, outputs, info, transform=None, seq_len=1):
+        
         self.trials = trials
-        self.root_dir = root_dir
         self.data_dir = data_dir
-        self.scaler_x = scaler_x
         self.features = features
         self.outputs = outputs
         self.info = info
         self.transform = transform
-        self.files = [os.path.join(self.root_dir, self.data_dir , trial + '.parquet') for trial in self.trials]
-        self.data = [pq.ParquetDataset(file).read_pandas(columns=self.features+self.outputs+['t','id']).to_pandas() for file in self.files]
+        self.seq_len = seq_len
+        
+        self.files = self.get_files()
 
     def __len__(self):
         return len(self.trials)
 
     def __getitem__(self, idx):
         
-        x = torch.from_numpy(self.data[idx][self.features].dropna().values).float()
-        e = torch.from_numpy(self.data[idx][self.features].dropna().values).float()
-        y = torch.from_numpy(self.data[idx][self.outputs].dropna().values).float()
-        t = torch.from_numpy(self.data[idx]['t'].values).float()
-        
-        t_pts = len(list(set(t.numpy())))
-        n_elems = len(set(self.data[idx]['id'].values))
+        x, y, t_pts, n_elems = self.load_data(self.files[idx])
 
-        # Adding a padding of zeros to the input data in order to make predictions start at zero
-        #pad_zeros = torch.zeros(self.seq_len * n_elems, x.shape[-1])
-        
+        de = torch.diff(x.reshape(t_pts, n_elems,-1).permute(1,0,2), dim=1).reshape(-1, x.shape[-1])
+
+        # Discarding last time-step due to the use of the strain increment de
+        x = x[:-n_elems,:]
+        y = y[:-n_elems,:]
+
+        # Adding padding of zeros to input to make predictions start at zero        
         pad_zeros = torch.zeros((self.seq_len-1) * n_elems, x.shape[-1])
         x = torch.cat([pad_zeros, x], 0)
 
+        x_de = self.rolling_window(x.reshape(t_pts-1 + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)
+        x_de = x_de.reshape(-1,*x_de.shape[2:])
+        x_de[:,[0,1],:] = x_de[:,[2,3],:]
+        x_de[:,2,:] += de
+        x_de[:,3,:] -= de
+        
         if self.transform != None:
             
-            #dt = torch.diff(t.reshape(t_pts,n_elems,-1),0)
             x = self.transform(x)
+            x_de = self.transform(x_de)
             
-        #x = self.rolling_window(x.reshape(t_pts + self.seq_len,n_elems,-1), seq_size=self.seq_len)[:,:-1]
-        x = self.rolling_window(x.reshape(t_pts + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)
-        e = e.reshape(t_pts,n_elems,-1).permute(1,0,2)
-        de = torch.zeros_like(e)
-        de[:,1:] = torch.diff(e,dim=1)
+        #x = self.rolling_window(x.reshape(t_pts + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)
+        x = self.rolling_window(x.reshape(t_pts-1 + self.seq_len-1, n_elems,-1), seq_size=self.seq_len)
         x = x.reshape(-1,*x.shape[2:])
-        de = de.reshape(-1,de.shape[-1])
-        #t = self.rolling_window(t.reshape(t_pts,n_elems,-1), seq_size=self.seq_len)
 
-        #y = y.reshape(t_pts-1,n_elems,-1)[self.seq_len-1:].reshape(-1,y.shape[-1])
-        #y = y.reshape(t_pts,n_elems,-1)[self.seq_len-1:].permute(1,0,2)
-        y = y.reshape(t_pts,n_elems,-1).permute(1,0,2)
-        dy = torch.zeros_like(y)
-        dy[:,1:] = torch.diff(y, dim=1)
+        #y = y.reshape(t_pts,n_elems,-1).permute(1,0,2)
+        y = y.reshape(t_pts-1,n_elems,-1).permute(1,0,2)
         y = y.reshape(-1,y.shape[-1])
-        dy = dy.reshape(-1,dy.shape[-1])
+        
+        x_0 = x[::t_pts-1]
+        y_0 = y[::t_pts-1]
 
-        idx_ = torch.randperm(x.shape[0])
+        idx_elem = torch.randperm(x.shape[0])
 
-        return x[idx_], y[idx_], t, t_pts, n_elems, de[idx_], dy[idx_]     
+        return x[idx_elem], y[idx_elem], x_de[idx_elem], de[idx_elem], x_0, y_0, t_pts, n_elems    
     
     def rolling_window(self, x, seq_size, step_size=1):
-    # unfold dimension to make our rolling window
+        # Unfold dimension to make sliding window
         return x.unfold(0,seq_size,step_size).permute(1,0,3,2)
-        #return x.unfold(0,seq_size,step_size).permute(0,1,3,2).reshape(-1,seq_size,x.shape[-1])
+    
+    def get_files(self):
 
-class MinMaxScaler(object):
-    def __init__(self, min, max):
-        self.min = min
-        self.max = max
-
-    def __call__(self, x):
-
-        x_std = (x - self.min) / (self.max - self.min)
-        x_scaled = x_std * (self.max - self.min) + self.min
-
-        return x_scaled
-
-class Normalize(object):
-    def __init__(self, mean, std):
-        self.mean = torch.as_tensor(mean)
-        self.std = torch.as_tensor(std)
-
-    def __call__(self, x):
-
-        x_std = (x - self.mean) / self.std
-
-        return x_std
+        files = [os.path.join(self.data_dir, trial + '.parquet') for trial in self.trials]
         
+        return files
+    
+    def load_data(self, path):
+
+        # Reading data
+        data = pq.ParquetDataset(path)
+        data= data.read_pandas(use_threads=True,
+                               columns=self.features+self.outputs+['t','id'])
+        data= data.to_pandas(self_destruct=True)
+        
+        # Extracting features, output labels and other info
+        x = torch.from_numpy(data[self.features].dropna().values).float()
+        y = torch.from_numpy(data[self.outputs].dropna().values).float()
+        t = torch.from_numpy(data['t'].values).float()
+        ids = set(data['id'].values)
+
+        t_pts = len(list(set(t.numpy())))
+        n_elems = len(ids)
+
+        return x, y, t_pts, n_elems
+    
 # -------------------------------
 #       Method definitions
 # -------------------------------
 
-# def batch_jacobian(f, x):
-#     f_sum = lambda x: torch.sum(f(x[:,-1]), axis=0)
-#     return jacobian(f_sum, x[:,-1],create_graph=True).permute(1,0,2)
-
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
+def get_grad_norm(model):
+    total_norm = 0
+    for p in model.parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)
+            total_norm += param_norm.item() ** 2
+    total_norm = total_norm ** (1. / 2)
+    return total_norm
 
-def train():
+def init_weights(m):
+    '''
+    Performs the weight initialization of a neural network
 
-    def get_grad_norm(model):
-        total_norm = 0
-        for p in model.parameters():
-            if p.grad is not None:
-                param_norm = p.grad.data.norm(2)
-                total_norm += param_norm.item() ** 2
-        total_norm = total_norm ** (1. / 2)
-        return total_norm
+    Parameters
+    ----------
+    m : NeuralNetwork object
+        Neural network model, instance of NeuralNework class
+    '''
+    if isinstance(m, torch.nn.Linear) and (m.bias != None):
+        torch.nn.init.kaiming_uniform_(m.weight) #RELU
+        m.bias.data.fill_(0.01)
+    # elif isinstance(m, torch.nn.GRU):
+    #     for n, p in m.named_parameters():
+    #         if 'weight_hh' in n:
+    #             p.data.reshape(p.shape[0]//p.shape[-1],p.shape[-1],p.shape[-1]).copy_(torch.eye(p.shape[-1])).reshape([-1,p.shape[-1]])
+    #         elif 'bias_hh' in n:
+    #             p.data.fill_(0.0)
 
-    def init_weights(m):
-        '''
-        Performs the weight initialization of a neural network
+def train_loop(dataloader, model, l_fn, optimizer):
+    '''
+    Custom loop for neural network training, using mini-batches
 
-        Parameters
-        ----------
-        m : NeuralNetwork object
-            Neural network model, instance of NeuralNework class
-        '''
-        if isinstance(m, torch.nn.Linear) and (m.bias != None):
-            torch.nn.init.kaiming_uniform_(m.weight) #RELU
-            #torch.nn.init.xavier_normal(m.weight)
-            #torch.nn.init.zeros_(m.bias)
-            #torch.nn.init.ones_(m.bias)
-            m.bias.data.fill_(0.01)
+    '''
+    data_iter = iter(dataloader)
 
-    def train_loop(dataloader, model, l_fn, optimizer, epoch):
-        '''
-        Custom loop for neural network training, using mini-batches
+    num_batches = len(dataloader)
 
-        '''
-        data_iter = iter(dataloader)
+    next_batch = data_iter.__next__() # start loading the first batch
+    next_batch = [ _.cuda(non_blocking=True) for _ in next_batch ]
+    
+    logs = {
+        'loss': {},
+        'clausius': {},
+        'consist': {}
+    }
+            
+    model.train()
 
-        num_batches = len(dataloader)
+    running_loss = 0.0
+    clausius = 0.0
+    l_consist = 0.0
+    total_samples = 0.0
+    t_i = 0.0
+
+    eps = 5000
+    eps_2 = 10
+
+    for batch_idx in range(len(dataloader)):
+
+        # Extracting variables for training
+        #X_train, y_train, x_de, de, _, _ = data_iter.__next__()
+        X_train, y_train, x_de, de, x_0, y_0, t_pts, _ = next_batch
+
+        if batch_idx + 1 != len(dataloader): 
+        # start copying data of next batch
+            next_batch = data_iter.__next__()
+            next_batch = [_.cuda(non_blocking=True) for _ in next_batch]
         
-        logs = {
-            'loss': {},
-            'jac_loss': {},
-            's_loss': {},
-            'xy_loss': {}
-        }
-               
-        model.train()
-               
-        for batch_idx in range(len(dataloader)):
+        X_train = X_train.squeeze(0)
+        y_train = y_train.squeeze(0)
+        x_de = x_de.squeeze(0)
+        de = de.squeeze(0)
+        x_0 = x_0.squeeze(0)
+        y_0 = y_0.squeeze(0)
 
-            # Extracting variables for training
-            X_train, y_train, _, t_pts, n_elems, de, dy = data_iter.__next__()
+        x_batches = X_train.split(X_train.shape[0] // BATCH_DIVIDER)
+        y_batches = y_train.split(y_train.shape[0] // BATCH_DIVIDER)
+        x_de_batches = x_de.split(x_de.shape[0] // BATCH_DIVIDER)
+        de_batches = de.split(de.shape[0] // BATCH_DIVIDER)
+        
+        for i, batch in enumerate(x_batches):
             
-            X_train = X_train.squeeze(0).to(device)
-            y_train = y_train.squeeze(0).to(device)
-            de = de.squeeze(0).to(device)
-            dy = dy.squeeze(0).to(device)
-
-            x_batches = X_train.split(X_train.shape[0]//32)
-            y_batches = y_train.split(y_train.shape[0]//32)
-            de_batches = de.split(de.shape[0]//32)
-            dy_batches = dy.split(dy.shape[0]//32)
-
-            running_loss = 0.0
-            jac_loss = 0.0
-            s_loss = 0.0
-            xy_loss = 0.0
+            x = batch.requires_grad_(True)
+            xde = x_de_batches[i].requires_grad_(True)
             
-            for i, batch in enumerate(x_batches):
-                x = batch.requires_grad_(True)
-                with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                    pred = model(x)
+            with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
+                pred_0 = model(x_0)
+                pred = model(x)
+                pred_2 = model(xde)
+            
+                l_clausius = (eps/2)*torch.sum(torch.square(torch.nn.functional.relu(-0.5*torch.sum((pred-pred_2)*(de_batches[i]),-1))))
 
-                a = batch_jacobian(pred.cpu(),x.cpu())
-                s = pred[:,:3]  # stress
-                # l = pred[:,3:]  # cholesky factors
-                # L = torch.zeros(l.size(0),3,3).to(device)
-                # tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-                # L[:,tril_indices[0], tril_indices[1]] = l  # vector to lower triangular matrix
-
-                # J = L@L.transpose(2,1)  # Jacobian
-                # ds = (J@de_batches[i].unsqueeze(-1)).squeeze(-1)          
+                l_0 = eps_2*torch.mean(torch.square(pred_0))
+                
+                loss = l_fn(pred, y_batches[i]) + l_clausius + l_0
                                 
-                # a = J[:,[0,1,2,2],[2,2,0,1]]
-                with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-
-                    l_jac = l_fn(ds,dy_batches[i])
-
-                    l_j = l_fn(a, torch.zeros_like(a))
-
-                    l_s = l_fn(s, y_batches[i])
-
-                    loss = l_s + l_jac + l_j
-                                    
-                scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
-            
-                if ((i + 1) % ITERS_TO_ACCUMULATE == 0) or (i + 1 == len(x_batches)):    
-                    
-                    scaler.step(optimizer)
-                    scaler.update()
-                    
-                    optimizer.zero_grad(set_to_none=True)
-
+            scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
+        
+            if ((i + 1) % ITERS_TO_ACCUMULATE == 0) or (i + 1 == len(x_batches)):    
+                
+                scaler.step(optimizer)
+                old_scaler = scaler.get_scale()
+                scaler.update()
+                new_scaler = scaler.get_scale()
+                # Added condition to prevent UserWarning: Detected call of `lr_scheduler.step()` before `optimizer.step()`
+                if new_scaler >= old_scaler:
                     warmup_lr.step()
+
+                optimizer.zero_grad(set_to_none=True)
+        
+            # Saving loss values
+            running_loss += loss.detach() * x.size()[0]
+            l_consist += l_0.detach() * x_0.size()[0]
+            clausius += l_clausius.detach() * 2/eps
+            total_samples += x.size()[0]
+            t_i += x_0.size()[0]
+            #torch.cuda.empty_cache()
+
+        print('\r> Train: %d/%d' % (batch_idx + 1, num_batches), end='')
+
+    logs['loss'] = running_loss / total_samples
+    logs['clausius'] = clausius
+    logs['consist'] = l_consist / t_i
+    
+    torch.cuda.empty_cache()
+    return logs
+
+def test_loop(dataloader, model, l_fn):
+
+    data_iter = iter(dataloader)
+
+    num_batches = len(dataloader)
+    
+    test_loss = 0.0
+
+    model.eval()
+
+    with torch.no_grad():
+
+        running_loss = 0.0
+        total_samples = 0.0
+
+        for batch_idx in range(len(dataloader)):
+        
+            X_test, y_test, _, _, _, _, _, _ = data_iter.__next__()
+        
+            X_test = X_test.squeeze(0).to(DEVICE)
+            y_test = y_test.squeeze(0).to(DEVICE)
+
+            x_batches = X_test.split(X_test.shape[0] // BATCH_DIVIDER)
+            y_batches = y_test.split(y_test.shape[0] // BATCH_DIVIDER)
+
+            for i, batch in enumerate(x_batches):
+               
+                with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
+                    pred = model(batch) # stress rate
             
-                # Saving loss values
-                running_loss += loss.detach()
-                jac_loss += l_jac.detach()
-                s_loss += l_s.detach()
-                xy_loss += l_j.detach()
-
-                torch.cuda.empty_cache()
-
-            logs['loss'][batch_idx] = running_loss / len(x_batches)
-            logs['jac_loss'][batch_idx] = jac_loss / len(x_batches)
-            logs['s_loss'][batch_idx] = s_loss / len(x_batches)
-            logs['xy_loss'][batch_idx] = xy_loss / len(x_batches)
-
-            print('\r> Train: %d/%d' % (batch_idx + 1, num_batches), end='')
-
-        logs = [np.fromiter(v.values(),dtype=np.float32) for k,v in logs.items()]      
-        #-----------------------------
-        return logs
-
-    def test_loop(dataloader, model, l_fn):
-
-        data_iter = iter(dataloader)
-
-        num_batches = len(dataloader)
-        test_losses = []
-
-        model.eval()
-
-        with torch.no_grad():
-
-            for batch_idx in range(len(dataloader)):
+                    test_loss = l_fn(pred, y_batches[i])
             
-                X_test, y_test, _, t_pts, n_elems, de, dy = data_iter.__next__()
-            
-                X_test = X_test.squeeze(0).to(device)
-                y_test = y_test.squeeze(0).to(device)
-                de = de.squeeze(0).to(device)
-                dy = dy.squeeze(0).to(device)
+                running_loss += test_loss.item() * batch.size()[0]
+                total_samples += batch.size()[0]
 
-                x_batches = X_test.split(X_test.shape[0]//32)
-                y_batches = y_test.split(y_test.shape[0]//32)
-                de_batches = de.split(de.shape[0]//32)
-                dy_batches = dy.split(dy.shape[0]//32)
+            print('\r> Test: %d/%d' % (batch_idx + 1, num_batches), end='')
 
-                running_loss = 0.0
+        test_loss = running_loss / total_samples
 
-                for i, batch in enumerate(x_batches):
-                    #model.init_hidden(batch.size(0),device)
-                    with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                        pred = model(batch) # stress rate
-                    
-                    s = pred[:,:3]  # stress
-                    l = pred[:,3:]  # cholesky factors
-                    L = torch.zeros(l.size(0),3,3).to(device)
-                    tril_indices = torch.tril_indices(row=3, col=3, offset=0)
-                    L[:,tril_indices[0], tril_indices[1]] = l  # lower triangular matrix to full matrix
+    return test_loss  
 
-                    J = L@L.transpose(2,1)  # Jacobian
-                    ds = (J@de_batches[i].unsqueeze(-1)).squeeze(-1)
-                
-                    with torch.autocast(device_type='cuda', dtype=torch.float32, enabled=USE_AMP):
-                        
-                        #l_tuples = [(pred[:,0], y_test[:,0]), (pred[:,1], y_test[:,1]), (l_triax,)]
-                    
-                        #test_loss = l_fn(l_tuples)
-                        # test_loss = l_fn(pred[:,0], y_test[:,0]) + l_fn(pred[:,1], y_test[:,1])
-                        test_loss = l_fn(s, y_batches[i]) + l_fn(ds, dy_batches[i])
-                
-                    running_loss += test_loss.item()
+if __name__ == '__main__':
+    
+    # Loading configuration
+    CONFIG_PATH = './config/'
 
-                print('\r> Test: %d/%d' % (batch_idx + 1, num_batches), end='')
+    config = load_config(CONFIG_PATH, 'config_direct.yaml')
 
-            test_losses.append(running_loss / len(x_batches))
-
-        return test_losses
-#----------------------------------------------------
+# ---------------------------------------------------------------
+#                     Pytorch Configurations
+# ---------------------------------------------------------------
+    
     # Disabling Debug APIs
     torch.autograd.set_detect_anomaly(False)
     torch.autograd.profiler.profile(False)
@@ -354,159 +320,171 @@ def train():
         dev = "cpu"  
         KWARGS = {'num_workers': 0}
     
-    device = torch.device(dev)
-
-    torch.cuda.empty_cache() 
-
-    # Specifying random seed
-    os.environ['PYTHONHASHSEED']=str(SEED)
-    random.seed(SEED)
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
-
-    trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'t_trials.csv'), index_col=False, header=0)
-    trials = list(trials['0'])
-    trials = random.sample(trials,len(trials))
-
-    test_trials = random.sample(trials, math.ceil(len(trials)*TEST_SIZE))
-    train_trials = list(set(trials).difference(test_trials))
-
-    # Defining variables of interest
-
-    FEATURES = ['exx_t','eyy_t','exy_t']
-    OUTPUTS = ['sxx_t','syy_t','sxy_t']
-    INFO = ['tag','inc','t','theta_ep','s1','s2','theta_sp','fxx_t','fyy_t']
-
-    # Gathering statistics on training dataset
-
-    df_list = []
-
-    dir = os.path.join(TRAIN_MULTI_DIR,'processed/')
-
-    file_list = glob.glob(os.path.join(dir, f'*.parquet'))
-
-    df_list = [pq.ParquetDataset(file).read_pandas(columns=['tag']+FEATURES).to_pandas() for file in tqdm(file_list,desc='Importing dataset files',bar_format=FORMAT_PBAR)]
-
-    raw_data = pd.concat(df_list)
-    input_data = raw_data[raw_data['tag'].isin(train_trials)].drop('tag',1).dropna()
-
-    #min = torch.min(torch.from_numpy(input_data.values).float(),0).values
-    #max = torch.max(torch.from_numpy(input_data.values).float(),0).values
-    std, mean = torch.std_mean(torch.from_numpy(input_data.values.astype(np.float32)),0)
-
-    # Cleaning workspace from useless variables
-    del df_list
-    del file_list
-    del input_data
-    gc.collect()
-
-    # Defining data transforms - normalization and noise addition 
-    transform = transforms.Compose([
-        #MinMaxScaler(min,max),
-        Normalize(mean.tolist(), std.tolist()),
-        #transforms.RandomApply([AddGaussianNoise(0., 1.)],p=0.15)
-    ])
-
-    # Preparing dataloaders for mini-batch training
-    SEQ_LEN = 4
-
-    train_dataset = CruciformDataset(train_trials, TRAIN_MULTI_DIR, 'processed', FEATURES, OUTPUTS, INFO, transform=transform, seq_len=SEQ_LEN)
-    test_dataset = CruciformDataset(test_trials, TRAIN_MULTI_DIR, 'processed', FEATURES, OUTPUTS, INFO, transform=transform, seq_len=SEQ_LEN)
-    
-    train_dataloader = DataLoader(train_dataset, shuffle=True,**KWARGS)
-    test_dataloader = DataLoader(test_dataset, **KWARGS)
-    
-    # Model variables
-    N_INPUTS = len(FEATURES)
-    N_OUTPUTS = len(OUTPUTS)
-    
-    N_UNITS = [32]
-    H_LAYERS = 2
-
-    ITERS_TO_ACCUMULATE = 1
+    DEVICE = torch.device(dev)
 
     # Automatic mixed precision
-    USE_AMP = True
+    USE_AMP = config.train.use_amp
 
-    # WANDB logging
-    WANDB_LOG = False
+# ---------------------------------------------------------------
 
-    model_1 = GRUModel(input_dim=N_INPUTS, hidden_dim=N_UNITS, layer_dim=H_LAYERS, output_dim=N_OUTPUTS)
+    # Specifying random seed
+    os.environ['PYTHONHASHSEED']=str(config.seed)
+    random.seed(config.seed)
+    np.random.seed(config.seed)
+    torch.manual_seed(config.seed)
 
-    model_1.apply(init_weights)
-    model_1.to(device)
-
-    # Training variables
-    epochs = 10000
-
-    # Optimization variables
-    learning_rate = 0.005
-    lr_mult = 1.0
-
-    #params = layer_wise_lr(model_1, lr_mult=lr_mult, learning_rate=learning_rate)
+# ---------------------------------------------------------------
+#                     Defining constants
+# ---------------------------------------------------------------  
     
-    #l_fn = CoVWeightingLoss(device=device, n_losses=3)
+    ITERS_TO_ACCUMULATE = config.train.iters_to_accumulate
+
+    BATCH_DIVIDER = config.train.batch_divider
+
+# ---------------------------------------------------------------
+#                     WANDB Configurations
+# ---------------------------------------------------------------    
+
+    if config.wandb.log:
+
+        # WANDB model details
+        WANDB_CONFIG = {
+            'inputs': len(config.data.inputs),
+            'outputs': len(config.data.outputs),
+            'hidden_layers': len(config.model.hidden_size) if type(config.model.hidden_size) is list else 1,
+            'hidden_units': f'{*config.model.hidden_size,}' if type(config.model.hidden_size) is list else config.model.hidden_size,
+            'stack_units': config.model.num_layers,        
+            'epochs': config.train.epochs,
+            'l_rate': config.train.l_rate,
+            'l2_reg': config.train.w_decay
+        }
+
+        # Starting WANDB logging
+        WANDB_RUN = wandb.init(project=config.wandb.project, 
+                               entity=config.wandb.entity, 
+                               config=WANDB_CONFIG)
+        
+        # Tagging the model
+        MODEL_TAG = WANDB_RUN.name
+
+    else:
+
+        # Tagging the model
+        MODEL_TAG = time.strftime("%Y%m%d-%H%M%S")
+
+# ---------------------------------------------------------------
+#                   Configuring directories
+# ---------------------------------------------------------------
+    
+    # Temp folder for model checkpoint
+    TEMP_DIR = os.path.join(config.dirs.temp, MODEL_TAG)
+    
+    # Output paths
+    DIR_PROJECT = os.path.join('outputs', config.wandb.project)
+    DIR_RUN = os.path.join(DIR_PROJECT, 'models', MODEL_TAG)
+    DIR_VAL = os.path.join(DIR_PROJECT, 'val')    
+
+    SCALER_FILE = os.path.join(DIR_RUN, 'scaler.pkl')
+    MODEL_FILE = os.path.join(DIR_RUN, 'model.pt')
+    CONF_FILE = os.path.join(DIR_RUN, 'config.yaml')
+    
+    # Creating output directories
+    directories = [TEMP_DIR, DIR_PROJECT, DIR_RUN, DIR_VAL]
+
+    for dir in directories:
+       
+        os.makedirs(dir, exist_ok=True)
+       
+# ---------------------------------------------------------------
+        
+    # Cleaning GPU cache
+    torch.cuda.empty_cache() 
+
+    # Splitting training dataset
+    train_trials, test_trials = train_test_split(config.dirs.trials, config.data.split)
+
+    if config.data.normalize.type != None:
+
+        # Gathering statistics on training dataset
+        stat_vars = get_data_stats(config.dirs.train, train_trials, ['tag'] + config.data.inputs, config.data.normalize.type)
+
+        # Defining data transforms - normalization and noise addition 
+        transform = transforms.Compose([
+            get_data_transform(config.data.normalize.type, stat_vars)
+        ])
+
+    # Preparing dataloaders for mini-batch training
+    train_dataset = CruciformDataset(train_trials, 
+                                     config.dirs.train, 
+                                     config.data.inputs, 
+                                     config.data.outputs, 
+                                     config.data.info, 
+                                     transform=transform, 
+                                     seq_len=config.data.seq_len)
+
+    test_dataset = CruciformDataset(test_trials, 
+                                    config.dirs.train, 
+                                    config.data.inputs, 
+                                    config.data.outputs, 
+                                    config.data.info, 
+                                    transform=transform, 
+                                    seq_len=config.data.seq_len)
+    
+    train_dataloader = DataLoader(train_dataset, shuffle=True, **KWARGS)
+    test_dataloader = DataLoader(test_dataset, **KWARGS)
+
+    model = GRUModel(input_dim=len(config.data.inputs),
+                     output_dim=len(config.data.outputs), 
+                     hidden_dim=config.model.hidden_size, 
+                     layer_dim=config.model.num_layers)
+
+    model.apply(init_weights)
+    model.to(DEVICE)
+
     l_fn = torch.nn.MSELoss()
 
-    weight_decay = 0.001
-
-    optimizer = torch.optim.AdamW(params=model_1.parameters(), weight_decay=weight_decay, lr=learning_rate)
-    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', patience=20, cooldown=8, factor=0.88, min_lr=[params[i]['lr']*0.00005 for i in range(len(params))])
+    optimizer = torch.optim.AdamW(params=model.parameters(),
+                                  weight_decay=config.train.w_decay, 
+                                  lr=config.train.l_rate.max)
        
-    steps_warmup = 1920 # 5 epochs
-    steps_annealing = (epochs - (steps_warmup // (len(train_dataloader)*32 // ITERS_TO_ACCUMULATE))) * (len(train_dataloader)*32 // ITERS_TO_ACCUMULATE)
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=steps_annealing, eta_min=1e-3)
-    warmup_lr = GradualWarmupScheduler(optimizer, multiplier=1, total_epoch=steps_warmup, after_scheduler=scheduler)
+    steps_warmup = config.train.l_rate.warmup_steps
     
-    # Creates a GradScaler once at the beginning of training.
-    scaler = torch.cuda.amp.GradScaler()
+    steps_annealing = (config.train.epochs - (steps_warmup // (len(train_dataloader)*config.train.batch_divider // ITERS_TO_ACCUMULATE))) * (len(train_dataloader) * config.train.batch_divider // ITERS_TO_ACCUMULATE)
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 
+                                                           T_max=steps_annealing, 
+                                                           eta_min=config.train.l_rate.min)
+    
+    warmup_lr = GradualWarmupScheduler(optimizer, 
+                                       multiplier=1, 
+                                       total_epoch=steps_warmup, 
+                                       after_scheduler=scheduler)
+    
+    if config.train.use_amp:
+        # Creates a GradScaler
+        scaler = torch.cuda.amp.GradScaler()
+    
+    # Initializing the early_stopping object
+    early_stopping = EarlyStopping(patience=config.train.e_stop.patience, 
+                                   path=config.train.e_stop.checkpoint, 
+                                   delta=config.train.e_stop.delta, 
+                                   verbose=True)
+
+    if config.wandb.log:
+        wandb.watch(model, log='all')
 
     # Container variables for history purposes
     log_dict = {
         'epoch': {},
         't_loss': {},
         'v_loss': {},
-        'jac_loss': {},
-        's_loss': {},
-        'xy_loss': {},
-        'grad_norm': {}
+        'clausius': {},
+        'consist': {}
     }
-
-    if WANDB_LOG:
-        config = {
-            "inputs": N_INPUTS,
-            "outputs": N_OUTPUTS,
-            "hidden_layers": H_LAYERS,
-            "hidden_units": N_UNITS,        
-            "epochs": epochs,
-            "lr": learning_rate,
-            "l2_reg": weight_decay
-        }
-        run=wandb.init(project="direct_training_principal_inc_crux_lstm", entity="rmbl",config=config)
-        wandb.watch(model_1,log='all')
     
-    # Initializing the early_stopping object
-    
-    if WANDB_LOG:
-        path=f'temp/{run.name}/checkpoint.pt'
-        try:
-            os.makedirs(f'./temp/{run.name}')
-        except FileExistsError:
-            pass
-    else:
-        path=f'temp/checkpoint.pt'
-        try:
-            os.makedirs(f'./temp')
-        except FileExistsError:
-            pass
-    
+    for t in range(config.train.epochs):
 
-    early_stopping = EarlyStopping(patience=500, path=path, verbose=True)
-
-    for t in range(epochs):
-
-        print('\r--------------------\nEpoch [%d/%d]\n' % (t + 1, epochs))
+        print('\r--------------------\nEpoch [%d/%d]\n' % (t + 1, config.train.epochs))
 
         log_dict['epoch'][t] = t + 1
 
@@ -514,133 +492,82 @@ def train():
         start_train = time.time()
 
         #--------------------------------------------------------------
-        t_loss, jac_loss, s_loss, xy_loss = train_loop(train_dataloader, model_1, l_fn, optimizer,t)
+        logs = train_loop(train_dataloader, model, l_fn, optimizer)
         #--------------------------------------------------------------
 
-        log_dict['t_loss'][t] = np.mean(t_loss) 
-        log_dict['jac_loss'][t] = np.mean(jac_loss)
-        log_dict['s_loss'][t] = np.mean(s_loss)
-        log_dict['xy_loss'][t] = np.mean(xy_loss)
-        #train_loss.append(np.mean(batch_losses))
-        # f_loss.append(np.mean(f_l))
-        # l_loss.append(np.mean(l_))
-        # triax_loss.append(np.mean(t_l))
-
+        log_dict['t_loss'][t] = logs['loss'] 
+        log_dict['clausius'][t] = logs['clausius']
+        log_dict['consist'][t] = logs['consist']
+    
         end_train = time.time()
 
-        #Apply learning rate scheduling if defined
-        #try:
-            #scheduler.step(train_loss[t])
-        print('. t_loss: %.6e -> lr: %.4e -- %.3fs \n\nl_stress: %.4e | l_jac: %.4e | l_xy: %.4e\n' % (log_dict['t_loss'][t], warmup_lr._last_lr[0], end_train - start_train, log_dict['s_loss'][t], log_dict['jac_loss'][t], log_dict['xy_loss'][t]))
-        # except:
-        #     print('. t_loss: %.6e -> | wm_l: %.4e -- %.3fs' % (train_loss[t], f_loss[t], end_train - start_train))
+        print('. t_loss: %.6e | clausius: %.6e | consist: %.6e -> lr: %.4e -- %.3fs \n' % (log_dict['t_loss'][t], log_dict['clausius'][t], log_dict['consist'][t], warmup_lr._last_lr[0], end_train - start_train))
 
         # Test loop
         start_test = time.time()
 
         #-----------------------------------------------------------------------------------
-        v_loss = test_loop(test_dataloader, model_1, l_fn)
+        v_loss = test_loop(test_dataloader, model, l_fn)
         #-----------------------------------------------------------------------------------
 
-        log_dict['v_loss'][t] = np.mean(v_loss)
-        #val_loss.append(np.mean(batch_val_losses))
+        log_dict['v_loss'][t] = v_loss
 
         end_test = time.time()
 
         print('. v_loss: %.6e -- %.3fs' % (log_dict['v_loss'][t], end_test - start_test))
 
-        if t > 200:
-            early_stopping(log_dict['v_loss'][t], model_1)
+        if t > config.train.e_stop.start_at:
+            early_stopping(log_dict['v_loss'][t], model)
 
-        if WANDB_LOG:
+        if config.wandb.log:
             wandb.log({
                 'epoch': t,
                 'l_rate': warmup_lr._last_lr[0],
                 'train_loss': log_dict['t_loss'][t],
                 'test_loss': log_dict['v_loss'][t],
-                'l_jac': log_dict['jac_loss'][t],
-                'l_stress': log_dict['s_loss'][t],
-                'l_xy': log_dict['xy_loss'][t]
+                'clausius': log_dict['clausius'][t],
+                'consist': log_dict['consist'][t]
             })
 
-        if  early_stopping.early_stop:
+        if early_stopping.early_stop:
             print("Early stopping")
             break
     
     print("Done!")
 
-    # load the last checkpoint with the best model
-    model_1.load_state_dict(torch.load(path))
+    # Load the last checkpoint with the best model
+    model.load_state_dict(torch.load(config.train.e_stop.checkpoint))
 
-    # epochs_ = np.reshape(np.array(epochs_), (len(epochs_),1))
-    # train_loss = np.reshape(np.array(train_loss), (len(train_loss),1))
-    # val_loss = np.reshape(np.array(val_loss), (len(val_loss),1))
-
-    # history = pd.DataFrame(np.concatenate([epochs_, train_loss, val_loss], axis=1), columns=['epoch','loss','val_loss'])
-
-    task = f"{run.name}-[{N_INPUTS}-GRUx{H_LAYERS}-{*N_UNITS,}-{N_OUTPUTS}]-{TRAIN_MULTI_DIR.split('/')[-2]}-{count_parameters(model_1)}-VFs"
-    #task = r'%s-[%i-%ix%i-%i]-%s-%i-VFs' % (run.name,N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2], count_parameters(model_1))
-
-    output_task = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct'
-    output_loss = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct/loss/'
-    output_stats = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct/stats/'
-    output_models = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct/models/'
-    output_val = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct/val/'
-    output_logs = 'outputs/' + TRAIN_MULTI_DIR.split('/')[-2] + '_sbvf_abs_direct/logs/'
-
-    directories = [output_task, output_loss, output_stats, output_models, output_val, output_logs]
-
-    for dir in directories:
-        try:
-            os.makedirs(dir)
-        except FileExistsError:
-            pass
-
-    #history.to_csv(output_loss + task + '.csv', sep=',', encoding='utf-8', header='true')
-
-    #plot_history(history, output_loss, True, task)
-
-    torch.save(model_1.state_dict(), output_models + task + '.pt')
+    # Save model state
+    torch.save(model.state_dict(), os.path.join(DIR_RUN, 'model.pt'))
     
-    scaler_dict = {
-        'type': 'standard',
-        'stat_vars': [std, mean]
-    }
+    # Save data scaler
+    joblib.dump(stat_vars, os.path.join(DIR_RUN, 'scaler.pkl'))
 
-    joblib.dump(scaler_dict, output_models + task + '-scaler_x.pkl')
-    joblib.dump([FEATURES, OUTPUTS, INFO, N_UNITS, H_LAYERS, SEQ_LEN], output_models + run.name + '-arch.pkl')
+    # Save config
+    save_config(config, CONF_FILE)
 
-    if WANDB_LOG:
-        # 3️⃣ At the end of training, save the model artifact
+    # At the end of training, save the model artifact
+    if config.wandb.log:
+        
         # Name this artifact after the current run
-        task_ = f"{run.id}_{run.name}"
-        #task_ = r'__%i-%ix%i-%i__%s-direct' % (N_INPUTS, N_UNITS[0], H_LAYERS, N_OUTPUTS, TRAIN_MULTI_DIR.split('/')[-2])
-        model_artifact_name = run.id + '_' + run.name + task_
-        # Create a new artifact, which is a sample dataset
-        model = wandb.Artifact(model_artifact_name, type='model')
-        # Add files to the artifact, in this case a simple text file
-        model.add_file(local_path=output_models + task + '.pt')
-        model.add_file(output_models + task + '-scaler_x.pkl')
-        model.add_file(output_models + run.name + '-arch.pkl')
+        model_artifact_name = WANDB_RUN.id + '_' + MODEL_TAG
+        # Create a new artifact
+        model_artifact = wandb.Artifact(model_artifact_name, type='model')
+        # Add files to the artifact
+        model_artifact.add_file(MODEL_FILE)
+        model_artifact.add_file(SCALER_FILE)
+        model_artifact.add_file(CONF_FILE)
         # Log the model to W&B
-        run.log_artifact(model)
+        WANDB_RUN.log_artifact(model_artifact)
         # Call finish if you're in a notebook, to mark the run as done
-        run.finish()
+        WANDB_RUN.finish()
 
-        # Deleting temp folder
+    # Deleting temp folders
     try:
-        shutil.rmtree(f'./temp/{run.name}')
-    except FileNotFoundError:
+        shutil.rmtree(config.dirs.temp)
+        if config.wandb.log:
+            shutil.rmtree('wandb')
+    except (FileNotFoundError, PermissionError):
         pass
-
-# -------------------------------
-#           Main script
-# -------------------------------
-if __name__ == '__main__':
-    # Creating temporary folder
-    try:
-        os.makedirs('./temp')
-    except FileExistsError:
-        pass
-
-    train()
+    

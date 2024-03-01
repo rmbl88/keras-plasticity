@@ -3,9 +3,6 @@ __pycache__/
 data/
 *.gif
 wandb/
-sbvfs.pkl
 *.npy
 *.parquet
 temp/
-debug_v_fields.pkl
-test_vfs.pkl
