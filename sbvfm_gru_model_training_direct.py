@@ -4,13 +4,18 @@
 import os
 import shutil
 import joblib
+from contraints_loss import(
+    ClausiusDuhem, 
+    NormalizationLoss
+)
 from functions import (
+    CosineAnnealingWarmupRestarts,
     GRUModel,
     EarlyStopping,
     get_data_stats,
     get_data_transform,
     train_test_split,
-    )
+)
 
 from io_funcs import (
     load_config,
@@ -29,6 +34,9 @@ import pyarrow.parquet as pq
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from warmup_scheduler import GradualWarmupScheduler
+
+from loss_aggregator import Relobralo
+from autoclip.torch import QuantileClip
 
 # ----------------------------------------
 #        Class definitions
@@ -154,11 +162,13 @@ def init_weights(m):
     #         elif 'bias_hh' in n:
     #             p.data.fill_(0.0)
 
-def train_loop(dataloader, model, l_fn, optimizer):
+def train_loop(dataloader, model, l_total, l_data, l_cd, l_0, optimizer):
     '''
     Custom loop for neural network training, using mini-batches
 
     '''
+    global steps
+
     data_iter = iter(dataloader)
 
     num_batches = len(dataloader)
@@ -167,21 +177,19 @@ def train_loop(dataloader, model, l_fn, optimizer):
     next_batch = [ _.cuda(non_blocking=True) for _ in next_batch ]
     
     logs = {
-        'loss': {},
-        'clausius': {},
-        'consist': {}
+        'loss': torch.zeros(num_batches),
+        'clausius': torch.zeros(num_batches),
+        'l_0': torch.zeros(num_batches),
+        'lambdas': torch.zeros(num_batches,3)
     }
             
     model.train()
 
-    running_loss = 0.0
-    clausius = 0.0
-    l_consist = 0.0
-    total_samples = 0.0
-    t_i = 0.0
-
-    eps = 5000
-    eps_2 = 10
+    # running_loss = 0.0
+    # clausius = 0.0
+    # l_consist = 0.0
+    # total_samples = 0.0
+    # t_i = 0.0
 
     for batch_idx in range(len(dataloader)):
 
@@ -201,12 +209,25 @@ def train_loop(dataloader, model, l_fn, optimizer):
         x_0 = x_0.squeeze(0)
         y_0 = y_0.squeeze(0)
 
-        x_batches = X_train.split(X_train.shape[0] // BATCH_DIVIDER)
-        y_batches = y_train.split(y_train.shape[0] // BATCH_DIVIDER)
-        x_de_batches = x_de.split(x_de.shape[0] // BATCH_DIVIDER)
-        de_batches = de.split(de.shape[0] // BATCH_DIVIDER)
+        x_batches = X_train.split(X_train.shape[0] // BATCH_DIVIDER)[:-1]
+        y_batches = y_train.split(y_train.shape[0] // BATCH_DIVIDER)[:-1]
+        x_de_batches = x_de.split(x_de.shape[0] // BATCH_DIVIDER)[:-1]
+        de_batches = de.split(de.shape[0] // BATCH_DIVIDER)[:-1]
+
+        running_loss = 0.0
+        clausius = 0.0
+        l_consist = 0.0
+        total_samples = 0.0
+        zero_samples = 0.0
+        lambdas = torch.zeros(3)
         
         for i, batch in enumerate(x_batches):
+
+            losses = {
+                'data': None,
+                'c_duhem': None,
+                'norm': None,
+            }
             
             x = batch.requires_grad_(True)
             xde = x_de_batches[i].requires_grad_(True)
@@ -215,12 +236,18 @@ def train_loop(dataloader, model, l_fn, optimizer):
                 pred_0 = model(x_0)
                 pred = model(x)
                 pred_2 = model(xde)
-            
-                l_clausius = (eps/2)*torch.sum(torch.square(torch.nn.functional.relu(-0.5*torch.sum((pred-pred_2)*(de_batches[i]),-1))))
 
-                l_0 = eps_2*torch.mean(torch.square(pred_0))
+                losses['data'] = l_data(pred, y_batches[i])
+                losses['c_duhem'] = l_cd(pred, pred_2, de_batches[i])
+                losses['norm'] = l_0(pred_0)
+
+                loss = l_total(losses, steps)
+
+                #l_clausius = (eps/2)*torch.sum(torch.square(torch.nn.functional.relu(-0.5*torch.sum((pred-pred_2)*(de_batches[i]),-1))))
+
+                #l_0 = eps_2*torch.mean(torch.square(pred_0))
                 
-                loss = l_fn(pred, y_batches[i]) + l_clausius + l_0
+                #loss = l_fn(pred, y_batches[i]) + l_clausius + l_0
                                 
             scaler.scale(loss/ITERS_TO_ACCUMULATE).backward()
         
@@ -237,20 +264,29 @@ def train_loop(dataloader, model, l_fn, optimizer):
                 optimizer.zero_grad(set_to_none=True)
         
             # Saving loss values
-            running_loss += loss.detach() * x.size()[0]
-            l_consist += l_0.detach() * x_0.size()[0]
-            clausius += l_clausius.detach() * 2/eps
+            running_loss += l_total.prev_losses[0] * x.size()[0]
+            l_consist += l_total.prev_losses[2] * 2 * x_0.size()[0]
+            clausius += l_total.prev_losses[1] * 2 * x.size()[0]
             total_samples += x.size()[0]
-            t_i += x_0.size()[0]
-            #torch.cuda.empty_cache()
+            zero_samples += x_0.size()[0]
+            lambdas += l_total.lmbda_ema.clone().detach().cpu()
+
+            steps += 1
+        
+        logs['loss'][batch_idx] = running_loss / total_samples
+        logs['clausius'][batch_idx] = clausius / total_samples
+        logs['l_0'][batch_idx] = l_consist / zero_samples
+        logs['lambdas'][batch_idx,:] = lambdas / (i+1)
 
         print('\r> Train: %d/%d' % (batch_idx + 1, num_batches), end='')
 
-    logs['loss'] = running_loss / total_samples
-    logs['clausius'] = clausius
-    logs['consist'] = l_consist / t_i
+    logs['loss'] = torch.mean(logs['loss']).item()
+    logs['clausius'] = torch.mean(logs['clausius']).item()
+    logs['l_0'] = torch.mean(logs['l_0']).item()
+    logs['lambdas'] = torch.mean(logs['lambdas'],0)
     
     torch.cuda.empty_cache()
+
     return logs
 
 def test_loop(dataloader, model, l_fn):
@@ -259,14 +295,11 @@ def test_loop(dataloader, model, l_fn):
 
     num_batches = len(dataloader)
     
-    test_loss = 0.0
+    test_losses = torch.zeros(num_batches)
 
     model.eval()
 
     with torch.no_grad():
-
-        running_loss = 0.0
-        total_samples = 0.0
 
         for batch_idx in range(len(dataloader)):
         
@@ -275,8 +308,11 @@ def test_loop(dataloader, model, l_fn):
             X_test = X_test.squeeze(0).to(DEVICE)
             y_test = y_test.squeeze(0).to(DEVICE)
 
-            x_batches = X_test.split(X_test.shape[0] // BATCH_DIVIDER)
-            y_batches = y_test.split(y_test.shape[0] // BATCH_DIVIDER)
+            x_batches = X_test.split(X_test.shape[0] // BATCH_DIVIDER)[:-1]
+            y_batches = y_test.split(y_test.shape[0] // BATCH_DIVIDER)[:-1]
+
+            running_loss = 0.0
+            total_samples = 0.0
 
             for i, batch in enumerate(x_batches):
                
@@ -290,7 +326,11 @@ def test_loop(dataloader, model, l_fn):
 
             print('\r> Test: %d/%d' % (batch_idx + 1, num_batches), end='')
 
-        test_loss = running_loss / total_samples
+            test_losses[batch_idx] = running_loss / total_samples
+
+    test_losses = torch.mean(test_losses).item()
+
+    torch.cuda.empty_cache()
 
     return test_loss  
 
@@ -359,10 +399,13 @@ if __name__ == '__main__':
             'l2_reg': config.train.w_decay
         }
 
+        tags = [f'alpha_{config.train.loss_settings.alpha}',f'beta_{config.train.loss_settings.beta}',f'tau_{config.train.loss_settings.tau}']
+
         # Starting WANDB logging
         WANDB_RUN = wandb.init(project=config.wandb.project, 
                                entity=config.wandb.entity, 
-                               config=WANDB_CONFIG)
+                               config=WANDB_CONFIG,
+                               tags=tags)
         
         # Tagging the model
         MODEL_TAG = WANDB_RUN.name
@@ -441,18 +484,22 @@ if __name__ == '__main__':
     model.apply(init_weights)
     model.to(DEVICE)
 
-    l_fn = torch.nn.MSELoss()
-
     optimizer = torch.optim.AdamW(params=model.parameters(),
                                   weight_decay=config.train.w_decay, 
                                   lr=config.train.l_rate.max)
+    
+    if config.train.grad_clip.use_clip:
+        optimizer = QuantileClip.as_optimizer(optimizer=optimizer, 
+                                              quantile=config.train.grad_clip.quantile, 
+                                              history_length=config.train.grad_clip.hist_length,
+                                              global_threshold=config.train.grad_clip.global_clip)
        
     steps_warmup = config.train.l_rate.warmup_steps
     
     steps_annealing = (config.train.epochs - (steps_warmup // (len(train_dataloader)*config.train.batch_divider // ITERS_TO_ACCUMULATE))) * (len(train_dataloader) * config.train.batch_divider // ITERS_TO_ACCUMULATE)
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, 
-                                                           T_max=steps_annealing, 
+                                                           steps_annealing, 
                                                            eta_min=config.train.l_rate.min)
     
     warmup_lr = GradualWarmupScheduler(optimizer, 
@@ -473,15 +520,29 @@ if __name__ == '__main__':
     if config.wandb.log:
         wandb.watch(model, log='all')
 
+    # Initializing loss functions
+    l_data = torch.nn.MSELoss()
+    l_cd = ClausiusDuhem()
+    l_0 = NormalizationLoss()
+
+    l_total = Relobralo(params=model.parameters(), 
+                        num_losses=3,
+                        alpha=config.train.loss_settings.alpha,
+                        beta=config.train.loss_settings.beta,
+                        tau=config.train.loss_settings.tau)
+
     # Container variables for history purposes
     log_dict = {
         'epoch': {},
         't_loss': {},
         'v_loss': {},
         'clausius': {},
-        'consist': {}
+        'l_0': {},
+        'lambdas': {}
     }
     
+    steps = 0
+
     for t in range(config.train.epochs):
 
         print('\r--------------------\nEpoch [%d/%d]\n' % (t + 1, config.train.epochs))
@@ -492,22 +553,23 @@ if __name__ == '__main__':
         start_train = time.time()
 
         #--------------------------------------------------------------
-        logs = train_loop(train_dataloader, model, l_fn, optimizer)
+        logs = train_loop(train_dataloader, model, l_total, l_data, l_cd, l_0, optimizer)
         #--------------------------------------------------------------
 
         log_dict['t_loss'][t] = logs['loss'] 
         log_dict['clausius'][t] = logs['clausius']
-        log_dict['consist'][t] = logs['consist']
+        log_dict['l_0'][t] = logs['l_0']
+        log_dict['lambdas'][t] = logs['lambdas'].tolist()
     
         end_train = time.time()
 
-        print('. t_loss: %.6e | clausius: %.6e | consist: %.6e -> lr: %.4e -- %.3fs \n' % (log_dict['t_loss'][t], log_dict['clausius'][t], log_dict['consist'][t], warmup_lr._last_lr[0], end_train - start_train))
+        print('. t_loss: {:.6e} | clausius: {:.6e} | l_0: {:.6e} | lambdas: {:.3f} {:.3f} {:.3f} -> lr: {:.4e} -- {:.3f}s \n'.format(log_dict['t_loss'][t], log_dict['clausius'][t], log_dict['l_0'][t], *log_dict['lambdas'][t], warmup_lr.get_lr()[0], end_train - start_train))
 
         # Test loop
         start_test = time.time()
 
         #-----------------------------------------------------------------------------------
-        v_loss = test_loop(test_dataloader, model, l_fn)
+        v_loss = test_loop(test_dataloader, model, l_data)
         #-----------------------------------------------------------------------------------
 
         log_dict['v_loss'][t] = v_loss
@@ -522,11 +584,14 @@ if __name__ == '__main__':
         if config.wandb.log:
             wandb.log({
                 'epoch': t,
-                'l_rate': warmup_lr._last_lr[0],
+                'l_rate': warmup_lr.get_lr()[0],
                 'train_loss': log_dict['t_loss'][t],
                 'test_loss': log_dict['v_loss'][t],
                 'clausius': log_dict['clausius'][t],
-                'consist': log_dict['consist'][t]
+                'l_0': log_dict['l_0'][t],
+                'lambda_1': log_dict['lambdas'][t][0],
+                'lambda_2': log_dict['lambdas'][t][1],
+                'lambda_3': log_dict['lambdas'][t][2],
             })
 
         if early_stopping.early_stop:

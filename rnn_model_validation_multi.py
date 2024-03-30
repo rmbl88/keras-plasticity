@@ -1,7 +1,8 @@
 import csv
 import constants
 import joblib
-from functions import (GRUModel, GRUModelJit, read_mesh)
+from functions import (GRUModel, GRUModelJit)
+from mesh_utils import read_mesh
 from contour import plot_fields
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -165,7 +166,7 @@ torch.set_default_dtype(torch.float64)
 #RUN = 'summer-water-157'
 #RUN = 'whole-puddle-134'
 #RUN = 'lemon-star-431'
-RUN = 'silver-leaf-60'
+RUN = 'bumbling-eon-57'
 
 # Defining output directory
 #DIR = 'indirect_crux_gru'
@@ -173,7 +174,7 @@ RUN = 'silver-leaf-60'
 #DIR = 'crux-plastic_sbvf_abs_direct'
 #DIR = 'sbvfm_indirect_crux_gru'
 
-PROJ = 'direct_training_gru'
+PROJ = 'direct_training_gru_relobralo'
 
 # Creating output directories
 VAL_DIR = create_dir(dir=RUN, root_dir=os.path.join('outputs', PROJ, 'val'))
@@ -192,7 +193,7 @@ SCALER_DICT = load_file(RUN, PROJ,'scaler')
 
 ELEMS_VAL = pd.read_csv(os.path.join(VAL_DIR_MULTI,'elems_val.csv'), header=None)[0].to_list()
 
-DRAW_CONTOURS = False
+DRAW_CONTOURS = True
 TAG = 'x15_y15_'
 
 # Setting up ANN model

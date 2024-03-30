@@ -66,10 +66,10 @@ df_list = []
 
 #RUN = 'solar-planet-147'
 #RUN = 'fine-rain-207'
-RUN = 'silver-leaf-60'
+RUN = 'bumbling-eon-57'
 #DIR = f'outputs/indirect_crux_gru/val/{RUN}/'
 #DIR = f'outputs/crux-plastic-jm_sbvf_abs_direct/val/{RUN}/'
-DIR = f'outputs/direct_training_gru/val/{RUN}/'
+DIR = f'outputs/direct_training_gru_relobralo/val/{RUN}/'
 #DIR = f'outputs/sbvfm_indirect_crux_gru/val/{RUN}/'
 
 mech_tests = []

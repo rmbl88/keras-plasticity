@@ -49,7 +49,7 @@ train:
   # Learning rate settings
   l_rate:
 
-    min: 0.001
+    min: 0.0001
 
     max: 0.005  # Max. learning rate
     
@@ -69,11 +69,22 @@ train:
   # Gradient clipping settings for Autoclip
   grad_clip:
     
-    use_clip: false
+    use_clip: False
+
+    global_clip: true
     
-    quantile: 0.25
+    quantile: 0.8
     
     hist_length: 10000
+  
+  # Relobralo dynamic loss balancing settings
+  loss_settings:
+
+    alpha: 0.9
+
+    tau: 0.0001
+
+    beta: 1.0
 
   # Batch divider
   batch_divider: 32
@@ -106,17 +117,8 @@ dirs:
 
 wandb:
 
-  log: False
+  log: True
 
-  project: direct_training_gru
+  project: direct_training_gru_relobralo
 
   entity: rmbl
-
-
-
-
-  
-    
-
-
-
