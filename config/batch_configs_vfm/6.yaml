@@ -1,0 +1,150 @@
+# Random seed
+seed: 9567
+
+name: soft-6
+#seed: 24072024
+
+data:
+  # Length of time-sequences
+  seq_len: 4
+  
+  # Percent size of test set
+  split: 0.3
+  
+  # Shuffle train data
+  shuffle: true
+  
+  # Data normalization
+  normalize: 
+    type: standard  # 'standard' or 'minmax' or 'null'
+    feature_range: [] # feature range for 'minmax' [min, max] else []
+  
+  # Input features
+  inputs: [exx_t, eyy_t, exy_t]
+  
+  # Outputs
+  outputs: [sxx_t, syy_t, sxy_t]
+  
+  # Additional data
+  info: [tag, inc, t, cent_x, cent_y, fxx_t, fyy_t]
+
+model:
+
+  cholesky: true
+
+  bias:
+
+    gru: True
+    fc: True
+
+  attention: false
+  
+  # List FC layer sizes
+  hidden_size: [32]
+  
+  # GRU units
+  num_layers: 2
+
+  # Model initialization
+  init:
+    # Use pre_trained weights
+    pre_train: false
+
+    # Pre-trained model directory
+    pre_train_dir: direct_training_gru_moo
+
+    # Pre-trained model
+    pre_trained_run: sunny-feather-118
+
+train:
+
+  # Loss functions to apply
+  losses: {1: 'vfm', 2: 'p_power'}
+
+  # Learning rate settings
+  l_rate:
+
+    min: 0.0001
+
+    max: 0.005  # Max. learning rate
+    
+    #warmup_steps: 960  # Learning rate warmup steps
+    warmup_steps: 1920
+
+  #Early-stopping settings
+  e_stop:
+
+    patience: 100
+    
+    start_at: 1  # Epoch from which to start launch early-stopping
+    
+    delta: 1.e-3
+    
+    checkpoint: temp/checkpoint.pt  # Model checkpoint
+
+  # Gradient clipping settings for Autoclip
+  grad_clip:
+    
+    use_clip: False
+
+    global_clip: True
+    
+    quantile: 0.1
+    
+    hist_length: 10000
+  
+  # Relobralo dynamic loss balancing settings
+  loss_settings:
+
+    alpha: 0.99
+
+    tau: 0.1
+
+    beta: 0.999
+
+  # Batch divider
+  batch_divider: 32
+
+  # L2 regularization
+  w_decay: 0.001
+
+  # Training epochs
+  epochs: 10000
+
+  # Number of iterations to accumulate gradients
+  iters_to_accumulate: 1
+
+  # Use AMP
+  use_amp: true
+
+vfm:
+  
+  type: udvf  # 'udvf' - user-defined || 'sbvf' - sensitivity-based
+  
+  # loss:
+  
+  #   type: L2
+  #   normalize: wint
+  #   reduction: sum
+
+dirs:
+  
+  # Temp folder
+  temp: temp
+
+  # Data directory
+  train: data/training_multi/crux-plastic/processed
+
+  # Mesh .inp directory
+  mesh: data/training_multi/crux-plastic
+
+  # Training trials
+  trials: data/training_multi/crux-plastic/t_trials.csv
+
+wandb:
+
+  log: true
+
+  project: vfm_training_gru
+
+  entity: rmbl

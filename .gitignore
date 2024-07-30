@@ -6,3 +6,4 @@ wandb/
 *.npy
 *.parquet
 temp/
+.env

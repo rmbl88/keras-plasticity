@@ -1,7 +1,7 @@
 import csv
 import constants
 import joblib
-from functions import (GRUModel, GRUModelJit)
+from functions import (RAFR, GRUModel, GRUModelCholesky, GRUModelJit, GRUModelJitChol)
 from mesh_utils import read_mesh
 from contour import plot_fields
 import matplotlib.pyplot as plt
@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from gru_nn import customGRU
 from io_funcs import load_config
+from plot_utils import plot_lode_triax, plot_rafr, plot_scatter_yield
 
 #-------------------------------------------------------------------------
 #                          METHOD DEFINITIONS
@@ -132,7 +133,7 @@ def dict_to_csv(out_path, file_name, header_template, dict_):
             else:
                 writer.writerow([key,value])
 
-def batch_jacobian(y,x, mean, var):
+def batch_jacobian(y,x, var):
     
     batch = x.size(0)
     inp_dim = x.size(-1)
@@ -150,9 +151,48 @@ def batch_jacobian(y,x, mean, var):
     #     J[:,i,:] = gradient[0][:,-1]
     #     #print("hey")
     
-    return J*(1-mean)/var
+    return J*(1/var)
 
+def plate_hole_solution(nodes, connectivity, df, pred):
 
+    node_id = np.arange(nodes.shape[0])+1
+    mesh = np.hstack([node_id.reshape(-1,1), nodes])
+
+    elem_id = np.arange(connectivity.shape[0])
+    connect = np.hstack([elem_id.reshape(-1,1), connectivity])
+
+    left_edge = mesh[mesh[:,1]==0][:,0]-1
+    elem_idx = connect[np.any(np.isin(connect[:,1:], left_edge), axis=1)][:,0]
+
+    sx_pred = pred.reshape(connectivity.shape[0],-1,3)[elem_idx,60,0].reshape(-1,1)
+    sx_aba = df['sxx_t'].values.reshape(-1,connectivity.shape[0],1)[60, elem_idx]
+    cent_y = df['cent_y'].values.reshape(-1,connectivity.shape[0],1)[0, elem_idx]
+
+    r = min(mesh[mesh[:,1]==0][:,-1])
+    Tx = df['fxx_t'].values.reshape(-1,connectivity.shape[0])[:,::connectivity.shape[0]][60] / max(mesh[:,1])
+
+    s_ref = Tx * (1 + r ** 2 / (2 * cent_y ** 2) + 3 * r ** 4 / (2 * cent_y ** 4))
+
+    sort_idx = np.argsort(cent_y,0).squeeze(-1)
+    
+    cent_y = cent_y[sort_idx]
+    sx_pred = sx_pred[sort_idx]
+    sx_aba = sx_aba[sort_idx]
+    s_ref = s_ref[sort_idx]
+
+    return np.concatenate([cent_y, sx_pred, sx_aba, s_ref], axis=1), ['cent_y', 'sx_pred', 'sx_aba', 's_ref']
+
+def save_jit(input_dim, hidden_dim, layer_dim, output_dim, run, proj, cholesky=False, fc_bias=True, gru_bias=True, attention=False):
+    if cholesky:
+        m = GRUModelJitChol(input_dim=input_dim, hidden_dim=hidden_dim, layer_dim=layer_dim, output_dim=output_dim, fc_bias=fc_bias, gru_bias=gru_bias, attention=attention)
+    else:
+        m = GRUModelJit(input_dim=input_dim, hidden_dim=hidden_dim, layer_dim=layer_dim, output_dim=output_dim, fc_bias=fc_bias, gru_bias=gru_bias)
+    m.load_state_dict(get_ann_model(run, proj))
+    m.to(torch.device('cpu')) 
+    m.eval()
+    traced_model = torch.jit.trace(m,torch.ones(1,4,3).to(torch.device('cpu')))
+    traced_model.eval()
+    traced_model.save(os.path.join('outputs', proj, 'models', run, f'jit_{run}.pt'))
 #--------------------------------------------------------------------------
 
 # Setting Pytorch floating point precision
@@ -166,7 +206,21 @@ torch.set_default_dtype(torch.float64)
 #RUN = 'summer-water-157'
 #RUN = 'whole-puddle-134'
 #RUN = 'lemon-star-431'
-RUN = 'bumbling-eon-57'
+RUN = 'fragrant-2'
+
+if RUN == 'baseline':
+    ANN_RUN = 'Baseline'
+
+elif RUN == 'fanciful-water-117':
+    ANN_RUN = 'SPD-RNN'
+
+elif RUN == 'helpful-jazz-35':
+    ANN_RUN = 'Wp-RNN'
+
+elif RUN == 'sunny-feather-118':
+    ANN_RUN = 'SPDw-RNN'
+else:
+    ANN_RUN = 'RNN'
 
 # Defining output directory
 #DIR = 'indirect_crux_gru'
@@ -174,7 +228,8 @@ RUN = 'bumbling-eon-57'
 #DIR = 'crux-plastic_sbvf_abs_direct'
 #DIR = 'sbvfm_indirect_crux_gru'
 
-PROJ = 'direct_training_gru_relobralo'
+#PROJ = 'direct_training_gru_moo'
+PROJ = 'vfm_training_gru'
 
 # Creating output directories
 VAL_DIR = create_dir(dir=RUN, root_dir=os.path.join('outputs', PROJ, 'val'))
@@ -183,7 +238,7 @@ VAL_DIR = create_dir(dir=RUN, root_dir=os.path.join('outputs', PROJ, 'val'))
 config = load_config(scan_ann_files(RUN, PROJ,'config'))
 
 # Importing mesh information
-NODES, CONNECT = import_mesh(config.dirs.mesh)
+#NODES, CONNECT = import_mesh(config.dirs.mesh)
 
 # # Loading model architecture
 # FEATURES, OUTPUTS, INFO, N_UNITS, H_LAYERS, SEQ_LEN = load_file(RUN, DIR, 'arch.pkl')
@@ -194,26 +249,39 @@ SCALER_DICT = load_file(RUN, PROJ,'scaler')
 ELEMS_VAL = pd.read_csv(os.path.join(VAL_DIR_MULTI,'elems_val.csv'), header=None)[0].to_list()
 
 DRAW_CONTOURS = True
-TAG = 'x15_y15_'
+TAGS = ['x15_y15_','s_shaped', 'sigma_shaped', 'd_shaped']
+#TAGS = ['s_shaped']
+#TAGS = ['s_shaped']
 
 # Setting up ANN model
 #model_1 = GRUModelJit(input_dim=len(FEATURES),hidden_dim=N_UNITS,layer_dim=H_LAYERS,output_dim=len(OUTPUTS)+6)
-model_1 = GRUModel(input_dim=len(config.data.inputs),
-                   hidden_dim=config.model.hidden_size,
-                   layer_dim=config.model.num_layers,
-                   output_dim=len(config.data.outputs))
+
+if RUN == 'baseline':
+    model_1 = GRUModel(input_dim=len(config.data.inputs),
+                    hidden_dim=config.model.hidden_size,
+                    layer_dim=config.model.num_layers,
+                    output_dim=len(config.data.outputs))
+else:
+    model_1 = GRUModelCholesky(input_dim=len(config.data.inputs),
+                                output_dim=len(config.data.outputs), 
+                                hidden_dim=config.model.hidden_size, 
+                                layer_dim=config.model.num_layers,
+                                cholesky=config.model.cholesky,
+                                fc_bias=config.model.bias.fc,
+                                gru_bias=config.model.bias.gru,
+                                attention=config.model.attention)
+
 #model_1 = customGRU(input_dim=len(FEATURES), hidden_dim=N_UNITS, layer_dim=H_LAYERS, output_dim=len(OUTPUTS), layer_norm=False)
 model_1.load_state_dict(get_ann_model(RUN, PROJ))   
-#model_1.to(torch.device('cpu')) 
-#model_1.eval()
-# model_1(torch.ones(1,4,3))
-# traced_model = torch.jit.trace(model_1,torch.ones(1,4,3).to(torch.device('cpu')))
 
-# traced_model.eval()
-# traced_model.save('jit_model.pt')
+save_jit(len(config.data.inputs), config.model.hidden_size, config.model.num_layers, len(config.data.outputs), RUN, PROJ, cholesky=config.model.cholesky, fc_bias=config.model.bias.fc, gru_bias=config.model.bias.gru, attention=config.model.attention)
 
 #Loading validation data
 df_list = load_data(dir=VAL_DIR_MULTI, ftype='parquet')
+df_list += load_data(dir='data/validation_multi/d_shaped', ftype='parquet')
+#df_list += load_data(dir='data/validation_multi/plate_hole', ftype='parquet')
+df_list += load_data(dir='data/validation_multi/s_shaped', ftype='parquet')
+df_list += load_data(dir='data/validation_multi/sigma_shaped', ftype='parquet')
 
 cols = ['e_xx','e_yy','e_xy','s_xx','s_yy','s_xy','s_xx_pred','s_yy_pred','s_xy_pred',
         'abs_err_sx','abs_err_sy','abs_err_sxy']
@@ -240,6 +308,19 @@ with torch.no_grad():
         if DRAW_CONTOURS:
             COUNTOUR_DIR = create_dir(dir='contour', root_dir=TRIAL_DIR)
         #------------------------------------------------------------------------------------
+        #                       SETTING MESH DIRECTORY
+        #------------------------------------------------------------------------------------
+
+        if tag == 'plate_hole':
+            MESH_DIR = 'data/validation_multi/plate_hole'
+        elif tag == 's_shaped':
+            MESH_DIR = 'data/validation_multi/s_shaped'
+        elif tag == 'sigma_shaped':
+            MESH_DIR = 'data/validation_multi/sigma_shaped'
+        elif tag == 'd_shaped':
+            MESH_DIR = 'data/validation_multi/d_shaped'
+        else:
+            MESH_DIR = config.dirs.mesh 
         
         # Number of time steps and number of elements
         n_tps = len(list(set(df['t'])))
@@ -247,6 +328,7 @@ with torch.no_grad():
         
         X = df[config.data.inputs].values
         y = df[config.data.outputs].values
+        
         info = df[config.data.info]
 
         pad_zeros = torch.zeros((config.data.seq_len-1) * n_elems, X.shape[-1])
@@ -269,13 +351,80 @@ with torch.no_grad():
         y = y.reshape(n_tps,n_elems,-1).permute(1,0,2)
         y = y.reshape(-1,y.shape[-1])
 
-        t = torch.from_numpy(info['t'].values).reshape(n_tps, n_elems, 1)
+        if tag != 'one_elem':
+            t = torch.from_numpy(info['t'].values).reshape(n_tps, n_elems, 1)
+        else:
+            t = torch.from_numpy(df['t'].dropna())
     
-        s = model_1(x)
+        if config.model.cholesky:
+            l = model_1(x)
+            s = (l @ (x[:,-1] * SCALER_DICT['std'] + SCALER_DICT['mean']).unsqueeze(-1)).squeeze(-1)
+        else:
+            s = model_1(x)
+            
+        data_coord = torch.from_numpy(df[['cent_x', 'cent_y']].values[:n_elems])
+
+        if tag == 'plate_hole':
+            
+            rafr_obj = RAFR(n_lines=100, line_pts=50, time_stages=4, test=tag)
+            
+            data = s[:,0].reshape([n_elems,n_tps,1]).permute(1,0,2)
+
+            force_data = torch.from_numpy(df[['fxx_t']].values[::n_elems])
+        
+        elif tag == 's_shaped' or 'sigma_shaped' or 'd_shaped':
+
+            if tag == 's_shaped':
+                rafr_obj = RAFR(n_lines=100, line_pts=50, time_stages=6, test=tag)
+            elif tag == 'sigma_shaped':
+                rafr_obj = RAFR(n_lines=250, line_pts=100, time_stages=6, test=tag)
+            elif tag == 'd_shaped':
+                rafr_obj = RAFR(n_lines=200, line_pts=250, time_stages=6, test=tag)
+
+            data = s[:,1].reshape([n_elems,n_tps,1]).permute(1,0,2)
+
+            force_data = torch.from_numpy(df[['fyy_t']].values[::n_elems])
+
+        if tag == 's_shaped' or tag == 'plate_hole' or tag=='sigma_shaped' or tag=='d_shaped':
+        
+            rafr = rafr_obj.get_rafr(data.float(), data_coord.float(), force_data.float())
+
+            plot_rafr({RUN:rafr}, dir=TRIAL_DIR, specimen=tag)
+
+            joblib.dump(rafr,f'rafr_{tag}_{ANN_RUN}.pkl')
+
+        if tag in TAGS:
+
+            NODES, CONNECT = import_mesh(MESH_DIR)
+
+            plot_scatter_yield(y.reshape(n_elems,n_tps,-1).permute(1,0,2).numpy(), df[config.data.inputs].values.reshape(n_tps, n_elems,-1), df['peeq'].values.reshape(n_tps, n_elems,-1), dir=TRIAL_DIR, test=tag, nodes=NODES, connectivity=CONNECT) 
+
         #------------------------------------------------------------------------------------
         #                       PREPARING FIELD DATA FOR CONTOUR PLOT
         #------------------------------------------------------------------------------------
-        if DRAW_CONTOURS and tag == TAG:
+        if DRAW_CONTOURS and (tag in TAGS):
+
+            # if tag == 'plate_hole':
+            #     MESH_DIR = 'data/validation_multi/plate_hole'
+            # elif tag == 's_shaped':
+            #     MESH_DIR = 'data/validation_multi/s_shaped'
+            # elif tag == 'sigma_shaped':
+            #     MESH_DIR = 'data/validation_multi/sigma_shaped'
+            # elif tag == 'd_shaped':
+            #     MESH_DIR = 'data/validation_multi/d_shaped'
+            # else:
+            #     MESH_DIR = config.dirs.mesh    
+            
+            NODES, CONNECT = import_mesh(MESH_DIR)
+
+            if tag == 'plate_hole':
+                d, headers = plate_hole_solution(NODES, CONNECT, df, s.numpy())
+                d = pd.DataFrame(d, columns=headers)
+                d.to_csv(os.path.join(TRIAL_DIR,'plate_solution.csv'), header=True, sep=',',float_format='%.6f', index=False)
+
+            stress_data = torch.cat([y.reshape(n_elems,n_tps,-1)[:,-1].unsqueeze(0), s.reshape(n_elems,n_tps,-1)[:,-1].unsqueeze(0)])
+            
+            plot_lode_triax(stress_data, TRIAL_DIR)
 
             vars = {'s': {0: 'sxx_t', 1:'syy_t', 2:'sxy_t', 3:'mises'}}
             
@@ -283,7 +432,7 @@ with torch.no_grad():
 
             fields = get_field_data(df, vars, pred_vars, n_elems, n_tps)
 
-            plot_fields(NODES, CONNECT, fields, out_dir=COUNTOUR_DIR, tag=tag)
+            plot_fields(NODES, CONNECT, fields, out_dir=COUNTOUR_DIR, tag=tag, ann_run=ANN_RUN)
 
         #------------------------------------------------------------------------------------
         #                              RESHAPING DATA

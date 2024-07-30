@@ -13,14 +13,14 @@ def load_pkl(file: str):
 
 def scan_ann_files(run: str, dir: str, key: str):
 
-    SCAN_DIR = os.path.join('outputs', dir, 'models')
+    SCAN_DIR = os.path.join('outputs', dir, 'models', run)
     
-    for f in glob.glob(os.path.join(SCAN_DIR, f'*{run}*')):
+    for f in glob.glob(os.path.join(SCAN_DIR, f'*{key}*')):
     
         if key in f:
             file = f           
 
-    return file
+    return file 
 
 def load_file(run: str, dir: str, key: str):
     

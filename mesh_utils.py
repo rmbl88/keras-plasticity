@@ -146,6 +146,15 @@ def read_mesh(dir: str):
 
     return mesh.values, connectivity.values, dof
 
+def import_mesh(dir: str):
+
+    mesh, connectivity, _ = read_mesh(dir)
+
+    nodes = mesh[:,1:]
+    connectivity = connectivity[:,1:] - 1
+
+    return nodes, connectivity
+
 def global_dof(connect):
     '''
     Gets the global degrees of freedom from a connectivity table.
@@ -164,6 +173,29 @@ def global_dof(connect):
     g_dof = np.array(sum([[2*i-1,2*i] for i in connect],[])).astype(int)
 
     return g_dof
+
+def get_surf_elems(mesh: list, connectivity: np.ndarray, b_conds: dict, side: str):
+
+    # Defining geometry limits
+    x_min, x_max, y_min, y_max = get_geom_limits(mesh)
+
+    elem_idx = connectivity[np.any(np.isin(connectivity[:,1:], b_conds[side]['nodes'][:,0]), axis=1)][:,0]
+
+    elem_coords = [mesh[connectivity[connectivity[:,0]==elem][0][1:]-1,:][:,1:] for elem in elem_idx]
+
+    if side == 'top':
+        idx = 1
+        idx_area = 0
+        surf_coord = y_max
+    elif side == 'right':
+        idx = 0
+        idx_area = 1
+        surf_coord = x_max
+
+    elem_area = np.array([abs(np.diff(coord[coord[:,idx] == surf_coord][:,idx_area])) for coord in elem_coords])
+
+    return {'surf_elems': elem_idx-1, 'elem_area': elem_area}
+
 
 def get_geom_limits(mesh: np.ndarray):
     '''

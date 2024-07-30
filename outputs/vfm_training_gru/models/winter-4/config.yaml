@@ -1,0 +1,76 @@
+seed: 9567
+name: winter-4
+data:
+  seq_len: 4
+  split: 0.3
+  shuffle: true
+  normalize:
+    type: standard
+    feature_range: []
+  inputs:
+  - exx_t
+  - eyy_t
+  - exy_t
+  outputs:
+  - sxx_t
+  - syy_t
+  - sxy_t
+  info:
+  - tag
+  - inc
+  - t
+  - cent_x
+  - cent_y
+  - fxx_t
+  - fyy_t
+model:
+  cholesky: true
+  bias:
+    gru: true
+    fc: true
+  attention: false
+  hidden_size:
+  - 32
+  num_layers: 2
+  init:
+    pre_train: false
+    pre_train_dir: direct_training_gru_moo
+    pre_trained_run: sunny-feather-118
+train:
+  losses:
+    1: vfm
+    2: p_power
+  l_rate:
+    min: 0.0001
+    max: 0.005
+    warmup_steps: 1920
+  e_stop:
+    patience: 100
+    start_at: 1
+    delta: 0.001
+    checkpoint: temp/checkpoint.pt
+  grad_clip:
+    use_clip: false
+    global_clip: true
+    quantile: 0.1
+    hist_length: 10000
+  loss_settings:
+    alpha: 0.999
+    tau: 0.01
+    beta: 0.99
+  batch_divider: 32
+  w_decay: 0.001
+  epochs: 10000
+  iters_to_accumulate: 1
+  use_amp: true
+vfm:
+  type: udvf
+dirs:
+  temp: temp
+  train: data/training_multi/crux-plastic/processed
+  mesh: data/training_multi/crux-plastic
+  trials: data/training_multi/crux-plastic/t_trials.csv
+wandb:
+  log: true
+  project: vfm_training_gru
+  entity: rmbl

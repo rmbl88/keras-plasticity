@@ -5,13 +5,25 @@ from constants import *
 import matplotlib.cm as mcm
 import matplotlib.collections as mc
 import matplotlib.pyplot as plt
-from matplotlib.offsetbox import AnchoredText
+from matplotlib.offsetbox import AnchoredOffsetbox, AnchoredText, TextArea
 import matplotlib.tri as tri
 from tqdm import tqdm
 import gc
 import matplotlib.gridspec as gridspec
 
-def plot_fields(nodes, connectivity, fields, out_dir, tag, vf=None):
+def create_dir(dir: str, root_dir: str):
+
+    ROOT_DIR = root_dir
+    DIR = os.path.join(ROOT_DIR, dir)
+
+    try:    
+        os.makedirs(DIR)        
+    except FileExistsError:
+        pass
+
+    return DIR
+
+def plot_fields(nodes, connectivity, fields, out_dir, tag, vf=None, ann_run=None):
     
     def get_tri_mesh(nodes: np.array, connectivity: np.array):
 
@@ -62,11 +74,14 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag, vf=None):
 
         return pc
     
-    def set_anchored_text(mean_e,median_e,max_e,min_e,vf=None,frameon=True,loc='upper right'):
+    def set_anchored_text(mean_e,median_e,max_e,min_e,vf=None,frameon=True,loc='upper right', bbox_to_anchor=None, transform=None):
         if vf == None:
-            at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['legend.fontsize']))
+            at = AnchoredText(f'Mean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', prop=dict(fontsize=PARAMS_CONTOUR['legend.fontsize']), loc=loc, frameon=frameon)
         else:
-            at = AnchoredText(f'VF - {vf}\nMean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['legend.fontsize']))
+            if bbox_to_anchor != None:
+                at = AnchoredText(f'VF - {vf}\nMean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['legend.fontsize']), bbox_to_anchor=bbox_to_anchor, bbox_transform=transform)
+            else:
+                at = AnchoredText(f'VF - {vf}\nMean: {np.round(mean_e,3)}\nMedian: {np.round(median_e,3)}\nMax.: {np.round(max_e,3)}\nMin.: {np.round(min_e,3)}', loc=loc, frameon=frameon,prop=dict(fontsize=PARAMS_CONTOUR['legend.fontsize']))
         at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
         at.patch.set_linewidth(0.55)
         return at
@@ -82,24 +97,50 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag, vf=None):
         for var, fields_ in (pbar := tqdm(vars.items(), bar_format=FORMAT_PBAR, leave=False)):
             pbar.set_description(f'Saving countour plot -> {tag}t{t}_{var}')
             
-            n_subplots = len(vars[var].keys())
-            #fig, axs = plt.subplots(1,n_subplots)
             fig = plt.figure()
             fig.set_size_inches(19.2,10.8)
 
-            # create a 1-row 3-column container as the left container
-            gs_left = gridspec.GridSpec(1, 2)
+            if tag == 's_shaped' or tag =='sigma_shaped':
+                # create a 1-row 3-column container as the left container
+                gs_left = gridspec.GridSpec(1, 2)
+                # create a 1-row 1-column grid as the right container
+                gs_right = gridspec.GridSpec(1, 2)
 
-            # create a 1-row 1-column grid as the right container
-            gs_right = gridspec.GridSpec(1, 1)
+                axs = [fig.add_subplot(gs_left[0,0]), fig.add_subplot(gs_left[0,1]), fig.add_subplot(gs_right[0,0]), fig.add_subplot(gs_right[0,1])]
+            else:
 
-            axs = [fig.add_subplot(gs_left[0,0]), fig.add_subplot(gs_left[0,1]), fig.add_subplot(gs_right[0,0])]
+                # create a 1-row 3-column container as the left container
+                gs_left = gridspec.GridSpec(1, 2)
+                # create a 1-row 1-column grid as the right container
+                gs_right = gridspec.GridSpec(1, 1)
 
-            gs_left.update(right=0.61)
-            gs_right.update(left=0.672)
-            
-            gs_left.update(wspace=0.12)
-            #gs_right.update(wspace=0.1)
+                if tag == 'd_shaped':
+                    gs_err = gridspec.GridSpec(1,1)
+                    axs = [fig.add_subplot(gs_left[0,0]), fig.add_subplot(gs_left[0,1]), fig.add_subplot(gs_right[0,0]), fig.add_subplot(gs_err[0,0])]
+                else:
+                    axs = [fig.add_subplot(gs_left[0,0]), fig.add_subplot(gs_left[0,1]), fig.add_subplot(gs_right[0,0])]
+
+            # gs_left.update(right=0.61)
+            # gs_right.update(left=0.672)
+
+            if tag=='s_shaped' or tag =='sigma_shaped':
+                gs_left.update(right=0.45, top=0.62, bottom=0.25)
+                gs_right.update(left=0.45, top=0.62, bottom=0.25, right=0.9)
+                gs_left.update(wspace=0.2)
+                gs_right.update(wspace=0)
+
+            elif tag =='d_shaped':
+                gs_left.update(right=0.57, top=0.62, bottom=0.25)
+                gs_right.update(left=0.525, top=0.62, bottom=0.25)
+                gs_err.update(left=0.765, top=0.62, bottom=0.25, right=0.85)
+                gs_left.update(wspace=0.2)
+
+            else:
+                gs_left.update(right=0.61)
+                gs_right.update(left=0.695)
+                gs_left.update(wspace=0.35)
+
+            #gs_right.update(wspace=0.025)
 
             #fig.subplots_adjust(wspace=0.15)
             
@@ -152,7 +193,7 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag, vf=None):
                     cmap = copy.copy(mcm.jet)
 
                     #if k == 'ann':
-                    if k=='abaqus':
+                    if k=='abaqus' or k == 'ann':
                         cmap.set_under('white')
                         cmap.set_over('black')
                         CB_EXTEND = 'both'
@@ -181,8 +222,9 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag, vf=None):
                     if k == 'abaqus':
                         cb_str_ = r'\textbf{Abaqus}' + '\n' + cb_str
                     elif k == 'ann':
-                        cb_str_ = r'\textbf{Dir-RNN}' + '\n' + cb_str
-                        axs[i].text(-0.045, 0.91, cb_str_, horizontalalignment='right', verticalalignment='center', transform=axs[i].transAxes,fontsize=PARAMS_CONTOUR['legend.fontsize'])
+                        cb_str_ = rf'\textbf{{{ann_run}}}' + '\n' + cb_str
+                        #axs[i].text(-0.045, 0.91, cb_str_, horizontalalignment='right', verticalalignment='center', transform=axs[i].transAxes,fontsize=PARAMS_CONTOUR['legend.fontsize'])
+                    
                     elif k == 'err':
                         f_var = cb_str.split('~')[0][1:]
                         cb_str_ = r'\textbf{Abs. error}' + '\n' + r'$\boldsymbol{\delta}{%s}~[\mathrm{MPa}]$' % (f_var)
@@ -193,23 +235,55 @@ def plot_fields(nodes, connectivity, fields, out_dir, tag, vf=None):
                         v_max = np.max(var_avg)
                         v_min = np.min(var_avg)
 
-                        axs[i].add_artist(set_anchored_text(v_mean,v_median,v_max,v_min,vf))
+                        if tag == 's_shaped' or tag =='sigma_shaped':
+                            axs[-1].axis('off')
+                            # Shrink current axis by 20%
+                            box = axs[-1].get_position()
+                            axs[-1].set_position([box.x0 - 0.035, box.y0, box.width * 0.35, box.height])
+                            arts = set_anchored_text(v_mean,v_median,v_max,v_min,vf, loc='upper left')
+                            axs[-1].add_artist(arts)
+                        elif tag == 'd_shaped':
+                            axs[-1].axis('off')
+                            arts = set_anchored_text(v_mean,v_median,v_max,v_min,vf, loc='center left', bbox_to_anchor=(0.5,0.5), transform=axs[i].transAxes)
+                            axs[-1].add_artist(arts)
+                            box = axs[-1].get_position()
+                            axs[-1].set_position([box.x0 - 0.035, box.y0, box.width * 0.35, box.height])
+                        else:
+                            arts = set_anchored_text(v_mean,v_median,v_max,v_min,vf)
+                            axs[i].add_artist(arts)
 
-                    if i!=1:
-                        cb = fig.colorbar(pc, cax=axs[i].inset_axes((-0.05, 0.025, 0.02, 0.8)),ticks=cbarlabels,format=fmt)
-                        cb.ax.set_title(cb_str_, pad=15, horizontalalignment='right')
-                        cb.outline.set_linewidth(1)
-                        cb.minorticks_off()
-                        cb.ax.yaxis.set_tick_params(pad=7.5, colors='black', width=1,labelsize=PARAMS_CONTOUR['axes.labelsize'])
-                        cb.ax.yaxis.set_ticks_position('left')
-
-            #fig.tight_layout()
-            #plt.show()
+                    #if i!=1:
+                    if tag == 's_shaped' or tag =='sigma_shaped':
+                        inset_axes = (-0.085, 0.025, 0.03, 0.8)
+                    else:
+                        inset_axes = (-0.05, 0.025, 0.02, 0.8)
+                    cb = fig.colorbar(pc, cax=axs[i].inset_axes(inset_axes),ticks=cbarlabels,format=fmt)
+                    cb.ax.set_title(cb_str_, pad=15, horizontalalignment='right')
+                    cb.outline.set_linewidth(1)
+                    cb.minorticks_off()
+                    cb.ax.yaxis.set_tick_params(pad=7.5, colors='black', width=1,labelsize=PARAMS_CONTOUR['axes.labelsize'])
+                    cb.ax.yaxis.set_ticks_position('left')
+                    
+            # fig.tight_layout()
+            # plt.show()
             #fig.savefig(os.path.join(out_dir,f'{tag}_t{t}_{var}_cont.png'), format="png", dpi=600, bbox_inches='tight')
             if vf == None:
                 fig.savefig(os.path.join(out_dir,f'{tag}_t{t}_{var}_cont.pdf'), format="pdf", dpi=600, bbox_inches='tight')
+                if var == 'mises':
+                    arts.remove()
+                    for n, ax in enumerate(axs):
+                        if n < 3:
+                            extent = ax.get_tightbbox(fig.canvas.get_renderer()).transformed(fig.dpi_scale_trans.inverted())
+                            # if tag == 'd_shaped':
+                            #     extent_err = axs[-1].get_tightbbox(fig.canvas.get_renderer()).transformed(fig.dpi_scale_trans.inverted())
+                            #     extent.x1 = extent_err.x1
+                            out_ = create_dir('single', out_dir)
+                            fig.savefig(os.path.join(out_, f'{tag}_t{t}_{var}_ax_{n}.pdf'), bbox_inches=extent.expanded(1.01,1.01), format="pdf", dpi=600)
+                            ax.remove()
+
             else:
                 fig.savefig(os.path.join(out_dir,f'{tag}_t{t}_{var}_vf-{vf}_cont.pdf'), format="pdf", dpi=600, bbox_inches='tight')
+                
             plt.clf()
             # plt.close(fig)
             del pc, cb, axs, fig, var_nodal, var_avg

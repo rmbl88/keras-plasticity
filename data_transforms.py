@@ -16,6 +16,7 @@ class Normalize(object):
     def __init__(self, mean, std):
         self.mean = torch.as_tensor(mean)
         self.std = torch.as_tensor(std)
+        self.scale = torch.zeros_like(self.mean)
 
     def __call__(self, x):
 

@@ -94,7 +94,9 @@ class Relobralo(LossAgreggator):
         # Aggregate losses by summation at step 0
         if step == 0:
             for i, key in enumerate(losses.keys()):
+                
                 loss += losses[key]
+
                 self.init_losses[i] = losses[key].clone().detach()
                 self.prev_losses[i] = losses[key].clone().detach()
 
@@ -107,7 +109,7 @@ class Relobralo(LossAgreggator):
             normalizer_init: torch.Tensor = (
                 losses_stacked / (self.tau * self.init_losses + self.eps)
             ).max()
-            rho: torch.Tensor = torch.bernoulli(torch.tensor(self.beta))
+            rho: torch.Tensor = torch.bernoulli(torch.tensor(float(self.beta)))
             with torch.no_grad():
                 lmbda_prev: torch.Tensor = torch.exp(
                     losses_stacked / (self.tau * self.prev_losses + self.eps)

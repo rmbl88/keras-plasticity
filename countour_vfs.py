@@ -108,7 +108,7 @@ def plot_fields(nodes, connectivity, fields, out_dir, var):
 
         n_subplots = field.shape[-1]
         fig, axs = plt.subplots(1,n_subplots)
-        fig.set_size_inches(19.2 if n_subplots==3 else 4,2)
+        fig.set_size_inches(8 if n_subplots==3 else 4,2)
         fig.subplots_adjust(wspace=0.15)    
 
         for j in range(field.shape[-1]):    

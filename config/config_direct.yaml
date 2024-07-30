@@ -1,6 +1,8 @@
 # Random seed
 seed: 9567
 
+#seed: 01052024
+
 data:
   # Length of time-sequences
   seq_len: 4
@@ -27,6 +29,15 @@ data:
 
 model:
 
+  cholesky: true
+
+  bias:
+
+    gru: True
+    fc: True
+
+  attention: false
+  
   # List FC layer sizes
   hidden_size: [32]
   
@@ -46,6 +57,9 @@ model:
 
 train:
 
+  # Loss functions to apply
+  losses: {1: 'data', 2: 'triax', 3: 'lode'}
+
   # Learning rate settings
   l_rate:
 
@@ -53,16 +67,17 @@ train:
 
     max: 0.005  # Max. learning rate
     
-    warmup_steps: 1920  # Learning rate warmup steps
+    #warmup_steps: 10000  # Learning rate warmup steps
+    warmup_steps: 1920
 
   #Early-stopping settings
   e_stop:
 
-    patience: 500
+    patience: 300
     
     start_at: 1  # Epoch from which to start launch early-stopping
     
-    delta: 1.e-10
+    delta: 1.e-3
     
     checkpoint: temp/checkpoint.pt  # Model checkpoint
 
@@ -71,18 +86,18 @@ train:
     
     use_clip: False
 
-    global_clip: true
+    global_clip: True
     
-    quantile: 0.8
+    quantile: 0.1
     
     hist_length: 10000
   
   # Relobralo dynamic loss balancing settings
   loss_settings:
 
-    alpha: 0.9
+    alpha: 0.999
 
-    tau: 0.0001
+    tau: 0.001
 
     beta: 1.0
 
@@ -117,8 +132,8 @@ dirs:
 
 wandb:
 
-  log: True
+  log: true
 
-  project: direct_training_gru_relobralo
+  project: direct_training_gru_moo
 
   entity: rmbl

@@ -23,13 +23,13 @@ def load_dataframes(file_list, tag):
     df_list = []
 
     # Loading training datasets
-    use_cols = ['tag','id','inc','t','cent_x','cent_y','area','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t','fxx_t','fyy_t']
+    #use_cols = ['tag','id','inc','t','cent_x','cent_y','area','exx_t','eyy_t','exy_t','sxx_t','syy_t','sxy_t','fxx_t','fyy_t']
     
-    df_list = [pq.ParquetDataset(file).read_pandas(columns=use_cols).to_pandas() for file in tqdm(file_list,desc=f'Importing files - {tag}',bar_format=FORMAT_PBAR, leave=False)]
+    df_list = [pq.ParquetDataset(file).read_pandas().to_pandas() for file in tqdm(file_list,desc=f'Importing files - {tag}',bar_format=FORMAT_PBAR, leave=False)]
 
     gc.collect()
 
-    df_list = pre_process(df_list,tag)    
+    #df_list = pre_process(df_list,tag)    
 
     return df_list
 
@@ -53,50 +53,13 @@ def preprocess_vars(var_list, df):
 
     new_df = copy.deepcopy(df)
     
-    vars = [
-        'dt',
-        'ep_1','ep_2',
-        'dep_1','dep_2',
-        'ep_1_dir','ep_2_dir', 
-        'theta_ep',
-        's1','s2',
-        'ds1','ds2',
-        'theta_sp',
-        
-    ]
-
-    # Strain, stress and time variables
-    e = df[var_list[0]].values
-    e[:,-1] *= 0.5
-
-    s = df[var_list[1]].values
+    vars = ['dt']
 
     t = np.reshape(df['t'].values,(len(df),1))
     dt = np.diff(t,axis=0)
-
-    # Calculating principal strains and stresses
-    eps_princ, ep_angles = get_principal(e)
-    s_princ, sp_angles = get_principal(s)
-    # Principal stress rate
-    #dot_s_princ = np.gradient(s_princ,t.reshape(-1),axis=0)
-    dot_s_princ = np.diff(s_princ,axis=0)/dt
-    
-    # Principal strain rate
-    #dot_e_princ = np.gradient(eps_princ,t.reshape(-1),axis=0)
-    dot_e_princ = np.diff(eps_princ,axis=0)/dt
-    
-    # Direction of strain rate
-    de_princ_dir = dot_e_princ/(np.reshape(np.linalg.norm(dot_e_princ,axis=1)+1e-12,(dot_e_princ.shape[0],1)))
-
-    de_princ_dir = np.vstack((de_princ_dir, np.array([np.NaN,np.NaN])))
-    dot_s_princ = np.vstack(((dot_s_princ, np.array([np.NaN,np.NaN]))))
-    dot_e_princ = np.vstack(((dot_e_princ, np.array([np.NaN,np.NaN]))))
     dt = np.vstack((0.0, dt))
     
-    princ_vars = pd.DataFrame(
-        np.concatenate([dt,eps_princ,dot_e_princ,de_princ_dir,ep_angles.reshape(-1,1),s_princ,dot_s_princ,sp_angles.reshape(-1,1)],1),
-        columns=vars
-    )
+    princ_vars = pd.DataFrame(dt,columns=vars)
 
     new_df = pd.concat([new_df,princ_vars],axis=1)
 
@@ -157,10 +120,10 @@ def save_file_worker(args):
 def process_trials(args):
 
     file_list = []
-
+    trial = args[1] if 'crux' not in args[0] else args[1][:-1]
     for r, d, f in os.walk(args[0]):
         for file in f:
-            if args[1][:-1] in file:
+            if trial in file:
                 file_list.append(os.path.join(args[0],file))
 
     df_list = load_dataframes(file_list,args[1])
@@ -186,34 +149,35 @@ if __name__ == '__main__':
     # Getting trial tags     
     #trials = [list(set(df['tag']))[0] for df in data_by_tag]
     
-    #trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'raw','trials.csv'),header=None)[0].to_list()
+    trials = pd.read_csv(os.path.join('data\\training_multi\\crux-new','raw','trials.csv'),header=None)[0].to_list()
 
     #random.shuffle(trials)
     #val_trials = random.sample(trials, math.ceil(len(trials)*0.35))
     #train_trials = list(set(trials).difference(val_trials))
     
-    # val_trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'v_trials.csv'), header=0)['0'].to_list()
-    # train_trials = pd.read_csv(os.path.join(TRAIN_MULTI_DIR,'t_trials.csv'), header=0)['0'].to_list()
+    val_trials = pd.read_csv(os.path.join('data\\training_multi\\crux-new','v_trials.csv'), header=0)['0'].to_list()
+    train_trials = pd.read_csv(os.path.join('data\\training_multi\\crux-new','t_trials.csv'), header=0)['0'].to_list()
 
-    trials = ['crux-2121']
-    ##
-    val_trials = []
-    train_trials = ['crux-2121']
+    # trials = ['d_shaped']
+    # ##
+    # val_trials = ['d_shaped']
+    # train_trials = []
 
     with tqdm(total=len(trials), desc='Processing dataset', bar_format=FORMAT_PBAR) as pbar:
         
         with ThreadPoolExecutor() as p:
             
-            futures = [p.submit(process_trials, (os.path.join(TRAIN_MULTI_DIR,'raw'), trial)) for trial in trials]
+            futures = [p.submit(process_trials, (os.path.join('data/training_multi/crux-new','raw'), trial)) for trial in trials]
             
             for future in as_completed(futures):
                 
                 data, trial = future.result()
                 
                 if trial in train_trials:
-                    data.to_parquet(os.path.join(TRAIN_MULTI_DIR,'processed', f'{trial}.parquet'),compression='brotli')
+                    pass
+                    data.to_parquet(os.path.join('data/training_multi/crux-new','processed', f'{trial}.parquet'),compression='brotli')
                 else:
-                    data.to_parquet(os.path.join(VAL_DIR_MULTI,'processed', f'{trial}.parquet'),compression='brotli')
+                    data.to_parquet(os.path.join('data/validation_multi/crux-new','processed', f'{trial}.parquet'),compression='brotli')
 
                     # with tqdm(total=len(elems_val), desc=f'Exporting validation files - {trial}', bar_format=FORMAT_PBAR, leave=False) as pbar_:
                     #     with ThreadPoolExecutor(len(elems_val)) as ex:
@@ -263,9 +227,9 @@ if __name__ == '__main__':
     #     #     df_elem = df[df['id']==id]
     #     #     df_elem.to_parquet(os.path.join(VAL_DIR_MULTI, f'{trial}_id_{id}.parquet'),compression='brotli')
     
-    train_trials = pd.DataFrame(train_trials)
-    val_trials = pd.DataFrame(val_trials)
-    train_trials.to_csv(os.path.join(TRAIN_MULTI_DIR,'t_trials.csv'),index=False)
-    val_trials.to_csv(os.path.join(TRAIN_MULTI_DIR,'v_trials.csv'),index=False)
+    # train_trials = pd.DataFrame(train_trials)
+    # val_trials = pd.DataFrame(val_trials)
+    # train_trials.to_csv(os.path.join(TRAIN_MULTI_DIR,'t_trials.csv'),index=False)
+    # val_trials.to_csv(os.path.join(TRAIN_MULTI_DIR,'v_trials.csv'),index=False)
 
     

@@ -4,7 +4,7 @@
 SEED = 9567
 
 VAL_DIR = 'data/validation/'
-VAL_DIR_MULTI = 'data/validation_multi/crux-plastic/'
+VAL_DIR_MULTI = 'data/validation_multi/crux-new/'
 TRAIN_DIR = 'data/training/'
 TRAIN_MULTI_DIR = 'data/training_multi/crux-plastic/'
 
@@ -24,12 +24,12 @@ PRE_TRAINING = False
 
 # Customizing matplotlib
 PARAMS = {'text.usetex' : True,
-          'text.latex.preamble' : r"\usepackage{amsmath,newpxtext,newpxmath}",
+          'text.latex.preamble' : r"\usepackage{amsmath,newpxtext,newpxmath,xfrac,bm}",
           'font.size' : 11,
           'font.family' : 'serif',
           'font.serif' : ['Palatino Linotype'],
           'lines.linewidth' : 0.85,
-          'axes.labelsize': 8,
+          'axes.labelsize': 7.5,
           'axes.labelpad' : 6,
           'legend.loc' : 'best',
           'legend.frameon' : False,
@@ -49,16 +49,16 @@ PARAMS = {'text.usetex' : True,
           'ytick.major.width': 0.125,
           'xtick.major.size': 3,
           'ytick.major.size': 3,
-          'legend.fontsize': 8,
-          'xtick.labelsize': 9,
-          'ytick.labelsize': 9
+          'legend.fontsize': 7.5,
+          'xtick.labelsize': 7.5,
+          'ytick.labelsize': 7.5
           
 }
 
 # Customizing matplotlib
 PARAMS_CONTOUR = {
         'text.usetex' : True,
-        'text.latex.preamble' : r"\usepackage{amsmath,newpxtext,newpxmath}",
+        'text.latex.preamble' : r"\usepackage{amsmath,newpxtext,newpxmath,xfrac,bm}",
         'font.size' : 14,
         'font.family' : 'serif',
         'font.serif' : ['Palatino Linotype'],

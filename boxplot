@@ -1,0 +1,77 @@
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+import matplotlib
+import seaborn as sns
+from collections import OrderedDict
+
+from glob import glob
+
+from io_funcs import load_config
+
+#######################################################################################################
+
+PROJ = 'direct_training_gru_moo'
+
+OUT_DIR = os.path.join('outputs', PROJ)
+
+MECH_TEST = 'x15_y15_'
+
+EXCLUTIONS = []
+
+models = glob(os.path.join(OUT_DIR,'models/*'))
+stats = glob(os.path.join(OUT_DIR,'val/*'))
+
+runs = dict.fromkeys([model.split('\\')[-1] for model in models if model.split('\\')[-1] not in EXCLUTIONS])
+runs_2 = OrderedDict.fromkeys([model.split('\\')[-1] for model in models if model.split('\\')[-1] not in EXCLUTIONS])
+
+for k,_ in runs.items():
+
+
+    model_path = next(x for x in models if k in x)
+    stats_path = next(x for x in stats if k in x)
+
+    #config = load_config(model_path, 'config.yaml')
+    model_stats = pd.read_csv(os.path.join(stats_path,'stats.csv'))
+    elem_stats = pd.read_csv(os.path.join(stats_path, 'stats_elems.csv'))
+
+    # params = [model_stats['RMSE'].median(),
+    #         elem_stats['rmse_s0'][0],
+    #         model_stats[model_stats['Run']==MECH_TEST].values[0,1]]
+
+    #runs[k] = params
+    runs_2[k] = model_stats['RMSE'].values
+
+#data = pd.DataFrame(list(runs.values())).sort_values([0,1])
+alldata = np.column_stack(list(runs_2.values()))
+
+fig, ax = plt.subplots(1,1)
+fig.set_size_inches(9.2,6.2)
+
+bp = ax.boxplot(alldata, patch_artist=True, labels=runs_2.keys(),showfliers=False)
+
+medians = []
+
+for median in bp['medians']:
+    medians.append(median.get_ydata()[0])
+    median.set_color('black')
+
+for i,box in enumerate(bp['boxes']):
+    box.set(facecolor='w', linewidth=1.5)
+    if i==medians.index(min(medians)):
+        box.set(color='g')
+        box.set(facecolor='w')
+
+for whisker in bp['whiskers']:
+    whisker.set(linewidth=0.75)
+
+plt.xticks(rotation=45, ha='right')
+plt.ylabel('RMSE validation set')
+fig.tight_layout()
+plt.savefig(os.path.join(OUT_DIR, 'box_plot.png'), format="png", dpi=600, bbox_inches='tight')
+plt.clf()
+plt.close(fig)
+
+
+

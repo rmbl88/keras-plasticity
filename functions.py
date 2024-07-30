@@ -16,10 +16,186 @@ from torch.autograd import Variable
 import data_transforms
 from itertools import chain
 from torch.optim.lr_scheduler import _LRScheduler
-
+from torchrbf import RBFInterpolator
+import constants
+from mesh_utils import get_geom_limits, read_mesh
+from scipy.interpolate import griddata, interpn
+from descartes import PolygonPatch
+import alphashape
+import shapely
+from shapely.geometry import Point
 # -------------------------------
 #        Class definitions
 # -------------------------------
+class RAFR():
+    def __init__(self, n_lines: int, line_pts: int, time_stages: int=4, test=None, device='cpu') -> None:
+        super(RAFR).__init__()
+        self.n_lines = n_lines
+        self.n_pts = line_pts
+        self.time_stages = time_stages
+        self.test = test
+        self.device = device
+
+        if self.test == 'plate_hole':
+            self.dir = 1
+        elif self.test == 's_shaped' or 'sigma_shaped' or 'd_shaped':
+            self.dir = 0
+
+        if self.test == 'd_shaped':
+            self.hole_data = pd.read_csv(os.path.join('data/validation_multi', test, 'hole.csv')).values
+
+    def get_query_pts(self, test: str) -> np.ndarray:
+
+        mesh_dir = os.path.join('data/validation_multi', test)
+        mesh, _, _ = read_mesh(mesh_dir)
+        x_min, x_max, y_min, y_max = get_geom_limits(mesh)
+
+        if test == 'plate_hole':
+            x_coord = np.linspace(x_min, x_max, self.n_lines+2)
+            y_coord = np.linspace(y_min, y_max, self.n_pts+1)
+
+            # grid_points = torch.meshgrid(x_coord, y_coord, indexing='ij')
+            # grid_points = torch.stack(grid_points, dim=-1).reshape(-1, 2)
+
+            # radius = np.min(mesh[mesh[:,1]==0][:,-1])
+
+            # for coord in x_coord[x_coord<=2].tolist():
+            #     y_min = radius * np.sin(np.arccos(coord/radius))
+            #     y = torch.linspace(y_min, y_max, self.n_pts+1)
+            #     x = torch.tensor([coord]).repeat(len(y))
+                
+            #     mask = grid_points[:,0] == coord
+            #     grid_points[mask] = torch.cat([x.unsqueeze(-1),y.unsqueeze(-1)],1)
+        
+        elif test == 's_shaped' or test == 'sigma_shaped' or test == 'd_shaped':
+            x_coord = np.linspace(x_min, x_max, self.n_pts+1)
+            y_coord = np.linspace(y_min, y_max, self.n_lines+2)
+        
+        grid_points = np.meshgrid(x_coord, y_coord, indexing='ij')
+        grid_points = np.stack(grid_points, axis=-1).reshape(-1, 2)
+        self.mesh = mesh[:,1:]
+        
+        return grid_points
+
+    def mask_holes_out(self, mesh_nodes: np.ndarray, query_pts: np.ndarray, alpha_value: float) -> list:
+        
+        # Getting the concave hull of the specimen
+        alpha_shape = alphashape.alphashape(list(map(tuple, mesh_nodes)), alpha_value)
+
+        if self.test == 'd_shaped':
+            alpha_hole = shapely.concave_hull(shapely.MultiPoint(list(map(tuple, self.hole_data))), ratio=0.1)
+
+        # Converting query_pts to list of Point objects for masking purposes
+        pts = [Point(query_pts[i]) for i in range(query_pts.shape[0])]
+
+        # Hull edge point coordinates
+        hull_edge = np.concatenate([np.array(alpha_shape.exterior.xy[0]).reshape(-1,1),np.array(alpha_shape.exterior.xy[1]).reshape(-1,1)],1)
+        hull_edge = [Point(hull_edge[i]) for i in range(hull_edge.shape[0])]
+        
+        if self.test == 'd_shaped':
+            # Mask to select points inside the concave hull including the edges
+            mask = (alpha_shape.contains(pts) | alpha_shape.exterior.contains(pts)) & (~alpha_hole.contains(pts) | alpha_hole.exterior.contains(pts))
+        else:
+            # Mask to select points inside the concave hull including the edges
+            mask = alpha_shape.contains(pts) | alpha_shape.exterior.contains(pts)
+
+        return mask
+
+    def get_rafr(self, data: torch.Tensor, data_coord: torch.Tensor, force_data: torch.Tensor) -> dict:
+        
+        n_tps = force_data.shape[0]
+        
+        if self.test == 'plate_hole':
+            time_stages = [n_tps//5, n_tps//3, n_tps//2, n_tps-1]
+            alpha_value = 0.55
+        elif self.test == 's_shaped':
+            #time_stages = [n_tps//16, n_tps//6, n_tps//2, n_tps-1]
+            time_stages = [5,12,17,20,60,120]
+            alpha_value = 0.2
+        elif self.test == 'sigma_shaped':
+            #time_stages = [n_tps//16, n_tps//6, n_tps//2, n_tps-1]
+            time_stages = [7,11,17,20,40,120]
+            alpha_value = 0.22
+        elif self.test == 'd_shaped':
+            #time_stages = [n_tps//16, n_tps//6, n_tps//2, n_tps-1]
+            time_stages = [5, 12, 16, 18, 45, n_tps-1]
+            alpha_value = 0.58
+
+        query_pts = self.get_query_pts(self.test)
+
+        mask = self.mask_holes_out(self.mesh, query_pts, alpha_value)
+
+        rafr = np.zeros([self.time_stages, self.n_lines+2, 1])
+
+        for i, t_stage in enumerate(time_stages):
+
+            # Array to output the interpolated values
+            interp_vals = np.zeros([query_pts.shape[0],1])
+
+            interp_vals[mask] += griddata(data_coord, data[t_stage], query_pts[mask], method='nearest', fill_value=0.0, rescale=True)
+
+            if self.test == 'plate_hole':
+
+                interp_vals = interp_vals.reshape(-1, self.n_pts+1, data.shape[-1])
+
+                area = np.diff(query_pts.reshape(-1, self.n_pts+1, query_pts.shape[-1])[:,:,1])[:,0]
+
+                coord = query_pts[::self.n_pts+1][:,0]
+
+            elif self.test == 's_shaped' or self.test == 'sigma_shaped' or self.test == 'd_shaped':
+
+                interp_vals = interp_vals.reshape(self.n_pts+1, -1, data.shape[-1])
+                
+                area = np.diff(query_pts.reshape(self.n_pts+1,-1, query_pts.shape[-1])[:,:,0], axis=0)[0,:]
+
+                coord = query_pts.reshape(self.n_pts+1,-1, query_pts.shape[-1])[0,:][:,1]
+
+            fc = interp_vals.sum(self.dir) * area.reshape(-1,1)
+
+            rafr[i] = fc/force_data[t_stage] 
+
+        rafr_dict = {
+                t_stage: {
+                    'coord': coord, 
+                    'rafr': rafr[i], 
+                    'axial_f': force_data[t_stage]
+                    } 
+                for i, t_stage in enumerate(time_stages)
+            }
+
+        return rafr_dict
+
+class GradNormLogger(nn.Module):
+    def __init__(self, amp_scaler: torch.cuda.amp.GradScaler=None):
+        super(GradNormLogger, self).__init__()
+        self.grad_norm = 0.0
+        self.steps = 0.0
+        self.amp_scaler = amp_scaler
+
+    def reset_stats(self):
+        self.grad_norm = 0.0
+        self.steps = 0.0
+
+    def log_g_norm(self, model):
+
+        if self.amp_scaler is not None:
+            scale = self.amp_scaler.get_scale()
+            scale = 1.0 / (scale + 1e-12)
+        else:
+            scale = 1.0
+
+        grads = [
+            param.grad.detach().flatten() * scale
+            for param in model.parameters()
+            if param.grad is not None
+        ]
+
+        self.grad_norm = torch.cat(grads).norm()
+        self.steps += 1
+
+    def get_g_norm(self):
+        return self.grad_norm/self.steps
+
 class weightConstraint(object):
     def __init__(self, cond='plastic'):
         self.cond = cond
@@ -136,26 +312,221 @@ class NeuralNetwork(nn.Module):
 #         out = self.fc(out[:, -1, :]) 
 #         # out.size() --> 100, 10
 #         return out
+class SPDLayer(nn.Module):
+    """
+    Symmetric Positive Definite (SPD) Layer via Cholesky Factorization
+    """
 
-class AttentionLayer(nn.Module):
-    def __init__(self, hidden_size):
-        super(AttentionLayer, self).__init__()
-        self.hidden_size = hidden_size
-        self.W_query = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.W_key = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.V = nn.Linear(hidden_size, 1, bias=False)
+    def __init__(self, output_shape=3, positive='Softplus', min_value=1e-12, device='cpu'):
+        """
+        Initialize Cholesky SPD layer
 
-    def forward(self, encoder_outputs, decoder_hidden):
-        query = self.W_query(decoder_hidden)
-        keys = self.W_key(encoder_outputs)
+        This layer takes a vector of inputs and transforms it to a Symmetric
+        Positive Definite (SPD) matrix, for each candidate within a batch.
 
-        energy = torch.tanh(query + keys)
-        attention_scores = self.V(energy).squeeze(dim=-1)
+        Args:
+            output_shape (int): The dimension of square tensor to produce,
+                default output_shape=3 results in a 3x3 tensor
+            positive (str): The function to perform the positive
+                transformation of the diagonal of the lower triangle tensor.
+                Choices are 'Abs', 'Square', 'Softplus', 'ReLU',
+                'ReLU6', '4', 'Exp', and 'None' (default).
+            min_value (float): The minimum allowable value for a diagonal
+                component. Default is 1e-12.
+        """
+        super(SPDLayer, self).__init__()
+        
+        self.device_ = device
+        self.inds_a, self.inds_b = self.orthotropic_indices()
+       
+        self.is_diag = self.inds_a == self.inds_b
+        self.output_shape = output_shape
+        self.positive = positive
+        self.positive_fun = self._positive_function(positive)
+        self.min_value = torch.tensor(min_value)
+        self.register_buffer('_min_value', self.min_value)
 
-        attention_weights = torch.softmax(attention_scores, dim=-1)
-        context_vector = torch.sum(attention_weights.unsqueeze(-1) * encoder_outputs, dim=1)
+    def _positive_function(self, positive):
+        """
+        Returns the torch function belonging to a positive string
+        """
+        if positive == 'Abs':
+            return torch.abs
+        elif positive == 'Square':
+            return torch.square
+        elif positive == 'Softplus':
+            return torch.nn.Softplus()
+        elif positive == 'ReLU':
+            return torch.nn.ReLU()
+        elif positive == 'ReLU6':
+            return torch.nn.ReLU6()
+        elif positive == '4':
+            return lambda x: torch.pow(x, 4)
+        elif positive == 'None':
+            return torch.nn.Identity()
+        else:
+            error = f"Positve transformation {positive} not supported!"
+            raise ValueError(error)
 
-        return context_vector, attention_weights
+    def orthotropic_indices(self):
+        """
+        Returns orthotropic indices to transform vector to matrix
+        """
+        inds_a = torch.tensor([0, 1, 1, 2, 2, 2]).to(self.device_)
+        inds_b = torch.tensor([0, 0, 1, 0, 1, 2]).to(self.device_)
+        return inds_a, inds_b
+
+    def forward(self, x):
+        """
+        Generate SPD tensors from x
+
+        Args:
+            x (Tensor): Tensor to generate predictions for. Must have
+                2d shape of form (:, input_shape).
+
+        Returns:
+            (Tensor): The predictions of the neural network. Will return
+                shape (:, output_shape, output_shape)
+        """
+        # enforce positive values for the diagonal
+        x = torch.where(self.is_diag, self.positive_fun(x) + self.min_value, x)
+
+        if x is not None:
+            x_shape = x.size()
+        
+        if len(x_shape) == 1:
+           
+            x[[3,4]] = torch.clamp(x[[3,4]], 0,0)
+
+            # init a Zero lower triangle tensor
+            L = torch.zeros((1, self.output_shape, self.output_shape),
+                        dtype=x.dtype, device=self.device_)
+        
+        else:
+
+            x[:,[3,4]] = torch.clamp(x[:,[3,4]], 0,0)
+
+            # init a Zero lower triangle tensor
+            L = torch.zeros((x.shape[0], self.output_shape, self.output_shape),
+                            dtype=x.dtype, device=self.device_)
+            
+        # populate the lower triangle tensor
+        L[:, self.inds_a, self.inds_b] = x
+        LT = L.transpose(1, 2)  # lower triangle transpose
+        out = torch.matmul(L, LT)  # return the SPD tensor
+        return out
+
+class SelfAttentionLayer(nn.Module):
+  def __init__(self, input_dim):
+    super(SelfAttentionLayer, self).__init__()
+    self.input_dim = input_dim
+    self.query = nn.Linear(input_dim, input_dim) # [batch_size, seq_length, input_dim]
+    self.key = nn.Linear(input_dim, input_dim) # [batch_size, seq_length, input_dim]
+    self.value = nn.Linear(input_dim, input_dim)
+    self.softmax = nn.Softmax(dim=2)
+   
+  def forward(self, x): # x.shape (batch_size, seq_length, input_dim)
+    queries = self.query(x)
+    keys = self.key(x)
+    values = self.value(x)
+
+    scores = torch.bmm(queries, keys.transpose(1, 2))/(self.input_dim**0.5)
+    attention = self.softmax(scores)
+    weighted = torch.bmm(attention, values)
+    return weighted
+
+class GRUModelCholesky(nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: list, layer_dim: int, output_dim: int, fc_bias=True, gru_bias=True, cholesky=False, device='cpu', attention=False):
+        super(GRUModelCholesky, self).__init__()
+
+        # Defining the number of layers and the nodes in each layer
+        self.device_ = device
+        self.cholesky = cholesky
+        self.attention = attention
+        self.gru_bias = gru_bias
+        self.fc_bias = fc_bias  
+        self.layer_dim = layer_dim
+        self.hidden_dim = hidden_dim if type(hidden_dim) is list else [hidden_dim]
+
+        # GRU layers
+        self.gru = nn.GRU(input_dim, self.hidden_dim[0], layer_dim, batch_first=True, bias=self.gru_bias)
+
+        # Attention layer
+        if self.attention:
+            self.att = SelfAttentionLayer(self.hidden_dim[0])
+        
+        if len(self.hidden_dim)>1:
+
+            self.fc_layers = nn.ModuleList()
+
+            # Fully connected layer
+            for i in range(len(self.hidden_dim)-1):
+                in_ = self.hidden_dim[i]
+                out_ = self.hidden_dim[i+1]
+                self.fc_layers.append(nn.Linear(in_, out_, bias=self.fc_bias))
+
+            if self.cholesky:
+                self.fc_layers.append(nn.Linear(self.hidden_dim[-1], self.in_shape_from(output_dim), bias=self.fc_bias))
+                self.fc_layers.append(SPDLayer(output_dim, device=self.device))
+            else:
+                self.fc_layers.append(nn.Linear(self.hidden_dim[-1], output_dim, bias=self.fc_bias))
+        else:
+            if self.cholesky:
+                self.fc = nn.Linear(self.hidden_dim[0], self.in_shape_from(output_dim), bias=self.fc_bias)
+                self.chol = SPDLayer(output_dim, device=self.device_)
+            else:
+                self.fc = nn.Linear(self.hidden_dim[0], output_dim, bias=self.fc_bias)
+
+        self.relu = nn.LeakyReLU()
+    
+    def in_shape_from(self, output_shape):
+        """
+        Returns input_shape required for a output_shape x output_shape SPD tensor
+
+        Args:
+            output_shape (int): The dimension of square tensor to produce.
+
+        Returns:
+            (int): The input shape associated from a
+                `[output_shape, output_shape` SPD tensor.
+
+        Notes:
+            This is the sum of the first n natural numbers
+            https://cseweb.ucsd.edu/groups/tatami/handdemos/sum/
+        """
+        input_shape = output_shape * (output_shape + 1) // 2
+        return input_shape
+   
+    def forward(self, x):
+
+        if torch.cuda.is_available() and x.is_cuda:
+            self.h0 = Variable(torch.zeros(self.layer_dim, x.size(0), self.hidden_dim[0], device=torch.device('cuda')))
+        else:
+            self.h0 = Variable(torch.zeros(self.layer_dim, x.size(0), self.hidden_dim[0]))
+        
+        # Forward propagation by passing in the input and hidden state into the model   
+        out, _ = self.gru(x,self.h0.detach()) # out[batch_size,seq_len,hidden_size]
+
+        if self.attention:
+            out = self.att(out)
+
+        # Reshaping the outputs in the shape of (batch_size, seq_length, hidden_size)
+        # so that it can fit into the fully connected layer
+        out = out[:, -1, :]
+        
+        # Convert the final state to our desired output shape (batch_size, output_dim)
+        if len(self.hidden_dim) > 1:
+            for layer in self.fc_layers[:-1]:
+                    
+                out = self.relu(layer(out))
+                    
+            return self.fc_layers[-1](out)
+        else:
+            if self.cholesky:
+                out = self.fc(self.relu(out))
+                return self.chol(out)
+            else:
+                return self.fc(self.relu(out))
 
 class GRUModel(nn.Module):
     def __init__(self, input_dim: int, hidden_dim: list, layer_dim: int, output_dim: int, fc_bias=True, gru_bias=True):
@@ -186,15 +557,8 @@ class GRUModel(nn.Module):
         else:
             self.fc = nn.Linear(self.hidden_dim[0], output_dim, bias=True)
 
-        self.relu = nn.LeakyReLU()
-
-    # def init_hidden(self, batch_size):
-    #     # Initializing hidden state for first input with zeros
-    #     if torch.cuda.is_available():
-    #         self.h0 = Variable(torch.zeros(self.layer_dim, batch_size, self.hidden_dim[0]).cuda())
-    #     else:
-    #         self.h0 = Variable(torch.zeros(self.layer_dim, batch_size, self.hidden_dim[0]))
-
+        self.relu = nn.ReLU()
+   
     def forward(self, x):
 
         if torch.cuda.is_available() and x.is_cuda:
@@ -232,7 +596,7 @@ class GRUModelJit(nn.Module):
         # GRU layers
         self.gru = nn.GRU(input_dim, self.hidden_dim, layer_dim, batch_first=True)
         self.fc = nn.Linear(self.hidden_dim, output_dim)
-        self.relu = nn.ReLU()
+        self.relu = nn.LeakyReLU()
 
     def forward(self, x):
         #h0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim).detach()
@@ -241,6 +605,34 @@ class GRUModelJit(nn.Module):
         out = out[0][-1,:]
         out = self.relu(out)
         out = self.fc(out)
+        
+        return out
+    
+class GRUModelJitChol(nn.Module):
+    def __init__(self, input_dim, hidden_dim, layer_dim, output_dim, fc_bias=True, gru_bias=True, attention=False):
+        super(GRUModelJitChol, self).__init__()
+        # Defining the number of layers and the nodes in each layer
+        self.gru_bias = gru_bias
+        self.fc_bias = fc_bias  
+        self.layer_dim = layer_dim
+        self.hidden_dim = hidden_dim[0]
+        self.attention = attention
+
+        # GRU layers
+        self.gru = nn.GRU(input_dim, self.hidden_dim, layer_dim, batch_first=False, bias=self.gru_bias)
+        self.fc = nn.Linear(self.hidden_dim, 6, bias=self.fc_bias)
+        self.chol = SPDLayer(output_dim)
+        self.relu = nn.LeakyReLU()
+        
+    def forward(self, x):
+        #h0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim).detach()
+        x = torch.nn.utils.rnn.pack_sequence(x)
+        out, _ = self.gru(x)
+        out = out[0][-1,:]
+        out = self.relu(out)
+        out = self.fc(out)
+        out = self.relu(out)
+        out = self.chol(out)
         
         return out
     
@@ -267,33 +659,35 @@ class EarlyStopping:
         self.best_score = None
         self.early_stop = False
         self.val_loss_min = np.Inf
+        self.train_loss_ = np.Inf   
         self.delta = delta
         self.path = path
         self.trace_func = trace_func
 
-    def __call__(self, val_loss, model):
+    def __call__(self, val_loss, train_loss, model):
 
         score = -val_loss
 
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
+            self.save_checkpoint(val_loss, train_loss, model)
         elif score <= self.best_score + self.delta:
             self.counter += 1
-            self.trace_func(f'\nEarlyStopping counter: {self.counter} out of {self.patience} | Best: {self.val_loss_min:.6e}')
+            self.trace_func(f'\nEarlyStopping counter: {self.counter} out of {self.patience} | Best -> train: {self.train_loss_:.6e} :: test: {self.val_loss_min:.6e}')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
+            self.save_checkpoint(val_loss, train_loss, model)
             self.counter = 0
 
-    def save_checkpoint(self, val_loss, model):
+    def save_checkpoint(self, val_loss, train_loss, model):
         '''Saves model when validation loss decrease.'''
         if self.verbose:
             self.trace_func(f'\nValidation loss decreased ({self.val_loss_min:.5e} --> {val_loss:.5e}).  Saving model ...')
         torch.save(model.state_dict(), self.path)
         self.val_loss_min = val_loss
+        self.train_loss_ = train_loss
 
 class BaseLoss(nn.modules.Module):
 
@@ -746,3 +1140,51 @@ def get_data_transform(normalize_type: str, stat_vars: dict):
         transform = data_transforms.MinMaxScaler(stat_vars['min'], stat_vars['max'])
 
     return transform
+
+def get_principal(var, angles=None):  
+
+    if angles is None:
+        # Getting principal angles
+        angles = 0.5 * np.arctan(2*var[:,-1] / (var[:,0] - var[:,1] + 1e-16))
+        angles[np.isnan(angles)] = 0.0
+
+    # Constructing tensors
+    tril_indices = np.tril_indices(n=2)
+    var_mat = np.zeros((var.shape[0],2,2))
+
+    var[:,[1,2]] = var[:,[2,1]]
+
+    var_mat[:,tril_indices[0],tril_indices[1]] = var[:,:]
+    var_mat[:,tril_indices[1],tril_indices[0]] = var[:,:]
+
+    # Rotating tensor to the principal plane
+    var_princ_mat = rotate_tensor(var_mat, angles)
+    var_princ_mat[abs(var_princ_mat)<=1e-16] = 0.0
+    var_princ = var_princ_mat[:,tril_indices[0][:-1],np.array([0,1,0])[:-1]]
+
+    return var_princ, angles
+
+def rotate_tensor(t,theta,is_reverse=False):
+    '''Applies a rotation transformation to a given tensor
+
+    Args:
+        t (float): The tensor, or batch of tensors, to be transformed
+        theta (float): The angle, or angles, of rotation
+        is_reverse (bool): Controls if forward or reverse transformation is applied (default is False)
+
+    Returns:
+        t_: the rotated tensor
+    '''
+
+    r = np.zeros_like(t)
+    r[:,0,0] = np.cos(theta)
+    r[:,0,1] = np.sin(theta)
+    r[:,1,0] = -np.sin(theta)
+    r[:,1,1] = np.cos(theta)
+    
+    if is_reverse:
+        t_ = np.transpose(r,(0,2,1)) @ t @ r
+    else:
+        t_ = r @ t @ np.transpose(r,(0,2,1))
+    
+    return t_
